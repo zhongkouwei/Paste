@@ -2,10 +2,13 @@
   "name": "paste-like",
   "version": "0.1.0",
   "description": "A macOS clipboard history app inspired by Paste.",
+  "productName": "Paste Like",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "electron ."
+    "dev": "electron .",
+    "build": "electron-builder --mac dir",
+    "build:zip": "electron-builder --mac zip"
   },
   "keywords": [
     "clipboard",
@@ -15,6 +18,27 @@
   "author": "",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^31.7.7"
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.zhongkouwei.pastelike",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "package.json",
+      "package-lock.json",
+      "!node_modules/.cache/**/*"
+    ],
+    "asar": true,
+    "mac": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "category": "public.app-category.productivity",
+      "target": [
+        "dir"
+      ]
+    }
   }
 }
