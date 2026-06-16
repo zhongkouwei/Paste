@@ -126,6 +126,13 @@ function setFilter(filter) {
   render();
 }
 
+function moveSelection(delta) {
+  const items = filteredHistory();
+  if (!items.length) return;
+  state.selectedIndex = Math.min(items.length - 1, Math.max(0, state.selectedIndex + delta));
+  render();
+}
+
 async function activateSelected(shouldPaste) {
   const item = filteredHistory()[state.selectedIndex];
   if (!item) return;
@@ -168,18 +175,21 @@ els.clearButton.addEventListener('click', async () => {
 els.closeButton.addEventListener('click', () => window.pasteLike.hide());
 
 window.addEventListener('keydown', async (event) => {
-  const items = filteredHistory();
   if (event.key === 'Escape') {
+    event.preventDefault();
+    event.stopPropagation();
     window.pasteLike.hide();
     return;
   }
   if (event.key === 'ArrowRight') {
-    state.selectedIndex = Math.min(items.length - 1, state.selectedIndex + 1);
-    render();
+    event.preventDefault();
+    moveSelection(1);
+    return;
   }
   if (event.key === 'ArrowLeft') {
-    state.selectedIndex = Math.max(0, state.selectedIndex - 1);
-    render();
+    event.preventDefault();
+    moveSelection(-1);
+    return;
   }
   if (event.key === 'Enter') {
     await activateSelected(!event.altKey);
@@ -188,7 +198,7 @@ window.addEventListener('keydown', async (event) => {
     event.preventDefault();
     els.searchInput.focus();
   }
-});
+}, true);
 
 window.pasteLike.onHistoryChanged((history) => {
   state.history = history;
