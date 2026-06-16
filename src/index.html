@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Paste Like</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="mark" aria-hidden="true">P</div>
+          <div>
+            <h1>Paste Like</h1>
+            <p id="countLabel">Clipboard history</p>
+          </div>
+        </div>
+        <div class="searchWrap">
+          <span aria-hidden="true">⌕</span>
+          <input id="searchInput" type="search" placeholder="Search copied text, links, code..." autocomplete="off" />
+        </div>
+        <nav class="tabs" aria-label="Filters">
+          <button class="tab active" data-filter="all">All</button>
+          <button class="tab" data-filter="favorite">Pinned</button>
+          <button class="tab" data-filter="text">Text</button>
+          <button class="tab" data-filter="link">Links</button>
+          <button class="tab" data-filter="code">Code</button>
+          <button class="tab" data-filter="image">Images</button>
+        </nav>
+        <button id="clearButton" class="iconButton" title="Clear history" aria-label="Clear history">⌫</button>
+        <button id="closeButton" class="iconButton" title="Close" aria-label="Close">×</button>
+      </header>
+
+      <section class="content">
+        <aside class="sidebar" aria-label="Pinboards">
+          <button class="board active" data-board="history">
+            <span class="boardIcon">◷</span>
+            <span>History</span>
+          </button>
+          <button class="board" data-filter="favorite">
+            <span class="boardIcon">★</span>
+            <span>Pinned</span>
+          </button>
+          <button class="board" data-filter="link">
+            <span class="boardIcon">↗</span>
+            <span>Links</span>
+          </button>
+          <button class="board" data-filter="code">
+            <span class="boardIcon">{ }</span>
+            <span>Code</span>
+          </button>
+        </aside>
+
+        <section class="timelineWrap">
+          <div id="emptyState" class="emptyState hidden">
+            <strong>No clips yet</strong>
+            <span>Copy text, links, code, or images and they will appear here.</span>
+          </div>
+          <div id="timeline" class="timeline" tabindex="0" aria-label="Clipboard items"></div>
+        </section>
+      </section>
+    </main>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>
