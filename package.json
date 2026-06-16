@@ -1,0 +1,20 @@
+{
+  "name": "paste-like",
+  "version": "0.1.0",
+  "description": "A macOS clipboard history app inspired by Paste.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron ."
+  },
+  "keywords": [
+    "clipboard",
+    "macos",
+    "electron"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^31.7.7"
+  }
+}
