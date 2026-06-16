@@ -133,6 +133,11 @@ function moveSelection(delta) {
   render();
 }
 
+function isTypingTarget(target) {
+  return target instanceof HTMLElement
+    && (target.matches('input, textarea, select') || target.isContentEditable);
+}
+
 async function activateSelected(shouldPaste) {
   const item = filteredHistory()[state.selectedIndex];
   if (!item) return;
@@ -175,12 +180,18 @@ els.clearButton.addEventListener('click', async () => {
 els.closeButton.addEventListener('click', () => window.pasteLike.hide());
 
 window.addEventListener('keydown', async (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
+    event.preventDefault();
+    els.searchInput.focus();
+    return;
+  }
   if (event.key === 'Escape') {
     event.preventDefault();
     event.stopPropagation();
     window.pasteLike.hide();
     return;
   }
+  if (isTypingTarget(event.target)) return;
   if (event.key === 'ArrowRight') {
     event.preventDefault();
     moveSelection(1);
@@ -193,10 +204,6 @@ window.addEventListener('keydown', async (event) => {
   }
   if (event.key === 'Enter') {
     await activateSelected(!event.altKey);
-  }
-  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
-    event.preventDefault();
-    els.searchInput.focus();
   }
 }, true);
 
