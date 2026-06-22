@@ -18,6 +18,11 @@ function historyPath() {
   return path.join(app.getPath('userData'), 'clipboard-history.json');
 }
 
+function corruptHistoryPath() {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return path.join(app.getPath('userData'), `clipboard-history.corrupt-${timestamp}.json`);
+}
+
 function createHash(input) {
   return crypto.createHash('sha256').update(input).digest('hex');
 }
@@ -66,10 +71,23 @@ function clipboardSnapshot() {
 function loadHistory() {
   try {
     const raw = fs.readFileSync(historyPath(), 'utf8');
-    history = JSON.parse(raw).filter((item) => item && item.id && item.body).slice(0, MAX_ITEMS);
+    const items = JSON.parse(raw);
+    if (!Array.isArray(items)) {
+      throw new Error('Clipboard history file must contain an array.');
+    }
+    history = items.filter((item) => item && item.id && item.body).slice(0, MAX_ITEMS);
     lastSignature = history[0]?.signature || '';
-  } catch {
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      try {
+        fs.renameSync(historyPath(), corruptHistoryPath());
+      } catch (backupError) {
+        console.error('Failed to preserve corrupt clipboard history:', backupError);
+      }
+      console.error('Clipboard history could not be loaded and was reset:', error);
+    }
     history = [];
+    lastSignature = '';
   }
 }
 
