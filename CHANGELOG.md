@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-24
+
+- 修复删除当前顶部剪贴板项或清空历史后，当前系统剪贴板内容可能无法再次被自动收录的问题；根因是主进程只在新增快照时更新 `lastSignature`，历史被删空或头项变化后没有同步重算去重基线。
+- 现在 `loadHistory()`、托盘 `Clear History`、IPC `history:delete` 和 `history:clear` 都会把 `lastSignature` 同步到最新历史头项；清空历史后会重置为空，保证同一份当前剪贴板内容可以立即重新入库。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
+- 影响范围：仅主进程剪贴板去重与历史删除/清空后的恢复行为；UI、图片持久化、搜索与粘贴流程不变。
+
 ## 2026-06-23
 
 - 修复剪贴板历史持久化文件损坏时可能被下一次保存直接覆盖的问题；根因是 `loadHistory()` 捕获读取/解析失败后只清空内存，没有先保留原始文件。

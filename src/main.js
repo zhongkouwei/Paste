@@ -31,6 +31,10 @@ function now() {
   return new Date().toISOString();
 }
 
+function syncLastSignature() {
+  lastSignature = history[0]?.signature || '';
+}
+
 function classifyText(text) {
   const trimmed = text.trim();
   if (/^https?:\/\/\S+$/i.test(trimmed)) return 'link';
@@ -76,7 +80,7 @@ function loadHistory() {
       throw new Error('Clipboard history file must contain an array.');
     }
     history = items.filter((item) => item && item.id && item.body).slice(0, MAX_ITEMS);
-    lastSignature = history[0]?.signature || '';
+    syncLastSignature();
   } catch (error) {
     if (error.code !== 'ENOENT') {
       try {
@@ -87,7 +91,7 @@ function loadHistory() {
       console.error('Clipboard history could not be loaded and was reset:', error);
     }
     history = [];
-    lastSignature = '';
+    syncLastSignature();
   }
 }
 
@@ -230,7 +234,7 @@ function createTray() {
   tray.setToolTip('Paste Like');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show Clipboard History', click: showWindow },
-    { label: 'Clear History', click: () => { history = []; saveHistory(); sendHistory(); } },
+    { label: 'Clear History', click: () => { history = []; syncLastSignature(); saveHistory(); sendHistory(); } },
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() }
   ]));
@@ -255,12 +259,14 @@ app.whenReady().then(() => {
   });
   ipcMain.handle('history:delete', (_event, id) => {
     history = history.filter((item) => item.id !== id);
+    syncLastSignature();
     saveHistory();
     sendHistory();
     return history;
   });
   ipcMain.handle('history:clear', () => {
     history = [];
+    syncLastSignature();
     saveHistory();
     sendHistory();
     return history;
