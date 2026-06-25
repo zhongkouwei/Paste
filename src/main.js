@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, globalShortcut, ipcMain, Menu, nativeImage, Tray } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Tray } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
@@ -104,6 +104,36 @@ function sendHistory() {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('history:changed', history);
   }
+}
+
+function clearHistory() {
+  history = [];
+  syncLastSignature();
+  saveHistory();
+  sendHistory();
+}
+
+async function confirmClearHistory() {
+  if (!history.length) return false;
+
+  const parentWindow = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()
+    ? mainWindow
+    : undefined;
+  const options = {
+    type: 'warning',
+    buttons: ['Cancel', 'Clear History'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+    title: 'Clear Clipboard History?',
+    message: 'Clear all saved clipboard history?',
+    detail: 'This removes saved clips from Paste Like. The current system clipboard is not changed.'
+  };
+  const { response } = parentWindow
+    ? await dialog.showMessageBox(parentWindow, options)
+    : await dialog.showMessageBox(options);
+
+  return response === 1;
 }
 
 function addSnapshot(snapshot) {
@@ -234,7 +264,7 @@ function createTray() {
   tray.setToolTip('Paste Like');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show Clipboard History', click: showWindow },
-    { label: 'Clear History', click: () => { history = []; syncLastSignature(); saveHistory(); sendHistory(); } },
+    { label: 'Clear History', click: async () => { if (await confirmClearHistory()) clearHistory(); } },
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() }
   ]));
@@ -264,11 +294,8 @@ app.whenReady().then(() => {
     sendHistory();
     return history;
   });
-  ipcMain.handle('history:clear', () => {
-    history = [];
-    syncLastSignature();
-    saveHistory();
-    sendHistory();
+  ipcMain.handle('history:clear', async () => {
+    if (await confirmClearHistory()) clearHistory();
     return history;
   });
   ipcMain.handle('history:copy', (_event, id, shouldPaste = false) => {

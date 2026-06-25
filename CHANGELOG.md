@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-25
+
+- 优化清空历史的防误触保护；根因是顶部 `Clear history` 按钮和托盘 `Clear History` 都直接执行清空，误点会立即删除全部历史。
+- 现在清空历史前统一由主进程弹出原生确认框，取消会保留现有历史；确认后仍复用原有清空流程并同步重置 `lastSignature`。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
+- 影响范围：仅清空历史入口和确认交互；单条删除、复制/粘贴、剪贴板监听和历史持久化格式不变。
+
 ## 2026-06-24
 
 - 修复删除当前顶部剪贴板项或清空历史后，当前系统剪贴板内容可能无法再次被自动收录的问题；根因是主进程只在新增快照时更新 `lastSignature`，历史被删空或头项变化后没有同步重算去重基线。
