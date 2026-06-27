@@ -164,7 +164,7 @@ function startClipboardWatcher() {
 }
 
 function setClipboardItem(item) {
-  if (!item) return;
+  if (!item) return false;
   if (item.type === 'image') {
     clipboard.writeImage(nativeImage.createFromDataURL(item.body));
   } else if (item.html) {
@@ -173,6 +173,7 @@ function setClipboardItem(item) {
     clipboard.writeText(item.body);
   }
   lastSignature = item.signature;
+  return true;
 }
 
 function pasteIntoActiveApp() {
@@ -300,12 +301,12 @@ app.whenReady().then(() => {
   });
   ipcMain.handle('history:copy', (_event, id, shouldPaste = false) => {
     const item = history.find((entry) => entry.id === id);
-    setClipboardItem(item);
-    if (shouldPaste) {
+    const didCopy = setClipboardItem(item);
+    if (didCopy && shouldPaste) {
       hideWindow();
       setTimeout(pasteIntoActiveApp, 120);
     }
-    return true;
+    return didCopy;
   });
   ipcMain.handle('window:hide', () => hideWindow());
   ipcMain.handle('window:show', () => showWindow());

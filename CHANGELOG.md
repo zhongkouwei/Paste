@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-27
+
+- 修复历史项已被删除或渲染进程持有过期 `id` 时仍可能触发自动粘贴的问题；根因是主进程 `history:copy` 不区分目标条目是否存在，找不到条目时仍会隐藏窗口并模拟 `Command+V`。
+- 现在只有成功把目标历史项写回系统剪贴板后，才会执行自动粘贴；找不到条目时返回 `false`，保留当前窗口与系统剪贴板状态。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
+- 影响范围：仅历史项复制/粘贴 IPC 防护；剪贴板监听、历史持久化、删除/清空和 UI 渲染不变。
+
 ## 2026-06-25
 
 - 优化清空历史的防误触保护；根因是顶部 `Clear history` 按钮和托盘 `Clear History` 都直接执行清空，误点会立即删除全部历史。
