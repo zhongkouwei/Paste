@@ -40,7 +40,10 @@ function colorStyleFor(item, index) {
 }
 
 function relativeTime(dateString) {
-  const diff = Date.now() - new Date(dateString).getTime();
+  const timestamp = new Date(dateString).getTime();
+  if (!Number.isFinite(timestamp)) return 'unknown';
+
+  const diff = Math.max(0, Date.now() - timestamp);
   const minutes = Math.floor(diff / 60000);
   if (minutes < 1) return 'now';
   if (minutes < 60) return `${minutes}m`;

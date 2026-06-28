@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-28
+
+- 修复历史项时间戳缺失、损坏或来自未来时间时，卡片时间可能显示为 `NaNd` 的问题；根因是渲染进程 `relativeTime()` 直接对 `Date` 计算结果做分钟换算，没有校验无效时间。
+- 现在无效时间戳显示为 `unknown`，未来时间按 `now` 处理，避免损坏历史文件或迁移数据污染 UI。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
+- 影响范围：仅剪贴板卡片时间标签渲染；历史持久化、筛选、复制/粘贴和图片处理不变。
+
 ## 2026-06-27
 
 - 修复历史项已被删除或渲染进程持有过期 `id` 时仍可能触发自动粘贴的问题；根因是主进程 `history:copy` 不区分目标条目是否存在，找不到条目时仍会隐藏窗口并模拟 `Command+V`。
