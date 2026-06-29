@@ -1,8 +1,8 @@
 const { app, BrowserWindow, clipboard, globalShortcut, ipcMain, Menu, nativeImage, Tray } = require('electron');
-const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 const crypto = require('crypto');
+const { loadHistoryFile, saveHistoryFile } = require('./historyStore');
 
 const MAX_ITEMS = 300;
 const POLL_MS = 900;
@@ -63,18 +63,20 @@ function clipboardSnapshot() {
 }
 
 function loadHistory() {
-  try {
-    const raw = fs.readFileSync(historyPath(), 'utf8');
-    history = JSON.parse(raw).filter((item) => item && item.id && item.body).slice(0, MAX_ITEMS);
-    lastSignature = history[0]?.signature || '';
-  } catch {
-    history = [];
+  const result = loadHistoryFile(historyPath(), MAX_ITEMS);
+  history = result.history;
+  lastSignature = history[0]?.signature || '';
+
+  if (result.error) {
+    console.error('Failed to load clipboard history:', result.error);
+    if (result.corruptBackupPath) {
+      console.error('Corrupt clipboard history was moved to:', result.corruptBackupPath);
+    }
   }
 }
 
 function saveHistory() {
-  fs.mkdirSync(path.dirname(historyPath()), { recursive: true });
-  fs.writeFileSync(historyPath(), JSON.stringify(history, null, 2));
+  saveHistoryFile(historyPath(), history);
 }
 
 function sendHistory() {
