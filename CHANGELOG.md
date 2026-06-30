@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-30
+
+- 修复旧版或损坏历史项缺少 `title`、`type`、`preview`、`signature` 等字段时，渲染进程搜索/展示可能中断的问题；根因是主进程 `loadHistory()` 只过滤了 `id` 和 `body`，没有恢复完整历史项数据契约。
+- 现在加载持久化历史时会统一归一化字段：补齐类型、标题、预览、签名、HTML 和置顶状态，保证 IPC 返回给 UI 的历史项结构稳定。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
+- 影响范围：仅历史文件加载后的字段修复；剪贴板监听、复制/粘贴、删除、清空和现有历史文件路径不变。
+
 ## 2026-06-28
 
 - 修复历史项时间戳缺失、损坏或来自未来时间时，卡片时间可能显示为 `NaNd` 的问题；根因是渲染进程 `relativeTime()` 直接对 `Date` 计算结果做分钟换算，没有校验无效时间。
