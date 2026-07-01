@@ -36,6 +36,9 @@
     "mac": {
       "artifactName": "${productName}-${version}-${arch}.${ext}",
       "category": "public.app-category.productivity",
+      "extendInfo": {
+        "LSUIElement": true
+      },
       "target": [
         "dir"
       ]

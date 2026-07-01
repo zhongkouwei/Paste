@@ -240,6 +240,12 @@ function hideWindow() {
   if (mainWindow) mainWindow.hide();
 }
 
+function hideDockIcon() {
+  if (process.platform === 'darwin' && app.dock) {
+    app.dock.hide();
+  }
+}
+
 function createWindow() {
   const { width } = primaryScreenBounds();
   mainWindow = new BrowserWindow({
@@ -292,6 +298,7 @@ function createTray() {
   const icon = nativeImage.createFromDataURL(
     'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAQAAAC1+jfqAAAAKElEQVR42mP8z8AARLJgwiFGEGkYRgYGBkYkDQwMDDQwMDAAAMu2AheG4i39AAAAAElFTkSuQmCC'
   );
+  if (process.platform === 'darwin') icon.setTemplateImage(true);
   tray = new Tray(icon);
   tray.setToolTip('Paste Like');
   tray.setContextMenu(Menu.buildFromTemplate([
@@ -304,6 +311,7 @@ function createTray() {
 }
 
 app.whenReady().then(() => {
+  hideDockIcon();
   loadHistory();
   createWindow();
   registerDisplayHandlers();

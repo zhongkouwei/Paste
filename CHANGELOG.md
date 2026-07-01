@@ -2,6 +2,11 @@
 
 ## 2026-06-30
 
+- 优化 macOS 常驻形态：应用启动后隐藏 Dock 图标，只保留顶部状态栏小图标；根因是此前只设置了窗口级 `skipTaskbar`，没有隐藏应用级 Dock 图标。
+- 打包配置新增 `LSUIElement`，运行时同步调用 `app.dock.hide()`，并把 Tray 图标标记为 macOS template image，使状态栏图标适配浅色/深色菜单栏。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
+- 影响范围：macOS 应用入口、状态栏图标和打包 Info.plist；剪贴板监听、历史存储、搜索和粘贴逻辑不变。
+
 - 修复旧版或损坏历史项缺少 `title`、`type`、`preview`、`signature` 等字段时，渲染进程搜索/展示可能中断的问题；根因是主进程 `loadHistory()` 只过滤了 `id` 和 `body`，没有恢复完整历史项数据契约。
 - 现在加载持久化历史时会统一归一化字段：补齐类型、标题、预览、签名、HTML 和置顶状态，保证 IPC 返回给 UI 的历史项结构稳定。
 - 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
