@@ -2,6 +2,8 @@
 
 ## 2026-07-02
 
+- 新增 GitHub Actions `Release` 工作流：推送 `v*` tag 后自动构建 macOS `.dmg/.zip` 并上传到对应 GitHub Release，用户可从 Releases 页面直接下载安装包。
+- README 新增 GitHub Releases 下载入口和发布步骤说明，明确用 tag 触发自动发布。
 - 将默认发布产物从未安装目录切换为 macOS `.dmg` 安装包，并新增 `build:dir`、`build:release` 脚本；根因是项目此前只有目录/压缩包构建约定，不满足“可直接安装”的交付目标。
 - README 补充了安装包、压缩包和未安装目录三种构建路径，明确 `release/` 下的发布产物约定。
 - 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`、`npm run build:dir`、`npm run build:zip`、`npm run build:release`。

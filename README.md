@@ -44,6 +44,30 @@ npm run build
 npm run build:dir
 ```
 
+用户下载入口应使用 GitHub Releases，而不是分支文件。发布后可在这里下载：
+
+- [Releases](https://github.com/zhongkouwei/Paste/releases)
+
+### 发布到 GitHub
+
+仓库已配置 `Release` workflow。推送版本 tag 后，GitHub Actions 会自动构建并上传 `.dmg`、`.zip` 和 blockmap 到对应 Release：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+发布完成后，用户可直接下载：
+
+```text
+https://github.com/zhongkouwei/Paste/releases/download/v0.1.0/Paste%20Like-0.1.0-arm64.dmg
+```
+
+其中：
+
+- `arm64` 适用于 Apple Silicon Mac
+- `x64` 适用于 Intel Mac
+
 ## macOS 权限
 
 普通复制和历史记录不需要额外权限。自动粘贴依赖系统模拟 `Command+V`，macOS 可能要求给 Electron 进程授予辅助功能权限：
