@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-02
+
+- 将默认发布产物从未安装目录切换为 macOS `.dmg` 安装包，并新增 `build:dir`、`build:release` 脚本；根因是项目此前只有目录/压缩包构建约定，不满足“可直接安装”的交付目标。
+- README 补充了安装包、压缩包和未安装目录三种构建路径，明确 `release/` 下的发布产物约定。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`、`npm run build:dir`、`npm run build:zip`、`npm run build:release`。
+- 影响范围：仅发布配置与文档；不改变剪贴板监听、存储和 UI 交互逻辑。
+
 ## 2026-06-30
 
 - 优化 macOS 常驻形态：应用启动后隐藏 Dock 图标，只保留顶部状态栏小图标；根因是此前只设置了窗口级 `skipTaskbar`，没有隐藏应用级 Dock 图标。

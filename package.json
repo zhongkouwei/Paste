@@ -7,8 +7,10 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
-    "build": "electron-builder --mac dir",
-    "build:zip": "electron-builder --mac zip"
+    "build": "electron-builder --mac dmg",
+    "build:dir": "electron-builder --mac dir",
+    "build:zip": "electron-builder --mac zip",
+    "build:release": "electron-builder --mac dmg zip"
   },
   "keywords": [
     "clipboard",
@@ -40,7 +42,7 @@
         "LSUIElement": true
       },
       "target": [
-        "dir"
+        "dmg"
       ]
     }
   }

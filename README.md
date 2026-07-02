@@ -25,6 +25,25 @@ npm start -- --show
 ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm install
 ```
 
+## 构建与发布
+
+默认发布命令现在直接生成可安装的 macOS 安装包：
+
+```bash
+npm run build
+```
+
+产物位于 `release/`，默认包含：
+
+- `Paste Like-<version>-<arch>.dmg`：可直接分发和安装
+- `Paste Like-<version>-<arch>.zip`：可选压缩分发格式，使用 `npm run build:zip`
+
+如需仅验证 Electron 打包后的未安装目录产物，使用：
+
+```bash
+npm run build:dir
+```
+
 ## macOS 权限
 
 普通复制和历史记录不需要额外权限。自动粘贴依赖系统模拟 `Command+V`，macOS 可能要求给 Electron 进程授予辅助功能权限：
