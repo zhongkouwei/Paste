@@ -8,6 +8,7 @@ const MAX_ITEMS = 300;
 const POLL_MS = 900;
 const WINDOW_HEIGHT = 372;
 const ITEM_TYPES = new Set(['text', 'link', 'code', 'image']);
+const IMAGE_DATA_URL_PATTERN = /^data:image\/[a-z0-9.+-]+;base64,/i;
 
 let mainWindow;
 let tray;
@@ -47,13 +48,19 @@ function stringValue(value) {
   return typeof value === 'string' ? value : String(value ?? '');
 }
 
+function isImageDataUrl(value) {
+  return IMAGE_DATA_URL_PATTERN.test(value.trim());
+}
+
 function normalizeHistoryItem(item) {
   if (!item || !item.id || item.body === undefined || item.body === null) return null;
 
   const body = stringValue(item.body);
   if (!body.trim()) return null;
 
-  const type = ITEM_TYPES.has(item.type) ? item.type : classifyText(body);
+  const type = ITEM_TYPES.has(item.type)
+    ? item.type
+    : (isImageDataUrl(body) ? 'image' : classifyText(body));
   const title = stringValue(item.title).trim()
     || (type === 'image' ? 'Image' : body.split('\n').find((line) => line.trim())?.slice(0, 80))
     || 'Text';
