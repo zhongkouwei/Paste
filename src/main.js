@@ -8,6 +8,7 @@ const MAX_ITEMS = 300;
 const POLL_MS = 900;
 const WINDOW_HEIGHT = 372;
 const ITEM_TYPES = new Set(['text', 'link', 'code', 'image']);
+const IMAGE_DATA_URL_PATTERN = /^data:image\/[a-z0-9.+-]+;base64,/i;
 
 let mainWindow;
 let tray;
@@ -47,17 +48,27 @@ function stringValue(value) {
   return typeof value === 'string' ? value : String(value ?? '');
 }
 
+function isImageDataUrl(value) {
+  return IMAGE_DATA_URL_PATTERN.test(value.trim());
+}
+
 function normalizeHistoryItem(item) {
   if (!item || !item.id || item.body === undefined || item.body === null) return null;
 
   const body = stringValue(item.body);
   if (!body.trim()) return null;
 
-  const type = ITEM_TYPES.has(item.type) ? item.type : classifyText(body);
+  const storedType = ITEM_TYPES.has(item.type) ? item.type : '';
+  const type = storedType === 'image' && !isImageDataUrl(body)
+    ? classifyText(body)
+    : (storedType || (isImageDataUrl(body) ? 'image' : classifyText(body)));
+  const storedPreview = stringValue(item.preview);
   const title = stringValue(item.title).trim()
     || (type === 'image' ? 'Image' : body.split('\n').find((line) => line.trim())?.slice(0, 80))
     || 'Text';
-  const preview = stringValue(item.preview) || (type === 'image' ? body : body.slice(0, 700));
+  const preview = type === 'image'
+    ? (isImageDataUrl(storedPreview) ? storedPreview : body)
+    : (storedPreview || body.slice(0, 700));
   const signature = stringValue(item.signature) || createHash(`${type}:${body}`);
 
   return {

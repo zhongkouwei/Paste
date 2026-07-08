@@ -84,12 +84,13 @@ function renderCard(item, index) {
   const selected = index === state.selectedIndex ? 'selected' : '';
   const favorite = item.isFavorite ? 'pinned' : '';
   const cardStyle = colorStyleFor(item, index);
+  const safeId = escapeHtml(item.id);
   const preview = item.type === 'image'
-    ? `<img class="clipImage" src="${item.preview}" alt="Clipboard image" />`
+    ? `<img class="clipImage" src="${escapeHtml(item.preview)}" alt="Clipboard image" />`
     : `<pre>${escapeHtml(item.preview)}</pre>`;
 
   return `
-    <article class="clipCard ${selected}" style="${cardStyle}" data-id="${item.id}" data-index="${index}">
+    <article class="clipCard ${selected}" style="${cardStyle}" data-id="${safeId}" data-index="${index}">
       <div class="clipMeta">
         <span class="typeIcon">${iconFor(item.type)}</span>
         <span class="clipType">${item.type}</span>

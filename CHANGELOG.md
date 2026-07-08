@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-09
+
+- 修复旧版或损坏图片历史项缺少 `type` 字段时会被恢复成文本的问题；根因是 `normalizeHistoryItem()` 对未知类型只走文本分类，没有从图片 `dataURL` 反推 `image` 类型。
+- 加强历史项渲染防护：图片预览只沿用有效 `data:image/...;base64,`，渲染持久化来的 `id` 和图片 `src` 属性前会转义，避免损坏历史文件把异常属性注入到 UI。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
+- 影响范围：主进程历史加载归一化与渲染进程卡片属性输出；新剪贴板采集、搜索、复制/粘贴 IPC 和打包配置不变。
+
 ## 2026-06-30
 
 - 优化 macOS 常驻形态：应用启动后隐藏 Dock 图标，只保留顶部状态栏小图标；根因是此前只设置了窗口级 `skipTaskbar`，没有隐藏应用级 Dock 图标。
