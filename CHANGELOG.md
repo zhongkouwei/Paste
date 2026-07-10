@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-11
+
+- 新增 `npm run check`，把项目现有 `node --check` 语法验证固化到 `package.json`；根因是测试说明和 changelog 已长期约定该验证路径，但项目脚本没有提供稳定入口，夜间维护和人工验证都需要手写命令。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run check`、`npm run build`。
+- 影响范围：仅 npm 脚本与维护文档；不改变剪贴板监听、历史持久化、窗口行为、搜索或粘贴逻辑。
+
 ## 2026-06-30
 
 - 优化 macOS 常驻形态：应用启动后隐藏 Dock 图标，只保留顶部状态栏小图标；根因是此前只设置了窗口级 `skipTaskbar`，没有隐藏应用级 Dock 图标。
