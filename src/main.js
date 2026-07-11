@@ -171,12 +171,13 @@ function addSnapshot(snapshot) {
   if (!snapshot || snapshot.signature === lastSignature) return;
 
   lastSignature = snapshot.signature;
+  const existingItem = history.find((item) => item.signature === snapshot.signature);
   history = history.filter((item) => item.signature !== snapshot.signature);
   history.unshift({
-    id: crypto.randomUUID(),
+    id: existingItem?.id || crypto.randomUUID(),
     createdAt: now(),
-    isFavorite: false,
-    ...snapshot
+    ...snapshot,
+    isFavorite: Boolean(existingItem?.isFavorite)
   });
   history = history.slice(0, MAX_ITEMS);
   saveHistory();

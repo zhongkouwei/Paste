@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-12
+
+- 修复已置顶剪贴板内容被再次复制后会丢失置顶状态的问题；根因是主进程 `addSnapshot()` 在按 `signature` 去重时直接丢弃旧条目，并用默认 `isFavorite: false` 创建新条目。
+- 现在相同内容重新进入历史时会复用旧条目的 `id` 和 `isFavorite`，既能把条目移动到顶部，也不会丢失用户置顶标记。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
+- 影响范围：仅剪贴板历史去重时的元数据保留；剪贴板采集、复制/粘贴、删除、清空和持久化文件结构不变。
+
 ## 2026-06-30
 
 - 优化 macOS 常驻形态：应用启动后隐藏 Dock 图标，只保留顶部状态栏小图标；根因是此前只设置了窗口级 `skipTaskbar`，没有隐藏应用级 Dock 图标。
