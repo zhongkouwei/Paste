@@ -67,8 +67,13 @@ function filteredHistory() {
       || item.type === state.filter;
     if (!matchesFilter) return false;
     if (!query) return true;
-    return `${item.title}\n${item.body}`.toLowerCase().includes(query);
+    return searchableTextFor(item).includes(query);
   });
+}
+
+function searchableTextFor(item) {
+  const searchableBody = item.type === 'image' ? '' : item.body;
+  return `${item.title}\n${item.type}\n${searchableBody}`.toLowerCase();
 }
 
 function escapeHtml(value) {
