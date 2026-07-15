@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-15
+
+- 加强剪贴板历史保存可靠性；根因是主进程 `saveHistory()` 直接覆盖 `clipboard-history.json`，如果进程或系统在写入中途退出，正式历史文件可能留下截断 JSON。
+- 现在历史会先写入同目录临时文件，再通过 `rename` 原子替换正式文件；保存失败时清理临时文件，并保留原有历史文件不被半写入内容覆盖。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
+- 影响范围：仅主进程历史持久化写入路径；剪贴板采集、历史归一化、搜索、复制/粘贴和 UI 交互不变。
+
 ## 2026-06-30
 
 - 优化 macOS 常驻形态：应用启动后隐藏 Dock 图标，只保留顶部状态栏小图标；根因是此前只设置了窗口级 `skipTaskbar`，没有隐藏应用级 Dock 图标。

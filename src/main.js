@@ -127,8 +127,22 @@ function loadHistory() {
 }
 
 function saveHistory() {
-  fs.mkdirSync(path.dirname(historyPath()), { recursive: true });
-  fs.writeFileSync(historyPath(), JSON.stringify(history, null, 2));
+  const targetPath = historyPath();
+  const directory = path.dirname(targetPath);
+  const tempPath = path.join(directory, `.clipboard-history.${process.pid}.${crypto.randomUUID()}.tmp`);
+
+  fs.mkdirSync(directory, { recursive: true });
+  try {
+    fs.writeFileSync(tempPath, JSON.stringify(history, null, 2));
+    fs.renameSync(tempPath, targetPath);
+  } catch (error) {
+    try {
+      if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    } catch (cleanupError) {
+      console.error('Failed to remove temporary clipboard history file:', cleanupError);
+    }
+    throw error;
+  }
 }
 
 function sendHistory() {
