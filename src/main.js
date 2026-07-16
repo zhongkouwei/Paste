@@ -7,12 +7,14 @@ const crypto = require('crypto');
 const MAX_ITEMS = 300;
 const POLL_MS = 900;
 const WINDOW_HEIGHT = 372;
+const GLOBAL_SHORTCUT = 'CommandOrControl+Shift+V';
 const ITEM_TYPES = new Set(['text', 'link', 'code', 'image']);
 
 let mainWindow;
 let tray;
 let pollTimer;
 let lastSignature = '';
+let shortcutRegistered = false;
 let history = [];
 
 function historyPath() {
@@ -301,13 +303,35 @@ function createTray() {
   if (process.platform === 'darwin') icon.setTemplateImage(true);
   tray = new Tray(icon);
   tray.setToolTip('Paste Like');
-  tray.setContextMenu(Menu.buildFromTemplate([
+  updateTrayMenu();
+  tray.on('click', showWindow);
+}
+
+function updateTrayMenu() {
+  if (!tray) return;
+
+  const template = [
     { label: 'Show Clipboard History', click: showWindow },
+    ...(!shortcutRegistered ? [{ label: `Shortcut unavailable (${GLOBAL_SHORTCUT})`, enabled: false }] : []),
     { label: 'Clear History', click: async () => { if (await confirmClearHistory()) clearHistory(); } },
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() }
-  ]));
-  tray.on('click', showWindow);
+  ];
+  tray.setContextMenu(Menu.buildFromTemplate(template));
+}
+
+function registerGlobalShortcut() {
+  try {
+    shortcutRegistered = globalShortcut.register(GLOBAL_SHORTCUT, showWindow);
+  } catch (error) {
+    shortcutRegistered = false;
+    console.error(`Failed to register global shortcut ${GLOBAL_SHORTCUT}:`, error);
+  }
+
+  if (!shortcutRegistered) {
+    console.error(`Global shortcut is unavailable: ${GLOBAL_SHORTCUT}`);
+  }
+  updateTrayMenu();
 }
 
 app.whenReady().then(() => {
@@ -318,7 +342,7 @@ app.whenReady().then(() => {
   createTray();
   startClipboardWatcher();
 
-  globalShortcut.register('CommandOrControl+Shift+V', showWindow);
+  registerGlobalShortcut();
 
   ipcMain.handle('history:get', () => history);
   ipcMain.handle('history:toggleFavorite', (_event, id) => {

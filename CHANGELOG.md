@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-16
+
+- 优化全局快捷键失败时的可见性；根因是主进程忽略了 `globalShortcut.register()` 的返回值，`CommandOrControl+Shift+V` 被系统或其他应用占用时，用户只能看到快捷键没有反应。
+- 现在会记录快捷键注册失败日志，并在托盘菜单中显示禁用的 `Shortcut unavailable (CommandOrControl+Shift+V)` 状态项；快捷键正常注册时菜单保持原样。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
+- 影响范围：仅主进程全局快捷键注册和托盘菜单状态；剪贴板监听、历史持久化、搜索、复制和粘贴逻辑不变。
+
 ## 2026-06-30
 
 - 优化 macOS 常驻形态：应用启动后隐藏 Dock 图标，只保留顶部状态栏小图标；根因是此前只设置了窗口级 `skipTaskbar`，没有隐藏应用级 Dock 图标。
