@@ -188,6 +188,15 @@ window.addEventListener('keydown', async (event) => {
     els.searchInput.focus();
     return;
   }
+  if (event.key === 'Escape' && event.target === els.searchInput && state.query) {
+    event.preventDefault();
+    event.stopPropagation();
+    state.query = '';
+    els.searchInput.value = '';
+    state.selectedIndex = 0;
+    render();
+    return;
+  }
   if (event.key === 'Escape') {
     event.preventDefault();
     event.stopPropagation();

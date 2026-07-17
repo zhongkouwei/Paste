@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-17
+
+- 优化搜索框 `Escape` 行为：搜索框中有查询内容时，第一次 `Escape` 先清空搜索并恢复完整历史列表，第二次才关闭窗口。
+- 根因：窗口级 `Escape` 快捷键优先于输入框状态处理，导致用户无法用常见键盘习惯快速退出搜索结果。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
+- 影响范围：仅渲染进程键盘交互；不改变剪贴板监听、持久化、复制或粘贴逻辑。
+
 ## 2026-06-30
 
 - 优化 macOS 常驻形态：应用启动后隐藏 Dock 图标，只保留顶部状态栏小图标；根因是此前只设置了窗口级 `skipTaskbar`，没有隐藏应用级 Dock 图标。
