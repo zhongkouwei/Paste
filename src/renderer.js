@@ -12,6 +12,7 @@ const els = {
   countLabel: document.querySelector('#countLabel'),
   clearButton: document.querySelector('#clearButton'),
   closeButton: document.querySelector('#closeButton'),
+  quitButton: document.querySelector('#quitButton'),
   tabs: [...document.querySelectorAll('.tab')],
   boards: [...document.querySelectorAll('.board')]
 };
@@ -86,7 +87,7 @@ function renderCard(item, index) {
     : `<pre>${escapeHtml(item.preview)}</pre>`;
 
   return `
-    <article class="clipCard ${selected}" style="${cardStyle}" data-id="${item.id}" data-index="${index}">
+    <article class="clipCard ${selected}" style="${cardStyle}" data-id="${item.id}" data-index="${index}" tabindex="${index === state.selectedIndex ? '0' : '-1'}" aria-selected="${index === state.selectedIndex ? 'true' : 'false'}">
       <div class="clipMeta">
         <span class="typeIcon">${iconFor(item.type)}</span>
         <span class="clipType">${item.type}</span>
@@ -120,17 +121,29 @@ function render() {
   selected?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
+function focusSelectedCard() {
+  const selected = els.timeline.querySelector('.clipCard.selected');
+  if (selected) {
+    selected.focus({ preventScroll: true });
+  } else {
+    els.timeline.focus({ preventScroll: true });
+  }
+}
+
 function setFilter(filter) {
   state.filter = filter;
   state.selectedIndex = 0;
   render();
+  focusSelectedCard();
 }
 
 function moveSelection(delta) {
   const items = filteredHistory();
-  if (!items.length) return;
+  if (!items.length) return null;
   state.selectedIndex = Math.min(items.length - 1, Math.max(0, state.selectedIndex + delta));
   render();
+  focusSelectedCard();
+  return items[state.selectedIndex];
 }
 
 function isTypingTarget(target) {
@@ -178,6 +191,7 @@ els.clearButton.addEventListener('click', async () => {
 });
 
 els.closeButton.addEventListener('click', () => window.pasteLike.hide());
+els.quitButton.addEventListener('click', () => window.pasteLike.quit());
 
 window.addEventListener('keydown', async (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
@@ -195,11 +209,13 @@ window.addEventListener('keydown', async (event) => {
   if (event.key === 'ArrowRight') {
     event.preventDefault();
     moveSelection(1);
+    await activateSelected(true);
     return;
   }
   if (event.key === 'ArrowLeft') {
     event.preventDefault();
     moveSelection(-1);
+    await activateSelected(true);
     return;
   }
   if (event.key === 'Enter') {
@@ -212,8 +228,12 @@ window.pasteLike.onHistoryChanged((history) => {
   render();
 });
 
+window.pasteLike.onWindowShown(() => {
+  focusSelectedCard();
+});
+
 window.pasteLike.getHistory().then((history) => {
   state.history = history;
   render();
-  setTimeout(() => els.searchInput.focus(), 50);
+  setTimeout(focusSelectedCard, 50);
 });

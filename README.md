@@ -1,4 +1,4 @@
-# Paste Like
+# Paste Easy
 
 一个模仿 macOS Paste 交互的剪贴板历史应用。核心目标不是做网页展示，而是做可常驻的桌面工具：监听系统剪贴板、保存历史、用全局快捷键唤起底部浮层，并把选中的历史内容重新复制或粘贴到当前应用。
 
@@ -27,11 +27,11 @@ ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm install
 
 ## macOS 权限
 
-普通复制和历史记录不需要额外权限。自动粘贴依赖系统模拟 `Command+V`，macOS 可能要求给 Electron 进程授予辅助功能权限：
+普通复制和历史记录不需要额外权限。自动粘贴依赖系统模拟 `Command+V`，多屏幕下按前台窗口定位唤起屏幕也需要读取前台窗口位置；macOS 可能要求给 Electron 进程授予辅助功能权限：
 
 `System Settings` -> `Privacy & Security` -> `Accessibility`
 
-未授权时，仍然可以点击 `Copy` 把历史内容放回剪贴板，再手动粘贴。
+未授权时，仍然可以点击 `Copy` 把历史内容放回剪贴板，再手动粘贴；快捷键唤起位置会退回到鼠标所在屏幕。
 
 ## 主要文件
 

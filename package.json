@@ -1,14 +1,14 @@
 {
-  "name": "paste-like",
+  "name": "paste-easy",
   "version": "0.1.0",
   "description": "A macOS clipboard history app inspired by Paste.",
-  "productName": "Paste Like",
+  "productName": "Paste Easy",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
-    "build": "electron-builder --mac dir",
-    "build:zip": "electron-builder --mac zip"
+    "build": "node scripts/build-mac-dir.js",
+    "build:zip": "npm run build && ditto -c -k --sequesterRsrc --keepParent \"release/mac-arm64/Paste Easy.app\" \"release/Paste Easy-${npm_package_version}-arm64.zip\""
   },
   "keywords": [
     "clipboard",
@@ -36,6 +36,9 @@
     "mac": {
       "artifactName": "${productName}-${version}-${arch}.${ext}",
       "category": "public.app-category.productivity",
+      "extendInfo": {
+        "LSUIElement": true
+      },
       "target": [
         "dir"
       ]

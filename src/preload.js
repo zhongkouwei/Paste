@@ -7,6 +7,12 @@ contextBridge.exposeInMainWorld('pasteLike', {
   delete: (id) => ipcRenderer.invoke('history:delete', id),
   clear: () => ipcRenderer.invoke('history:clear'),
   hide: () => ipcRenderer.invoke('window:hide'),
+  quit: () => ipcRenderer.invoke('window:quit'),
+  onWindowShown: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('window:shown', listener);
+    return () => ipcRenderer.removeListener('window:shown', listener);
+  },
   onHistoryChanged: (callback) => {
     const listener = (_event, history) => callback(history);
     ipcRenderer.on('history:changed', listener);
