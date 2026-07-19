@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, globalShortcut, ipcMain, Menu, nativeImage, Tray } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Tray } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
@@ -155,6 +155,33 @@ function hideWindow() {
   if (mainWindow) mainWindow.hide();
 }
 
+function clearHistoryWithConfirmation() {
+  if (!history.length) return history;
+
+  const options = {
+    type: 'warning',
+    buttons: ['Cancel', 'Clear History'],
+    defaultId: 0,
+    cancelId: 0,
+    title: 'Clear Clipboard History',
+    message: 'Clear all clipboard history?',
+    detail: 'This removes every saved clip from Paste Like.'
+  };
+  const parentWindow = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()
+    ? mainWindow
+    : null;
+  const choice = parentWindow
+    ? dialog.showMessageBoxSync(parentWindow, options)
+    : dialog.showMessageBoxSync(options);
+
+  if (choice !== 1) return history;
+
+  history = [];
+  saveHistory();
+  sendHistory();
+  return history;
+}
+
 function createWindow() {
   const { width } = primaryScreenBounds();
   mainWindow = new BrowserWindow({
@@ -211,7 +238,7 @@ function createTray() {
   tray.setToolTip('Paste Like');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show Clipboard History', click: showWindow },
-    { label: 'Clear History', click: () => { history = []; saveHistory(); sendHistory(); } },
+    { label: 'Clear History', click: () => clearHistoryWithConfirmation() },
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() }
   ]));
@@ -241,10 +268,7 @@ app.whenReady().then(() => {
     return history;
   });
   ipcMain.handle('history:clear', () => {
-    history = [];
-    saveHistory();
-    sendHistory();
-    return history;
+    return clearHistoryWithConfirmation();
   });
   ipcMain.handle('history:copy', (_event, id, shouldPaste = false) => {
     const item = history.find((entry) => entry.id === id);
