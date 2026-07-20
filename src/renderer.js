@@ -8,6 +8,8 @@ const state = {
 const els = {
   timeline: document.querySelector('#timeline'),
   emptyState: document.querySelector('#emptyState'),
+  emptyTitle: document.querySelector('#emptyTitle'),
+  emptyText: document.querySelector('#emptyText'),
   searchInput: document.querySelector('#searchInput'),
   countLabel: document.querySelector('#countLabel'),
   clearButton: document.querySelector('#clearButton'),
@@ -107,10 +109,19 @@ function renderCard(item, index) {
 
 function render() {
   const items = filteredHistory();
+  const hasHistory = state.history.length > 0;
   if (state.selectedIndex >= items.length) state.selectedIndex = Math.max(0, items.length - 1);
   els.timeline.innerHTML = items.map(renderCard).join('');
   els.emptyState.classList.toggle('hidden', items.length > 0);
-  els.countLabel.textContent = `${state.history.length} clips saved`;
+  if (items.length === 0) {
+    els.emptyTitle.textContent = hasHistory ? 'No matching clips' : 'No clips yet';
+    els.emptyText.textContent = hasHistory
+      ? 'Try a different search or filter.'
+      : 'Copy text, links, code, or images and they will appear here.';
+  }
+  els.countLabel.textContent = items.length === state.history.length
+    ? `${state.history.length} clips saved`
+    : `${items.length} of ${state.history.length} clips shown`;
   els.tabs.forEach((tab) => tab.classList.toggle('active', tab.dataset.filter === state.filter));
   els.boards.forEach((board) => {
     const boardFilter = board.dataset.filter || 'all';
