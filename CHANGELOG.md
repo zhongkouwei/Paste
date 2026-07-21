@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-22
+
+- 加固剪贴板历史 IPC 参数边界：复制、粘贴、置顶和删除现在只接受非空字符串历史 ID，自动粘贴只接受明确的 `true`。
+- 根因：preload 暴露的方法和主进程 IPC handler 直接信任渲染进程参数，异常参数可能触发无意义的保存/广播，或用 truthy 值误触发自动粘贴。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
+- 影响范围：仅 IPC 参数校验和异常调用防护；正常 UI 操作、剪贴板监听、历史持久化和构建配置不变。
+
 ## 2026-07-17
 
 - 优化搜索框 `Escape` 行为：搜索框中有查询内容时，第一次 `Escape` 先清空搜索并恢复完整历史列表，第二次才关闭窗口。

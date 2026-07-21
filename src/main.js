@@ -47,6 +47,10 @@ function stringValue(value) {
   return typeof value === 'string' ? value : String(value ?? '');
 }
 
+function isHistoryId(value) {
+  return typeof value === 'string' && value.length > 0;
+}
+
 function normalizeHistoryItem(item) {
   if (!item || !item.id || item.body === undefined || item.body === null) return null;
 
@@ -322,12 +326,16 @@ app.whenReady().then(() => {
 
   ipcMain.handle('history:get', () => history);
   ipcMain.handle('history:toggleFavorite', (_event, id) => {
+    if (!isHistoryId(id)) return history;
+
     history = history.map((item) => item.id === id ? { ...item, isFavorite: !item.isFavorite } : item);
     saveHistory();
     sendHistory();
     return history;
   });
   ipcMain.handle('history:delete', (_event, id) => {
+    if (!isHistoryId(id)) return history;
+
     history = history.filter((item) => item.id !== id);
     syncLastSignature();
     saveHistory();
@@ -339,9 +347,11 @@ app.whenReady().then(() => {
     return history;
   });
   ipcMain.handle('history:copy', (_event, id, shouldPaste = false) => {
+    if (!isHistoryId(id)) return false;
+
     const item = history.find((entry) => entry.id === id);
     const didCopy = setClipboardItem(item);
-    if (didCopy && shouldPaste) {
+    if (didCopy && shouldPaste === true) {
       hideWindow();
       setTimeout(pasteIntoActiveApp, 120);
     }
