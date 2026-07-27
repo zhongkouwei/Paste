@@ -170,12 +170,13 @@ async function confirmClearHistory() {
 function addSnapshot(snapshot) {
   if (!snapshot || snapshot.signature === lastSignature) return;
 
+  const existingItem = history.find((item) => item.signature === snapshot.signature);
   lastSignature = snapshot.signature;
   history = history.filter((item) => item.signature !== snapshot.signature);
   history.unshift({
     id: crypto.randomUUID(),
     createdAt: now(),
-    isFavorite: false,
+    isFavorite: Boolean(existingItem?.isFavorite),
     ...snapshot
   });
   history = history.slice(0, MAX_ITEMS);
