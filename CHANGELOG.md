@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-28
+
+- 修复重复复制已 pinned 剪贴板项时 pinned 状态会丢失的问题；根因是主进程 `addSnapshot()` 去重时删除旧历史项，再用 `isFavorite: false` 创建新项。
+- 现在重复项被移动到历史最前时会继承旧项 pinned 状态，保留用户的固定选择。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
+- 影响范围：仅剪贴板采集去重时的 pinned 状态保留；不改变复制/粘贴、搜索、清空历史或持久化文件路径。
+
 ## 2026-07-17
 
 - 优化搜索框 `Escape` 行为：搜索框中有查询内容时，第一次 `Escape` 先清空搜索并恢复完整历史列表，第二次才关闭窗口。
