@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-30
+
+- 优化空状态反馈：区分首次无剪贴板历史、搜索无匹配结果和筛选分类为空，避免用户误以为历史记录丢失。
+- 修正历史数量文案的单复数显示，`1 clip saved` 不再显示为 `1 clips saved`。
+- 验证：`npm install`、`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
+- 影响范围：仅渲染进程空状态和计数文案；不改变剪贴板监听、持久化、复制或粘贴行为。
+
 ## 2026-07-17
 
 - 优化搜索框 `Escape` 行为：搜索框中有查询内容时，第一次 `Escape` 先清空搜索并恢复完整历史列表，第二次才关闭窗口。

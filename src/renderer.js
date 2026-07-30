@@ -8,12 +8,22 @@ const state = {
 const els = {
   timeline: document.querySelector('#timeline'),
   emptyState: document.querySelector('#emptyState'),
+  emptyTitle: document.querySelector('#emptyTitle'),
+  emptyMessage: document.querySelector('#emptyMessage'),
   searchInput: document.querySelector('#searchInput'),
   countLabel: document.querySelector('#countLabel'),
   clearButton: document.querySelector('#clearButton'),
   closeButton: document.querySelector('#closeButton'),
   tabs: [...document.querySelectorAll('.tab')],
   boards: [...document.querySelectorAll('.board')]
+};
+
+const filterLabels = {
+  favorite: 'pinned',
+  text: 'text',
+  link: 'link',
+  code: 'code',
+  image: 'image'
 };
 
 function hashFor(item) {
@@ -71,6 +81,29 @@ function filteredHistory() {
   });
 }
 
+function emptyStateCopy() {
+  if (!state.history.length) {
+    return {
+      title: 'No clips yet',
+      message: 'Copy text, links, code, or images and they will appear here.'
+    };
+  }
+  if (state.query.trim()) {
+    return {
+      title: 'No matching clips',
+      message: 'Adjust the search or clear it to return to your clipboard history.'
+    };
+  }
+  return {
+    title: `No ${filterLabels[state.filter] || state.filter} clips`,
+    message: 'Choose another filter or copy a matching item to add it here.'
+  };
+}
+
+function clipCountLabel(count) {
+  return `${count} ${count === 1 ? 'clip' : 'clips'} saved`;
+}
+
 function escapeHtml(value) {
   return String(value)
     .replace(/&/g, '&amp;')
@@ -110,10 +143,16 @@ function renderCard(item, index) {
 
 function render() {
   const items = filteredHistory();
+  const isEmpty = items.length === 0;
   if (state.selectedIndex >= items.length) state.selectedIndex = Math.max(0, items.length - 1);
   els.timeline.innerHTML = items.map(renderCard).join('');
-  els.emptyState.classList.toggle('hidden', items.length > 0);
-  els.countLabel.textContent = `${state.history.length} clips saved`;
+  els.emptyState.classList.toggle('hidden', !isEmpty);
+  if (isEmpty) {
+    const copy = emptyStateCopy();
+    els.emptyTitle.textContent = copy.title;
+    els.emptyMessage.textContent = copy.message;
+  }
+  els.countLabel.textContent = clipCountLabel(state.history.length);
   els.tabs.forEach((tab) => tab.classList.toggle('active', tab.dataset.filter === state.filter));
   els.boards.forEach((board) => {
     const boardFilter = board.dataset.filter || 'all';
