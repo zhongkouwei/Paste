@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-31
+
+- 修复历史文件中异常 `id` 或图片 `preview` 值可能破坏剪贴板卡片 DOM 的问题；根因是渲染进程把这些值直接拼入 HTML attribute，而只对文本预览做了转义。
+- 现在卡片 `data-id` 和图片 `src` 也复用 HTML 实体转义，损坏或手工修改的历史记录不会注入额外属性或打断卡片结构。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
+- 影响范围：仅渲染进程卡片 HTML 生成；不改变剪贴板监听、历史持久化、复制/粘贴或清空逻辑。
+
 ## 2026-07-17
 
 - 优化搜索框 `Escape` 行为：搜索框中有查询内容时，第一次 `Escape` 先清空搜索并恢复完整历史列表，第二次才关闭窗口。
