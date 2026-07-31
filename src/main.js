@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, globalShortcut, ipcMain, Menu, nativeImage, Tray } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Tray } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
@@ -81,6 +81,28 @@ function sendHistory() {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('history:changed', history);
   }
+}
+
+async function clearHistoryWithConfirmation(parentWindow = mainWindow) {
+  if (!history.length) return history;
+
+  const dialogParent = parentWindow && !parentWindow.isDestroyed() ? parentWindow : undefined;
+  const { response } = await dialog.showMessageBox(dialogParent, {
+    type: 'warning',
+    buttons: ['Cancel', 'Clear History'],
+    defaultId: 0,
+    cancelId: 0,
+    title: 'Clear Clipboard History?',
+    message: 'Clear all saved clipboard items?',
+    detail: 'This removes every saved clip from Paste Like and cannot be undone.'
+  });
+
+  if (response !== 1) return history;
+
+  history = [];
+  saveHistory();
+  sendHistory();
+  return history;
 }
 
 function addSnapshot(snapshot) {
@@ -211,7 +233,7 @@ function createTray() {
   tray.setToolTip('Paste Like');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show Clipboard History', click: showWindow },
-    { label: 'Clear History', click: () => { history = []; saveHistory(); sendHistory(); } },
+    { label: 'Clear History', click: () => { void clearHistoryWithConfirmation(); } },
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() }
   ]));
@@ -240,12 +262,7 @@ app.whenReady().then(() => {
     sendHistory();
     return history;
   });
-  ipcMain.handle('history:clear', () => {
-    history = [];
-    saveHistory();
-    sendHistory();
-    return history;
-  });
+  ipcMain.handle('history:clear', () => clearHistoryWithConfirmation(mainWindow));
   ipcMain.handle('history:copy', (_event, id, shouldPaste = false) => {
     const item = history.find((entry) => entry.id === id);
     setClipboardItem(item);
