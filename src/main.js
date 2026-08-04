@@ -47,13 +47,23 @@ function stringValue(value) {
   return typeof value === 'string' ? value : String(value ?? '');
 }
 
+function isImageDataUrl(value) {
+  return /^data:image\/[a-z0-9.+-]+;base64,/i.test(value);
+}
+
+function inferHistoryItemType(item, body) {
+  if (ITEM_TYPES.has(item.type)) return item.type;
+  if (isImageDataUrl(body) || isImageDataUrl(stringValue(item.preview))) return 'image';
+  return classifyText(body);
+}
+
 function normalizeHistoryItem(item) {
   if (!item || !item.id || item.body === undefined || item.body === null) return null;
 
   const body = stringValue(item.body);
   if (!body.trim()) return null;
 
-  const type = ITEM_TYPES.has(item.type) ? item.type : classifyText(body);
+  const type = inferHistoryItemType(item, body);
   const title = stringValue(item.title).trim()
     || (type === 'image' ? 'Image' : body.split('\n').find((line) => line.trim())?.slice(0, 80))
     || 'Text';

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-04
+
+- 修复旧历史项缺少或损坏 `type` 字段时，图片 `data:image/...` 内容会被归一化为文本的问题；根因是历史项迁移逻辑只用文本分类器兜底，没有识别图片 data URL。
+- 现在加载持久化历史时会从 `body` 或 `preview` 识别图片 data URL，确保旧图片历史仍按图片卡片展示并按图片写回剪贴板。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
+- 影响范围：仅持久化历史加载时的类型推断；新剪贴板采集、搜索、清空、删除和粘贴流程不变。
+
 ## 2026-07-17
 
 - 优化搜索框 `Escape` 行为：搜索框中有查询内容时，第一次 `Escape` 先清空搜索并恢复完整历史列表，第二次才关闭窗口。
