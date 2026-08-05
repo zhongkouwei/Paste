@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-05
+
+- 加固剪贴板卡片渲染：对历史项的 `id`、`type` 和图片 `src` 输出做编码，图片预览仅允许 Electron 生成的 `data:image/...;base64` URL。
+- 根因：渲染层默认信任持久化历史文件内容，异常或被外部篡改的历史项可能通过图片预览或属性值污染窗口 DOM。
+- 验证：`npm ci`、`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
+- 影响范围：仅渲染进程历史卡片展示；不改变剪贴板监听、复制/粘贴 IPC、历史文件格式或构建配置。
+
 ## 2026-08-04
 
 - 修复旧历史项缺少或损坏 `type` 字段时，图片 `data:image/...` 内容会被归一化为文本的问题；根因是历史项迁移逻辑只用文本分类器兜底，没有识别图片 data URL。
