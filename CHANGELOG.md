@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-12
+
+- 修复损坏或被篡改的图片历史项可能通过卡片 HTML 属性注入脚本的问题；根因是渲染进程只转义了文本预览，没有转义 `data-id`、类型文本和图片 `src` 属性边界。
+- 现在图片预览只接受 `data:image/...;base64,` 来源，缺失或非法预览会回退到合法正文或普通文本展示，同时卡片属性值统一转义。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`、`git diff --check`。
+- 影响范围：仅渲染进程历史卡片 HTML 生成；剪贴板监听、持久化格式、复制/粘贴、删除和清空流程不变。
+
 ## 2026-08-04
 
 - 修复旧历史项缺少或损坏 `type` 字段时，图片 `data:image/...` 内容会被归一化为文本的问题；根因是历史项迁移逻辑只用文本分类器兜底，没有识别图片 data URL。
