@@ -137,8 +137,21 @@ function loadHistory() {
 }
 
 function saveHistory() {
-  fs.mkdirSync(path.dirname(historyPath()), { recursive: true });
-  fs.writeFileSync(historyPath(), JSON.stringify(history, null, 2));
+  const filePath = historyPath();
+  const directory = path.dirname(filePath);
+  const tempPath = path.join(directory, `${path.basename(filePath)}.${process.pid}.tmp`);
+  fs.mkdirSync(directory, { recursive: true });
+  try {
+    fs.writeFileSync(tempPath, JSON.stringify(history, null, 2));
+    fs.renameSync(tempPath, filePath);
+  } catch (error) {
+    try {
+      fs.rmSync(tempPath, { force: true });
+    } catch (cleanupError) {
+      console.error('Failed to remove incomplete clipboard history write:', cleanupError);
+    }
+    throw error;
+  }
 }
 
 function sendHistory() {
