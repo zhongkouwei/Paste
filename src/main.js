@@ -28,6 +28,15 @@ function createHash(input) {
   return crypto.createHash('sha256').update(input).digest('hex');
 }
 
+function createTextSignature(text, html = '') {
+  const base = `text:${text}`;
+  return createHash(html ? `${base}\nhtml:${html}` : base);
+}
+
+function createItemSignature(type, body, html = '') {
+  return type === 'image' ? createHash(`image:${body}`) : createTextSignature(body, html);
+}
+
 function now() {
   return new Date().toISOString();
 }
@@ -64,11 +73,14 @@ function normalizeHistoryItem(item) {
   if (!body.trim()) return null;
 
   const type = inferHistoryItemType(item, body);
+  const html = stringValue(item.html);
   const title = stringValue(item.title).trim()
     || (type === 'image' ? 'Image' : body.split('\n').find((line) => line.trim())?.slice(0, 80))
     || 'Text';
   const preview = stringValue(item.preview) || (type === 'image' ? body : body.slice(0, 700));
-  const signature = stringValue(item.signature) || createHash(`${type}:${body}`);
+  const signature = type !== 'image' && html
+    ? createTextSignature(body, html)
+    : stringValue(item.signature) || createItemSignature(type, body, html);
 
   return {
     ...item,
@@ -76,7 +88,7 @@ function normalizeHistoryItem(item) {
     type,
     title,
     body,
-    html: stringValue(item.html),
+    html,
     preview,
     signature,
     isFavorite: Boolean(item.isFavorite)
@@ -109,7 +121,7 @@ function clipboardSnapshot() {
     body: normalized,
     html: html || '',
     preview: normalized.slice(0, 700),
-    signature: createHash(`text:${normalized}`)
+    signature: createTextSignature(normalized, html || '')
   };
 }
 
