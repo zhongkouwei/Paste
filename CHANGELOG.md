@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-14
+
+- 修复图片历史项和历史项 `id` 在渲染时没有按 HTML attribute 上下文转义的问题；根因是卡片模板只对文本预览做了 escape，但直接把持久化字段插入 `src` 和 `data-id`。
+- 图片卡片现在只渲染合法 `data:image/...;base64,` 来源，损坏图片历史会显示 `Image unavailable`，避免破图或异常 attribute 污染界面。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
+- 影响范围：仅渲染进程卡片 HTML 和损坏图片 fallback 样式；不改变剪贴板监听、持久化格式、复制/粘贴、搜索或清空逻辑。
+
 ## 2026-08-04
 
 - 修复旧历史项缺少或损坏 `type` 字段时，图片 `data:image/...` 内容会被归一化为文本的问题；根因是历史项迁移逻辑只用文本分类器兜底，没有识别图片 data URL。
