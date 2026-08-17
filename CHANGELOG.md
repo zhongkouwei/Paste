@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-17
+
+- 修复同一纯文本但富文本 HTML 不同时会被误判为重复剪贴板项的问题；根因是文本 signature 只包含 plain text，忽略了 `clipboard.readHTML()` 的格式化内容。
+- 新采集的文本剪贴板会把 HTML 纳入 signature；加载旧历史时，带 HTML 的文本项也会重算 rich text signature，避免覆盖不同格式版本。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
+- 影响范围：文本/富文本剪贴板去重和旧历史归一化 signature；图片、清空、删除、渲染和粘贴执行流程不变。
+
 ## 2026-08-04
 
 - 修复旧历史项缺少或损坏 `type` 字段时，图片 `data:image/...` 内容会被归一化为文本的问题；根因是历史项迁移逻辑只用文本分类器兜底，没有识别图片 data URL。
