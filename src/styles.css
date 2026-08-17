@@ -325,17 +325,6 @@ p {
   background: var(--card-soft);
 }
 
-.clipImageFallback {
-  width: 100%;
-  height: 100%;
-  display: grid;
-  place-items: center;
-  border-radius: 8px;
-  color: color-mix(in srgb, var(--card-text) 62%, transparent);
-  background: var(--card-soft);
-  font-size: 12px;
-}
-
 .clipActions {
   display: grid;
   grid-template-columns: 48px 1fr 38px 38px;
