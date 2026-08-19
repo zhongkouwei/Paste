@@ -13,6 +13,7 @@ let mainWindow;
 let tray;
 let pollTimer;
 let lastSignature = '';
+let modalDialogCount = 0;
 let history = [];
 
 function historyPath() {
@@ -170,11 +171,16 @@ async function confirmClearHistory() {
     message: 'Clear all saved clipboard history?',
     detail: 'This removes saved clips from Paste Like. The current system clipboard is not changed.'
   };
-  const { response } = parentWindow
-    ? await dialog.showMessageBox(parentWindow, options)
-    : await dialog.showMessageBox(options);
+  modalDialogCount += 1;
+  try {
+    const { response } = parentWindow
+      ? await dialog.showMessageBox(parentWindow, options)
+      : await dialog.showMessageBox(options);
 
-  return response === 1;
+    return response === 1;
+  } finally {
+    modalDialogCount = Math.max(0, modalDialogCount - 1);
+  }
 }
 
 function addSnapshot(snapshot) {
@@ -287,7 +293,7 @@ function createWindow() {
   mainWindow.setAlwaysOnTop(true, 'screen-saver');
   mainWindow.on('blur', () => {
     setTimeout(() => {
-      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFocused()) {
+      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFocused() && modalDialogCount === 0) {
         hideWindow();
       }
     }, 80);
