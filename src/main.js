@@ -39,12 +39,12 @@ function clipboardSnapshot() {
   const html = clipboard.readHTML();
 
   if (!image.isEmpty()) {
-    const dataUrl = image.resize({ width: 320 }).toDataURL();
+    const dataUrl = image.toDataURL();
     return {
       type: 'image',
       title: 'Image',
       body: dataUrl,
-      preview: dataUrl,
+      preview: image.resize({ width: 320 }).toDataURL(),
       signature: createHash(`image:${dataUrl}`)
     };
   }
