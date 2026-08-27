@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-28
+
+- 修复损坏或迁移历史项中的图片预览和 `id` 字段被直接拼进卡片 HTML 的风险；根因是渲染进程只转义了文本预览，没有对图片 `src` 与 `data-id` 做同等输出编码。
+- 现在图片卡片只接受合法位图 `data:image/...;base64,...` 作为预览源，异常图片字段会退回安全文本预览，同时卡片 `data-id` 和类型标签统一转义。
+- 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
+- 影响范围：仅渲染进程卡片 HTML 生成；剪贴板监听、历史持久化、复制/粘贴和过滤逻辑不变。
+
 ## 2026-08-04
 
 - 修复旧历史项缺少或损坏 `type` 字段时，图片 `data:image/...` 内容会被归一化为文本的问题；根因是历史项迁移逻辑只用文本分类器兜底，没有识别图片 data URL。

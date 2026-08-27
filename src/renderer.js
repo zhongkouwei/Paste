@@ -80,19 +80,29 @@ function escapeHtml(value) {
     .replace(/'/g, '&#039;');
 }
 
+function isImageDataUrl(value) {
+  return /^data:image\/(?:png|jpe?g|gif|webp|bmp);base64,[a-z0-9+/=]+$/i.test(String(value));
+}
+
+function imagePreviewFor(item) {
+  const source = [item.preview, item.body].find(isImageDataUrl);
+  if (!source) return `<pre>${escapeHtml(item.title || 'Image')}</pre>`;
+  return `<img class="clipImage" src="${escapeHtml(source)}" alt="Clipboard image" />`;
+}
+
 function renderCard(item, index) {
   const selected = index === state.selectedIndex ? 'selected' : '';
   const favorite = item.isFavorite ? 'pinned' : '';
   const cardStyle = colorStyleFor(item, index);
   const preview = item.type === 'image'
-    ? `<img class="clipImage" src="${item.preview}" alt="Clipboard image" />`
+    ? imagePreviewFor(item)
     : `<pre>${escapeHtml(item.preview)}</pre>`;
 
   return `
-    <article class="clipCard ${selected}" style="${cardStyle}" data-id="${item.id}" data-index="${index}">
+    <article class="clipCard ${selected}" style="${cardStyle}" data-id="${escapeHtml(item.id)}" data-index="${index}">
       <div class="clipMeta">
         <span class="typeIcon">${iconFor(item.type)}</span>
-        <span class="clipType">${item.type}</span>
+        <span class="clipType">${escapeHtml(item.type)}</span>
         <span class="clipTime">${relativeTime(item.createdAt)}</span>
       </div>
       <div class="clipPreview ${favorite}">
