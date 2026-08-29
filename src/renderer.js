@@ -165,7 +165,7 @@ els.timeline.addEventListener('click', async (event) => {
   const card = event.target.closest('.clipCard');
   if (!card) return;
   state.selectedIndex = Number(card.dataset.index);
-  const action = event.target.closest('button')?.dataset.action || 'paste';
+  const action = event.target.closest('button')?.dataset.action;
   const id = card.dataset.id;
 
   if (action === 'copy') await window.pasteLike.copy(id, false);
