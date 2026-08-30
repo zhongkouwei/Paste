@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 const crypto = require('crypto');
+const { addSnapshotToHistory } = require('./history');
 
 const MAX_ITEMS = 300;
 const POLL_MS = 900;
@@ -181,14 +182,12 @@ function addSnapshot(snapshot) {
   if (!snapshot || snapshot.signature === lastSignature) return;
 
   lastSignature = snapshot.signature;
-  history = history.filter((item) => item.signature !== snapshot.signature);
-  history.unshift({
-    id: crypto.randomUUID(),
-    createdAt: now(),
-    isFavorite: false,
-    ...snapshot
+  const result = addSnapshotToHistory(history, snapshot, {
+    maxItems: MAX_ITEMS,
+    createId: () => crypto.randomUUID(),
+    now
   });
-  history = history.slice(0, MAX_ITEMS);
+  history = result.history;
   saveHistory();
   sendHistory();
 }

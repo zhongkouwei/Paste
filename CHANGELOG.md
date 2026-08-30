@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-31
+
+- 修复重复剪贴板内容再次进入历史时会丢失 pinned 状态的问题；根因是去重逻辑删除旧项后总是创建新的未 pinned 项，没有保留同 signature 条目的用户元数据。
+- 新增 `node --test` 覆盖历史合并逻辑。
+- 验证：`npm test`、`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js && node --check src/history.js && node --check test/history.test.js`、`npm run build`。
+- 影响范围：仅剪贴板历史数组合并逻辑和本地验证脚本；不改变 Electron IPC、剪贴板读写、持久化归一化和窗口展示行为。
+
 ## 2026-08-04
 
 - 修复旧历史项缺少或损坏 `type` 字段时，图片 `data:image/...` 内容会被归一化为文本的问题；根因是历史项迁移逻辑只用文本分类器兜底，没有识别图片 data URL。
@@ -67,7 +74,6 @@
 - 现在图片条目会持久化原始 `dataURL` 到 `body`，仅把缩略图保留在 `preview` 供卡片渲染。
 - 验证：`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js`、`npm run build`。
 - 影响范围：图片剪贴板采集、持久化和再次复制/粘贴；文本、链接、代码和窗口交互逻辑不变。
-
 ## 2026-06-17
 
 - 修复搜索框聚焦时 `Enter` 会触发选中剪贴板项复制/粘贴的问题；根因是窗口级 `keydown` 捕获阶段没有区分文本输入事件和应用快捷键。
