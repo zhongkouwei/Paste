@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-01
+
+- 修复清空历史确认框可能触发底部浮层自动隐藏的问题；根因是窗口级 `blur` 处理没有区分用户切走应用和原生确认框抢焦点。
+- 现在主进程在显示确认框期间会暂停失焦自动隐藏，确认完成后恢复原有行为；重叠确认场景用计数保护，避免过早恢复隐藏。
+- 验证：`npm test`、`node --check src/main.js && node --check src/preload.js && node --check src/renderer.js && node --check src/history.js && node --check test/history.test.js`、`npm run build`。
+- 影响范围：仅清空历史确认框期间的窗口可见性；不改变剪贴板监听、历史持久化、复制/粘贴或清空确认结果。
+
 ## 2026-08-31
 
 - 修复重复剪贴板内容再次进入历史时会丢失 pinned 状态的问题；根因是去重逻辑删除旧项后总是创建新的未 pinned 项，没有保留同 signature 条目的用户元数据。
