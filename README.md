@@ -33,6 +33,16 @@ ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm install
 
 未授权时，仍然可以点击 `Copy` 把历史内容放回剪贴板，再手动粘贴。
 
+## 验证
+
+```bash
+npm run check
+npm test
+npm run build
+```
+
+`npm run check` 对主进程、preload、渲染进程、历史逻辑和测试文件执行 Node 语法检查；`npm test` 运行历史逻辑单元测试；`npm run build` 执行 macOS Electron 目录构建。
+
 ## 主要文件
 
 - `src/main.js`：Electron 主进程，负责剪贴板监听、托盘、快捷键、持久化和粘贴动作

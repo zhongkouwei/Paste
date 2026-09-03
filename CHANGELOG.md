@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-03
+
+- 新增 `npm run check`，统一主进程、preload、渲染进程、历史逻辑和测试文件的 Node 语法检查入口，避免维护时手写验证命令遗漏新增脚本。
+- README 增加验证说明，明确 `npm run check`、`npm test` 与 `npm run build` 的用途。
+- 验证：`npm run check`、`npm test`、`npm run build`。
+- 影响范围：仅项目脚本和文档；不改变剪贴板监听、历史存储、窗口交互、测试逻辑或打包配置。
+
 ## 2026-08-31
 
 - 修复重复剪贴板内容再次进入历史时会丢失 pinned 状态的问题；根因是去重逻辑删除旧项后总是创建新的未 pinned 项，没有保留同 signature 条目的用户元数据。

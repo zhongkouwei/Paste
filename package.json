@@ -8,6 +8,7 @@
     "start": "electron .",
     "dev": "electron .",
     "test": "node --test",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer.js && node --check src/history.js && node --check test/history.test.js",
     "build": "electron-builder --mac dir",
     "build:zip": "electron-builder --mac zip"
   },
