@@ -476,10 +476,14 @@ else {
       searchService = new SearchService({ directory: app.getPath('userData') });
       mediaService = new MediaService(store, nativeImage);
       importService = new ImportService(store, {
-        validateImage: file => {
-          const buffer = fs.readFileSync(file), size = pngSize(buffer), image = nativeImage.createFromBuffer(buffer);
-          if (`${hash(buffer)}.png` !== path.basename(file) || image.isEmpty() || image.getSize().width !== size.width || image.getSize().height !== size.height) throw new Error('备份图片无法完整解码。');
-          return { size, signature: imageSignature(buffer, nativeImage), preview: thumbnail(image) };
+        validateImage: async (file, { turns = 0, signal } = {}) => {
+          const source = fs.readFileSync(file); pngSize(source);
+          if (`${hash(source)}.png` !== path.basename(file)) throw new Error('备份图片校验失败。');
+          const buffer = turns ? (await imageProcessor.rotate(source, turns, { signal })).buffer : source;
+          signal?.throwIfAborted();
+          const size = pngSize(buffer), image = nativeImage.createFromBuffer(buffer);
+          if (image.isEmpty() || image.getSize().width !== size.width || image.getSize().height !== size.height) throw new Error('备份图片无法完整解码。');
+          return { size, signature: imageSignature(buffer, nativeImage), ...(turns ? {} : { preview: thumbnail(image) }) };
         },
         beforeCommit: settings => {
           const previous = store.data.settings;

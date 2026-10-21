@@ -8,9 +8,10 @@ const { fileURLToPath } = require('node:url');
 const id = value => typeof value === 'string' && value.length > 0 && value.length <= 200;
 const bounded = (value, limit) => typeof value === 'string' && Buffer.byteLength(value) <= limit;
 const copy = value => JSON.parse(JSON.stringify(value));
+const unsafeID = value => /[\x00-\x1f\x7f-\x9f]/.test(value) || !value.isWellFormed();
 
 class ImportNormalizer {
-  constructor(directory, validateImage, signal) { Object.assign(this, { directory, validateImage, signal }); this.contents = new ContentFiles(directory); this.records = []; this.ids = new Set(); this.images = new Map(); this.metadataBytes = 0; }
+  constructor(directory, validateImage, signal) { Object.assign(this, { directory, validateImage, signal }); this.contents = new ContentFiles(directory); this.records = []; this.ids = new Set(); this.images = new Map(); this.rotations = new Map(); this.metadataBytes = 0; }
   async image(uri) {
     if (typeof uri !== 'string' || !uri.startsWith('data:image/png;base64,') || uri.length > 90 * 1024 ** 2) throw new Error('图片必须是有界的内嵌 PNG，不能引用本机文件或网络地址。');
     const encoded = uri.slice(22); if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) throw new Error('图片编码无效。');
@@ -47,12 +48,25 @@ class ImportNormalizer {
     if (item.type === 'image') {
       const current = await this.image(input.body); item.body = current.asset; item.asset = current.asset; item.size = current.size;
       item.signature = current.signature; item.signatureFormat = 'pixels-v1'; item.preview = current.preview || '';
-      if (input.originalBody != null) item.originalAsset = (await this.image(input.originalBody)).asset;
-      if (input.foregroundBody != null) item.foregroundAsset = (await this.image(input.foregroundBody)).asset;
+      const original = input.originalBody != null ? await this.image(input.originalBody) : current;
+      const foreground = input.foregroundBody != null ? await this.image(input.foregroundBody) : null;
       for (const key of ['originalAsset', 'foregroundAsset', 'originalBody', 'foregroundBody']) if (input[key] === null) item[key] = null;
+      if (input.originalBody != null) item.originalAsset = original.asset;
+      if (foreground) item.foregroundAsset = foreground.asset;
       item.imageTurns = input.imageTurns ?? 0; item.backgroundRemoved = input.backgroundRemoved ?? false;
       if (![0, 1, 2, 3].includes(item.imageTurns) || typeof item.backgroundRemoved !== 'boolean' || (item.backgroundRemoved && !item.foregroundAsset)
         || ((item.imageTurns || item.backgroundRemoved) && !item.originalAsset)) throw new Error('图片编辑状态无效。');
+      const sameSize = (a, b) => a.width === b.width && a.height === b.height;
+      const expectedSize = item.imageTurns % 2 ? { width: original.size.height, height: original.size.width } : original.size;
+      if (!sameSize(current.size, expectedSize) || (foreground && !sameSize(foreground.size, original.size))) throw new Error('图片编辑状态与图片尺寸不一致。');
+      const base = item.backgroundRemoved ? foreground : original;
+      let expected = base;
+      if (item.imageTurns) {
+        const key = `${base.asset}:${item.imageTurns}`;
+        if (!this.rotations.has(key)) this.rotations.set(key, await this.validateImage(base.asset, { turns: item.imageTurns }));
+        expected = this.rotations.get(key); this.signal?.throwIfAborted();
+      }
+      if (current.signature !== expected?.signature) throw new Error('图片编辑状态与当前像素不一致。');
     } else {
       if (item.type === 'file') for (const file of item.body.split('\n')) if (!file || fileURLToPath(file).includes('\0')) throw new Error('备份文件引用无效。');
       if (input.originalBody != null || input.foregroundBody != null) throw new Error('非图片项目不能包含图片变体。');
@@ -89,9 +103,19 @@ class ImportNormalizer {
     for (const board of boards) if (board.itemOrder?.some(value => !records.get(value)?.boardIds.includes(board.id))) throw new Error('Pinboard 排序引用了无效项目。');
     const settings = sanitizeSettings(header.settings);
     for (const key of Object.keys(header.settings)) if (!(key in DEFAULT_SETTINGS) || JSON.stringify(header.settings[key]) !== JSON.stringify(settings[key])) throw new Error('备份偏好设置包含无效值。');
-    const data = { version: 3, items: this.records, boards, settings };
+    // External IDs must survive HTML attributes and cannot occupy the history navigation sentinel.
+    const itemIDs = new Map(), boardIDs = new Map(), usedItems = new Set(this.records.map(item => item.id)), usedBoards = new Set(boards.map(board => board.id));
+    const fresh = (kind, original, used) => {
+      let value, attempt = 0;
+      do { value = `restored-${kind}-${hash(Buffer.from(`${attempt++}:${original}`, 'utf16le'))}`; } while (used.has(value));
+      used.add(value); return value;
+    };
+    for (const item of this.records) if (unsafeID(item.id)) itemIDs.set(item.id, fresh('item', item.id, usedItems));
+    for (const board of boards) if (board.id === 'history' || unsafeID(board.id)) boardIDs.set(board.id, fresh('board', board.id, usedBoards));
+    const data = { version: 3, items: this.records.map(item => ({ ...item, id: itemIDs.get(item.id) || item.id, boardIds: item.boardIds.map(value => boardIDs.get(value) || value) })),
+      boards: boards.map(board => ({ ...board, id: boardIDs.get(board.id) || board.id, ...(board.itemOrder ? { itemOrder: board.itemOrder.map(value => itemIDs.get(value) || value) } : {}) })), settings };
     fs.writeFileSync(path.join(this.directory, 'library.json'), JSON.stringify(data), { mode: 0o600, flag: 'wx' });
-    return { data, summaries: [...this.contents.summaries], bytes: header.bytes };
+    return { data, summaries: [...this.contents.summaries], bytes: header.bytes, repairedIds: itemIDs.size + boardIDs.size };
   }
 }
 module.exports = { ImportNormalizer };

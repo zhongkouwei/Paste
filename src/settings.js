@@ -86,7 +86,7 @@ function renderImport(value) {
   $('#importProgress').hidden = !busy;
   $('#importProgress').textContent = value.canceling ? '正在取消恢复…' : value.phase === 'applying' ? '正在保留当前库并恢复备份…' : `正在校验备份：${value.done || 0} 项`;
   $('#importPreview').hidden = value.phase !== 'ready'; $('#revealImportBackup').hidden = !value.hasCheckpoint;
-  if (value.summary) { const s = value.summary; $('#importSummary').textContent = `${s.items} 项 · ${s.boards} 个 Pinboard；合并新增 ${s.added} 项，重复 ${s.duplicates} 项；替换将移出当前 ${s.replaced} 项。`; }
+  if (value.summary) { const s = value.summary; $('#importSummary').textContent = `${s.items} 项 · ${s.boards} 个 Pinboard；合并新增 ${s.added} 项，重复 ${s.duplicates} 项；替换将移出当前 ${s.replaced} 项。${s.repairedIds ? ` 已修复 ${s.repairedIds} 个标识。` : ''}`; }
   renderImportChoice();
 }
 function renderImportChoice() {

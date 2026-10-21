@@ -159,3 +159,41 @@ test('post-commit staging cleanup failure cannot report an uncommitted restore o
     await assert.rejects(f.service.apply(state.token, { mode: 'replace' }), /预览已失效/);
   } finally { fs.rmSync = rm; }
 });
+test('restore remaps reserved navigation IDs and DOM-unsafe identifiers consistently without changing safe identities', async t => {
+  const f = fixture(t), badItem = 'item\0broken', badBoard = 'board\rbroken';
+  const state = await f.service.prepare(f.write({ version: 2, items: [item(badItem, 'Pinned', { boardIds: ['history', badBoard] }), item('stable')],
+    boards: [{ id: 'history', name: 'Imported', color: '#ef6259', itemOrder: [badItem] }, { id: badBoard, name: 'Second', color: '#62c68d', itemOrder: [badItem] }] }));
+  assert.equal(state.summary.repairedIds, 3); const normalized = structuredClone(f.service.preview.data);
+  const repeated = await f.service.prepare(f.file); assert.deepEqual(f.service.preview.data, normalized);
+  await f.service.apply(repeated.token, { mode: 'replace' });
+  const [pinned, stable] = f.store.data.items, [board, second] = f.store.data.boards;
+  assert.notEqual(pinned.id, badItem); assert.equal(stable.id, 'stable'); assert.notEqual(board.id, 'history'); assert.notEqual(second.id, badBoard);
+  assert.deepEqual(pinned.boardIds, [board.id, second.id]); assert.deepEqual(board.itemOrder, [pinned.id]); assert.deepEqual(second.itemOrder, [pinned.id]);
+  const reopened = new ClipStore(f.directory); t.after(() => reopened.close()); assert.deepEqual(reopened.data.items.map(value => value.id), [pinned.id, stable.id]);
+  const again = await f.service.prepare(f.file); assert.equal(again.summary.duplicates, 2); await f.service.apply(again.token, { mode: 'merge' });
+  assert.equal(f.store.data.boards.length, 2); assert.equal(f.store.data.items.length, 2);
+});
+test('identifier repair preserves distinct lone UTF-16 surrogates and does not overwrite a preexisting safe alias', async t => {
+  const f = fixture(t), first = 'item\uD800', second = 'item\uD801', alias = `restored-item-${hash(Buffer.from(`0:${first}`, 'utf16le'))}`;
+  const state = await f.service.prepare(f.write({ version: 2, items: [item(first, 'First'), item(second, 'Second'), item(alias, 'Existing safe alias')] }));
+  assert.equal(state.summary.repairedIds, 2); await f.service.apply(state.token, { mode: 'replace' });
+  const ids = f.store.data.items.map(value => value.id); assert.equal(new Set(ids).size, 3); assert.equal(ids[2], alias);
+  assert.ok(ids.every(value => value.isWellFormed())); assert.equal(f.store.get(alias).body, 'Existing safe alias');
+});
+test('cancel and worker failure abort and wait for delegated image verification before releasing staging ownership', async t => {
+  let announce, cleaned;
+  const f = fixture(t, { validateImage: async (_file, { turns, signal }) => {
+    if (turns) await new Promise((_resolve, reject) => {
+      announce(); signal.addEventListener('abort', () => setTimeout(() => { cleaned = true; reject(signal.reason); }, 30), { once: true });
+    });
+    return { signature: 'a'.repeat(64), size: { width: 1, height: 1 }, preview: '' };
+  } });
+  const body = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
+  const file = f.write({ version: 2, items: [item('image', body, { type: 'image', imageTurns: 1, originalBody: body })] });
+  for (const mode of ['cancel', 'crash']) {
+    cleaned = false; const started = new Promise(resolve => { announce = resolve; }), pending = f.service.prepare(file);
+    const rejected = assert.rejects(pending, mode === 'cancel' ? { name: 'AbortError' } : /意外退出/);
+    await started; if (mode === 'cancel') f.service.cancel(); else await f.service.active.worker.terminate(); await rejected;
+    assert.equal(cleaned, true); assert.equal(f.service.active, null); assert.equal(fs.readdirSync(f.directory).some(name => name.startsWith('import-')), false);
+  }
+});

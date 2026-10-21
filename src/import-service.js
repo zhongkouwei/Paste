@@ -12,22 +12,27 @@ class ImportService {
   notify() { this.revision++; try { this.onChanged?.(this.state()); } catch (error) { console.error('Import state notification:', error); } }
   discard() { const previous = this.preview; this.preview = null; if (previous) fs.rmSync(previous.stage, { recursive: true, force: true }); }
   worker(data) {
-    const worker = new Worker(path.join(__dirname, 'import-worker.js'), { workerData: data }), active = { worker };
+    const worker = new Worker(path.join(__dirname, 'import-worker.js'), { workerData: data }), active = { worker, controller: new AbortController(), validations: new Set() };
     active.promise = new Promise((resolve, reject) => {
       let result, failure;
+      const reply = message => { if (this.active === active && !active.exited) worker.postMessage(message); };
       worker.on('message', message => {
         if (message.validateImage) {
-          Promise.resolve().then(() => {
-            if (!/^[a-f0-9]{64}\.png$/.test(message.validateImage)) throw new Error('无效的图片请求。');
-            return this.validateImage(path.join(data.stage, 'assets', message.validateImage));
-          }).then(result => { if (this.active === active) worker.postMessage({ request: message.request, result }); }, error => { if (this.active === active) worker.postMessage({ request: message.request, error: error.message }); });
+          const validation = Promise.resolve().then(() => {
+            if (!/^[a-f0-9]{64}\.png$/.test(message.validateImage) || ![0, 1, 2, 3].includes(message.turns)) throw new Error('无效的图片请求。');
+            active.controller.signal.throwIfAborted();
+            return this.validateImage(path.join(data.stage, 'assets', message.validateImage), { turns: message.turns, signal: active.controller.signal });
+          }).then(result => reply({ request: message.request, result }), error => reply({ request: message.request, error: error.message, name: error.name })).catch(error => { failure ||= error; });
+          active.validations.add(validation); validation.then(() => active.validations.delete(validation));
         } else if (message.error) failure = Object.assign(new Error(message.error), { name: message.name });
         else if (message.result) result = message.result;
         else if (message.temporaryOwned) active.temporaryOwned = true;
         else if (Number.isInteger(message.done)) { this.done = message.done; this.notify(); }
       });
       worker.on('error', error => { failure = error; });
-      worker.on('exit', code => {
+      worker.on('exit', async code => {
+        active.exited = true; active.controller.abort();
+        await Promise.allSettled([...active.validations]);
         try { if (active.temporaryOwned && data.temporary && fs.existsSync(data.temporary)) fs.unlinkSync(data.temporary); } catch (error) { failure ||= error; }
         if (this.active === active) this.active = null;
         if (failure || code || !result) reject(failure || new Error('恢复校验进程意外退出；原库未替换。'));
@@ -50,7 +55,7 @@ class ImportService {
       const staged = await this.worker({ operation: 'prepare', stage, file });
       const merge = planImport(this.store.data, staged.data), replace = planImport(this.store.data, staged.data, { mode: 'replace' });
       this.preview = { ...staged, stage, token: randomUUID(), baseRevision: this.store.revision,
-        summary: { items: staged.data.items.length, boards: staged.data.boards.length, bytes: staged.bytes, added: merge.added, duplicates: merge.duplicates, replaced: replace.replaced } };
+        summary: { items: staged.data.items.length, boards: staged.data.boards.length, bytes: staged.bytes, added: merge.added, duplicates: merge.duplicates, replaced: replace.replaced, repairedIds: staged.repairedIds } };
       this.phase = 'ready'; this.done = staged.data.items.length; this.notify(); return this.state();
     } catch (error) {
       try { fs.rmSync(stage, { recursive: true, force: true }); } catch (cleanup) { error = new Error(`${error.message}；暂存目录清理失败：${cleanup.message}`); }
@@ -79,7 +84,7 @@ class ImportService {
     } catch (error) { if (fs.existsSync(checkpoint)) this.lastCheckpoint = checkpoint; this.phase = 'ready'; this.notify(); throw error; }
   }
   cancel() {
-    if (this.active) { if (!this.active.canceling) { this.active.canceling = true; this.active.worker.postMessage({ type: 'cancel' }); this.notify(); } }
+    if (this.active) { if (!this.active.canceling) { this.active.canceling = true; this.active.controller.abort(); this.active.worker.postMessage({ type: 'cancel' }); this.notify(); } }
     else { try { this.discard(); } finally { this.phase = 'idle'; this.notify(); } }
     return this.state();
   }

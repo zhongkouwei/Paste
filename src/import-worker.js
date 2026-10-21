@@ -8,7 +8,7 @@ const { exportFile } = require('./export-file');
 const controller = new AbortController(), pending = new Map(); let sequence = 0;
 parentPort.on('message', message => {
   if (message.type === 'cancel') { controller.abort(); for (const request of pending.values()) request.reject(controller.signal.reason); pending.clear(); }
-  else if (pending.has(message.request)) { const request = pending.get(message.request); pending.delete(message.request); if (message.error) request.reject(new Error(message.error)); else request.resolve(message.result); }
+  else if (pending.has(message.request)) { const request = pending.get(message.request); pending.delete(message.request); if (message.error) request.reject(Object.assign(new Error(message.error), { name: message.name || 'Error' })); else request.resolve(message.result); }
 });
 async function checksum(file, expected) {
   const stat = fs.lstatSync(file); if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('恢复资产不是普通文件。');
@@ -19,8 +19,8 @@ async function checksum(file, expected) {
 async function run() {
   if (job.operation === 'prepare') {
     let done = 0, notified = 0;
-    const normalizer = new ImportNormalizer(job.stage, name => new Promise((resolve, reject) => {
-      const request = ++sequence; pending.set(request, { resolve, reject }); parentPort.postMessage({ validateImage: name, request });
+    const normalizer = new ImportNormalizer(job.stage, (name, { turns = 0 } = {}) => new Promise((resolve, reject) => {
+      const request = ++sequence; pending.set(request, { resolve, reject }); parentPort.postMessage({ validateImage: name, turns, request });
     }), controller.signal);
     const header = await parseBackup(job.file, async item => {
       await normalizer.add(item); done++;

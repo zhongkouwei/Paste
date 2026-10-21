@@ -95,3 +95,83 @@ test('a delayed initial import-state reply cannot reopen a discarded preview', a
   await settings.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await expect(settings.locator('#importPreview')).toBeHidden(); await expect(settings.locator('#importData')).toBeEnabled();
 });
+test('restored Pinboards cannot shadow history and unsafe IDs remain selectable through the real panel', async () => {
+  const id = 'broken\0item';
+  fs.writeFileSync(input, JSON.stringify({ version: 2, items: [{ ...record(id, 'Pinned original'), boardIds: ['history'] }, record('stable', 'Other original')],
+    boards: [{ id: 'history', name: 'Imported board', color: '#ef6259', itemOrder: [id] }] }));
+  await settings.locator('#importData').click(); await expect(settings.locator('#importPreview')).toBeVisible();
+  await expect(settings.locator('#importSummary')).toContainText('已修复 2 个标识');
+  expect(await settings.locator('#importPreview').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await settings.screenshot({ path: 'test-results/settings-repaired-identities.png' }); await settings.locator('#applyImport').click();
+  await expect(settings.locator('#settingsStatus')).toContainText('备份已恢复');
+  const data = await application.evaluate(() => globalThis.__pasteTest.store.data), board = data.boards[0], pinned = data.items.find(value => value.body === 'Pinned original');
+  expect(board.id).not.toBe('history'); expect(pinned.id).not.toBe(id); expect(data.items.find(value => value.body === 'Other original').id).toBe('stable');
+  await expect(page.locator('[data-board=history]')).toHaveCount(1); await page.locator(`[data-board="${board.id}"]`).click();
+  await expect(page.locator('.clip-card')).toHaveCount(1); await expect(page.locator('.clip-card')).toContainText('Pinned original');
+  const opened = application.waitForEvent('window'); await page.locator('.clip-card').click(); await page.keyboard.press('Space'); const preview = await opened;
+  await expect.poll(() => preview.evaluate(() => window.paste.getPreview()).then(value => value.item.id)).toBe(pinned.id);
+  await page.evaluate(() => window.paste.closePreview());
+});
+test('image variants with a false edit state are rejected before preview or replacement', async () => {
+  await application.evaluate(() => globalThis.__pasteTest.store.add({ type: 'text', body: 'Protected original' })); const before = fs.readFileSync(path.join(directory, 'library.json'));
+  const images = await application.evaluate(async ({ nativeImage }) => {
+    const original = nativeImage.createFromBitmap(Buffer.from([0, 0, 255, 255, 0, 255, 0, 255, 255, 0, 0, 255, 255, 255, 0, 255, 0, 255, 255, 255, 255, 0, 255, 255]), { width: 3, height: 2 }).toPNG();
+    const other = nativeImage.createFromBitmap(Buffer.alloc(24, 255), { width: 3, height: 2 }).toPNG();
+    const rotated = await globalThis.__pasteTest.imageProcessor.rotate(original, 1);
+    return { original: `data:image/png;base64,${original.toString('base64')}`, other: `data:image/png;base64,${other.toString('base64')}`, rotated: `data:image/png;base64,${rotated.buffer.toString('base64')}` };
+  });
+  for (const fields of [{ body: images.other, imageTurns: 0 }, { body: images.original, imageTurns: 1 }, { body: images.other, imageTurns: 2 },
+    { body: images.rotated, foregroundBody: images.rotated, imageTurns: 1, backgroundRemoved: true }]) {
+    fs.writeFileSync(input, JSON.stringify({ version: 2, items: [{ ...record('bad'), type: 'image', originalBody: images.original, ...fields }] }));
+    await settings.locator('#importData').click(); await expect(settings.locator('#importData')).toBeEnabled();
+    await expect(settings.locator('#settingsStatus')).toContainText('图片编辑状态'); await expect(settings.locator('#importPreview')).toBeHidden();
+    expect(fs.readFileSync(path.join(directory, 'library.json'))).toEqual(before);
+  }
+});
+async function editedBackup() {
+  return application.evaluate(async ({ nativeImage }) => {
+    const { imageProcessor } = globalThis.__pasteTest;
+    const original = nativeImage.createFromBitmap(Buffer.from([0, 0, 255, 255, 0, 255, 0, 255, 255, 0, 0, 255, 255, 255, 0, 255, 0, 255, 255, 255, 255, 0, 255, 255]), { width: 3, height: 2 }).toPNG();
+    const foreground = nativeImage.createFromBitmap(Buffer.from([0, 0, 0, 0, 0, 255, 0, 255, 255, 0, 0, 128, 0, 0, 0, 0, 0, 255, 255, 255, 255, 0, 255, 64]), { width: 3, height: 2 }).toPNG();
+    const uri = bytes => `data:image/png;base64,${bytes.toString('base64')}`, items = [];
+    for (const removed of [false, true]) for (let turns = 0; turns < 4; turns++) {
+      const base = removed ? foreground : original, current = turns ? (await imageProcessor.rotate(base, turns)).buffer : base;
+      items.push({ id: `image-${Number(removed)}-${turns}`, title: `State ${Number(removed)}:${turns}`, type: 'image', body: uri(current), originalBody: uri(original),
+        foregroundBody: uri(foreground), foregroundAsset: null, imageTurns: turns, backgroundRemoved: removed, boardIds: [], createdAt: new Date().toISOString() });
+    }
+    return { version: 2, items, boards: [], settings: { paused: true, retentionDays: 0 } };
+  });
+}
+test('all eight valid edited image states restore unchanged and keep original, foreground, undo and subsequent editing usable', async () => {
+  const backup = await editedBackup(); fs.writeFileSync(input, JSON.stringify(backup));
+  await settings.locator('#importData').click(); await expect(settings.locator('#importPreview')).toBeVisible();
+  await settings.locator('#restoreSettings').check(); await settings.locator('#applyImport').click(); await expect(settings.locator('#settingsStatus')).toContainText('备份已恢复');
+  const data = await application.evaluate(async () => { await globalThis.__pasteTest.imageText.idle(); return globalThis.__pasteTest.store.exportData(); });
+  for (const source of backup.items) { const actual = data.items.find(value => value.id === source.id); for (const field of ['body', 'originalBody', 'foregroundBody', 'imageTurns', 'backgroundRemoved']) expect(actual[field], `${source.id}:${field}`).toEqual(source[field]); }
+  const id = 'image-1-1', expected = backup.items.find(value => value.id === id), opened = application.waitForEvent('window');
+  await page.evaluate(id => window.paste.openPreview(id, { mode: 'edit' }), id); const preview = await opened;
+  await expect(preview.locator('[data-image=restore]')).toBeEnabled(); await preview.locator('[data-image=restore]').click();
+  await expect.poll(() => preview.evaluate(() => window.paste.getPreview()).then(value => value.item.body)).toBe(expected.originalBody);
+  await preview.locator('[data-image=undo]').click(); await expect.poll(() => preview.evaluate(() => window.paste.getPreview()).then(value => value.item.body)).toBe(expected.body);
+  await preview.screenshot({ path: 'test-results/preview-restored-image-state.png' });
+  await preview.locator('[data-image=right]').click(); await expect.poll(() => preview.evaluate(() => window.paste.getPreview()).then(value => value.item.body)).toBe(backup.items.find(value => value.id === 'image-1-2').body);
+  await preview.locator('[data-image=undo]').click(); await page.evaluate(() => window.paste.closePreview());
+  await application.close(); application = null; await launch();
+  const reopened = await application.evaluate(() => globalThis.__pasteTest.store.exportData()); expect(reopened).toEqual(data);
+});
+test('canceling a restore aborts and waits for the in-flight image-state validator before cleaning its staging directory', async () => {
+  const backup = await editedBackup(); backup.items = [backup.items.find(value => value.id === 'image-0-1')]; fs.writeFileSync(input, JSON.stringify(backup));
+  await application.evaluate(() => {
+    const processor = globalThis.__pasteTest.imageProcessor;
+    globalThis.__rotationBeforeImport = processor.rotate;
+    processor.rotate = (_buffer, _turns, { signal }) => new Promise((_resolve, reject) => {
+      globalThis.__rotationValidating = true;
+      signal.addEventListener('abort', () => { setTimeout(() => { globalThis.__rotationCanceled = true; reject(signal.reason); }, 120); }, { once: true });
+    });
+  });
+  await settings.locator('#importData').click(); await expect.poll(() => application.evaluate(() => globalThis.__rotationValidating)).toBe(true);
+  await settings.locator('#cancelImport').click(); await expect(settings.locator('#settingsStatus')).toHaveText('恢复已取消');
+  expect(await application.evaluate(() => globalThis.__rotationCanceled)).toBe(true);
+  await expect(settings.locator('#importData')).toBeEnabled(); expect(fs.readdirSync(directory).some(name => name.startsWith('import-'))).toBe(false);
+  expect(await application.evaluate(() => globalThis.__pasteTest.store.data.items.length)).toBe(0);
+});
