@@ -12,8 +12,9 @@ let searchRequest = 0, searchPending = false, queryMatches = new Set(), searchSe
 let composing = false;
 let calendarTimer, suggestionSignature = '', suggestionsDismissed = false;
 const imageTextCache = new Map(), imageTextPending = new Set();
-const mediaCache = new Map(), mediaPending = new Set(), mediaSkipped = new Set();
-let mediaBytes = 0, mediaActive = 0;
+const mediaCache = new Map(), mediaPending = new Set(), mediaSkipped = new Map(), mediaFailures = new Map();
+const mediaRetryDelays = [250, 1000], mediaWarning = '图片预览暂时不可用。';
+let mediaBytes = 0, mediaActive = 0, mediaEpoch = 0, mediaRetryTimer;
 
 function icon(name) { return `<i data-lucide="${name}"></i>`; }
 function escape(value) { return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]); }
@@ -23,8 +24,16 @@ function cachedMedia(key) {
   if (!mediaCache.has(key)) return '';
   const value = mediaCache.get(key); mediaCache.delete(key); mediaCache.set(key, value); return value;
 }
+function clearMediaWarning() {
+  if ($('#status').textContent === mediaWarning) { clearTimeout(toastTimer); $('#status').hidden = true; }
+}
+function hasMediaOwner(id, key) {
+  const item = state.items.find(item => item.id === id);
+  return item?.previewKey === key || item?.source?.iconKey === key;
+}
 function paintMedia() {
-  const requests = [], wanted = new Set();
+  clearTimeout(mediaRetryTimer);
+  const requests = [], wanted = new Set(), now = Date.now(); let nextRetry = Infinity;
   for (const node of document.querySelectorAll('.clip-card')) {
     const item = state.items.find(item => item.id === node.dataset.id); if (!item) continue;
     for (const [field, key] of [['previewKey', item.previewKey], ['iconKey', item.source?.iconKey]]) {
@@ -32,7 +41,9 @@ function paintMedia() {
       const rendered = field === 'previewKey' ? node.querySelector('.image-preview img') : node.querySelector('.source-icon');
       if (rendered?.dataset.mediaKey === key) continue;
       const value = safeImage(cachedMedia(key));
-      if (!value && mediaCache.has(key) && field === 'previewKey') {
+      const skipped = mediaSkipped.get(key), previousFailure = mediaFailures.get(key);
+      const failure = previousFailure?.epoch === mediaEpoch && hasMediaOwner(previousFailure.id, key) ? previousFailure : null;
+      if (!value && (mediaCache.has(key) || failure?.attempts > mediaRetryDelays.length) && field === 'previewKey') {
         const placeholder = node.querySelector('.media-placeholder');
         if (placeholder) { placeholder.setAttribute('aria-label', '图片预览不可用'); placeholder.title = '图片预览不可用'; }
       }
@@ -50,31 +61,47 @@ function paintMedia() {
           else { image.className = 'source-icon'; target.replaceWith(image); }
         }
       }
-      if (mediaCache.has(key) || mediaPending.has(key) || mediaSkipped.has(key) || wanted.has(key)) continue;
+      if (mediaCache.has(key) || mediaPending.has(key) || wanted.has(key)) continue;
+      if (skipped?.id === item.id && skipped.revision === state.revision && skipped.epoch === mediaEpoch) continue;
+      if (failure?.retryAt > now) { nextRetry = Math.min(nextRetry, failure.retryAt); continue; }
       wanted.add(key);
       let request = requests.find(request => request.id === item.id);
       if (!request) { request = { id: item.id }; requests.push(request); }
       request[field] = key;
     }
   }
+  if (Number.isFinite(nextRetry)) mediaRetryTimer = setTimeout(paintMedia, Math.max(1, nextRetry - now));
   if (!requests.length || mediaActive >= 2) return;
   const batch = requests.slice(0, 32), keys = new Set(batch.flatMap(request => [request.previewKey, request.iconKey].filter(Boolean)));
+  const owners = new Map(batch.flatMap(request => [request.previewKey, request.iconKey].filter(Boolean).map(key => [key, request.id])));
+  const revision = state.revision, epoch = mediaEpoch;
   for (const key of keys) mediaPending.add(key); mediaActive += 1;
   api.getMedia(batch).then(values => {
     const returned = new Set();
     for (const { key, value } of values) {
       if (!keys.has(key) || typeof value !== 'string') continue;
-      returned.add(key);
+      returned.add(key); mediaSkipped.delete(key); mediaFailures.delete(key);
       if (mediaCache.has(key)) mediaBytes -= mediaCache.get(key).length;
       mediaCache.set(key, value); mediaBytes += value.length;
     }
-    // A removed/replaced item may have no reply; retry only after a library change.
-    for (const key of keys) if (!returned.has(key)) mediaSkipped.add(key);
+    // A stale owner's empty reply must not suppress a newer owner or revision.
+    for (const key of keys) if (!returned.has(key)) mediaSkipped.set(key, { id: owners.get(key), revision, epoch });
+    if (![...mediaFailures.values()].some(failure => failure.epoch === mediaEpoch && failure.attempts > mediaRetryDelays.length)) clearMediaWarning();
     paintMedia();
     while (mediaCache.size > 96 || mediaBytes > 16 * 1024 * 1024) {
       const key = mediaCache.keys().next().value; mediaBytes -= mediaCache.get(key).length; mediaCache.delete(key);
     }
-  }).catch(error => { for (const key of keys) mediaSkipped.add(key); toast(error.message); }).finally(() => {
+  }).catch(error => {
+    let exhausted = false;
+    for (const key of keys) {
+      const id = owners.get(key), previous = mediaFailures.get(key);
+      const attempts = previous?.epoch === epoch && hasMediaOwner(previous.id, key) ? previous.attempts + 1 : 1;
+      mediaFailures.set(key, { id, epoch, attempts, retryAt: attempts <= mediaRetryDelays.length ? Date.now() + mediaRetryDelays[attempts - 1] : Infinity });
+      if (epoch === mediaEpoch && attempts > mediaRetryDelays.length && hasMediaOwner(id, key)) exhausted = true;
+    }
+    if (exhausted) { console.error('Media requests failed', error); toast(mediaWarning); }
+  }).finally(() => {
+    for (const map of [mediaSkipped, mediaFailures]) while (map.size > 256) map.delete(map.keys().next().value);
     for (const key of keys) mediaPending.delete(key); mediaActive -= 1; paintMedia();
   });
 }
@@ -193,6 +220,13 @@ function accept(library) {
   if (Number.isInteger(state.revision) && library.revision < state.revision) return;
   mediaSkipped.clear();
   Object.assign(state, { items: library.items, boards: library.boards, settings: library.settings, revision: library.revision, capabilities: library.capabilities || {}, status: library.status || {} });
+  if (mediaFailures.size) {
+    const items = new Map(state.items.map(item => [item.id, item]));
+    for (const [key, failure] of mediaFailures) {
+      const item = items.get(failure.id);
+      if (item?.previewKey !== key && item?.source?.iconKey !== key) mediaFailures.delete(key);
+    }
+  }
   if (state.board !== 'history' && !state.boards.some(board => board.id === state.board)) state.board = 'history';
   if (state.status.error) toast(state.status.error);
   if (library.recovery) toast(library.recovery);
@@ -680,6 +714,10 @@ document.addEventListener('keyup', event => document.body.classList.toggle('quic
 window.addEventListener('blur', () => document.body.classList.remove('quick-keys'));
 window.addEventListener('resize', () => { renderCards(); if (!$('#filterSuggestions').hidden) updateSuggestions(); });
 api.onChanged(accept);
-api.onShown(({ target }) => { document.body.dataset.panelReady = 'true'; state.target = target; closeMenu(); render(); if (state.editingBoard) $('.board-name-edit')?.focus(); else $('#timeline').focus(); });
+api.onShown(({ target }) => {
+  mediaEpoch += 1; mediaSkipped.clear(); mediaFailures.clear(); clearMediaWarning();
+  document.body.dataset.panelReady = 'true'; state.target = target; closeMenu(); render();
+  if (state.editingBoard) $('.board-name-edit')?.focus(); else $('#timeline').focus();
+});
 attempt(async () => accept(await api.getLibrary()));
 refreshIcons();
