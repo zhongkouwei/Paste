@@ -74,3 +74,42 @@ test('an incompatible cache falls back to working search without overwriting the
   expect((await page.evaluate(() => window.paste.search('unique-tail-79-end'))).ids).toEqual(['79']);
   const value = await stats(); expect(value.mode).toBe('memory'); expect(value.warning).toContain('版本'); expect(fs.readFileSync(file)).toEqual(before);
 });
+test('real app snapshots and metadata edits keep payloads unloaded and first search sends references rather than full originals', async () => {
+  await seed(); await application.close(); await launch();
+  await application.evaluate(() => {
+    const { store, searchService } = globalThis.__pasteTest, read = store.contents.read.bind(store.contents), start = searchService.start.bind(searchService);
+    globalThis.__lazyReads = 0; globalThis.__lazyMessages = [];
+    store.contents.read = name => { globalThis.__lazyReads++; return read(name); };
+    searchService.start = () => {
+      start(); const post = searchService.worker.postMessage.bind(searchService.worker);
+      searchService.worker.postMessage = message => {
+        if (message.updates?.length) globalThis.__lazyMessages.push({ count: message.updates.length, bytes: Buffer.byteLength(JSON.stringify(message)),
+          referencesOnly: message.updates.every(item => item.contentAsset && !Object.hasOwn(item, 'body') && !item.ocr) });
+        return post(message);
+      };
+    };
+  });
+  const compact = await page.evaluate(() => window.paste.getLibrary()); expect(compact.items[0].body).toBe('');
+  expect((await page.evaluate(() => window.paste.search('unique-tail-79-end'))).ids).toEqual(['79']);
+  await page.evaluate(() => window.paste.updateItem('79', { title: 'Renamed without body read' }));
+  expect((await page.evaluate(() => window.paste.search('renamed unique-tail-79-end'))).ids).toEqual(['79']);
+  const value = await application.evaluate(() => ({ reads: globalThis.__lazyReads, messages: globalThis.__lazyMessages,
+    unloaded: globalThis.__pasteTest.store.data.items.every(item => item.contentAsset && !Object.hasOwn(item, 'body')) }));
+  expect(value.reads).toBe(0); expect(value.unloaded).toBe(true); expect(value.messages[0].count).toBe(80);
+  expect(value.messages.every(item => item.referencesOnly)).toBe(true); expect(value.messages[0].bytes).toBeLessThan(32000);
+  expect((await page.evaluate(() => window.paste.getItem('79'))).body.endsWith('unique-tail-79-end')).toBe(true);
+  expect(await application.evaluate(() => globalThis.__lazyReads)).toBe(1);
+  expect(await application.evaluate(() => globalThis.__pasteTest.store.getMetadata('79').body)).toBeUndefined();
+});
+test('a valid persisted index cannot conceal source corruption detected on demand after the app has already loaded', async () => {
+  await seed(); await application.close(); await launch();
+  const name = await application.evaluate(() => globalThis.__pasteTest.store.getMetadata('79').contentAsset);
+  const file = path.join(directory, 'contents', name), original = fs.readFileSync(file), manifest = fs.readFileSync(path.join(directory, 'library.json'));
+  fs.writeFileSync(file, 'Synthetic corruption after startup');
+  await expect(page.evaluate(() => window.paste.getItem('79'))).rejects.toThrow(/checksum/);
+  await expect(page.evaluate(() => window.paste.search('unique-tail-79-end'))).rejects.toThrow(/checksum/);
+  expect(fs.readFileSync(path.join(directory, 'library.json'))).toEqual(manifest);
+  fs.writeFileSync(file, original);
+  expect((await page.evaluate(() => window.paste.search('unique-tail-79-end'))).ids).toEqual(['79']);
+  expect((await page.evaluate(() => window.paste.getItem('79'))).body.endsWith('unique-tail-79-end')).toBe(true);
+});

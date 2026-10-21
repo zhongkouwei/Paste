@@ -2,6 +2,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');
+const detached = value => Buffer.from(value, 'utf16le').toString('utf16le');
+function validOCR(result) {
+  if (!result || !['ready', 'none', 'error'].includes(result.status) || typeof result.text !== 'string'
+    || Buffer.byteLength(result.text) > 1024 * 1024 || !Array.isArray(result.lines) || result.lines.length > 10000) return false;
+  let words = 0;
+  return result.lines.every(line => line && typeof line.text === 'string' && (line.words === undefined
+    || (Array.isArray(line.words) && (words += line.words.length) <= 20000 && line.words.every(word => typeof word?.text === 'string'))));
+}
 function validate(payload) {
   if (!payload || typeof payload.body !== 'string' || ['html', 'rtf', 'originalBody', 'foregroundBody']
     .some(key => payload[key] !== undefined && payload[key] !== null && typeof payload[key] !== 'string')) throw new Error('Invalid clipboard content payload');
@@ -9,7 +17,7 @@ function validate(payload) {
 
 class ContentFiles {
   constructor(directory) {
-    this.directory = path.join(directory, 'contents'); this.cache = new Map();
+    this.directory = path.join(directory, 'contents'); this.summaries = new Map();
     fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
   }
   read(name) {
@@ -22,7 +30,13 @@ class ContentFiles {
       ...(payload.foregroundBody !== undefined ? { foregroundBody: payload.foregroundBody } : {}), ...(payload.html !== undefined ? { html: payload.html } : {}),
       ...(payload.rtf !== undefined ? { rtf: payload.rtf } : {}), ...(payload.ocr ? { ocr: payload.ocr } : {}) };
   }
-  remember(id, payload, name) { this.cache.set(id, { ...payload, stored: { contentAsset: name } }); }
+  remember(name, payload) {
+    let characters = payload.body.length;
+    const pairs = /[\uD800-\uDBFF][\uDC00-\uDFFF]/g; while (pairs.exec(payload.body)) characters--;
+    const ocr = validOCR(payload.ocr) ? payload.ocr : null;
+    this.summaries.set(name, { characters, body: payload.body.length <= 2000 ? detached(payload.body) : '',
+      preview: detached(payload.body.slice(0, 2000)), ...(ocr ? { ocr: { hasText: !!ocr.text, status: ocr.status, signature: ocr.signature, completedAt: ocr.completedAt } } : {}) });
+  }
   write(raw) {
     const name = `${digest(raw)}.json`, file = path.join(this.directory, name);
     if (fs.existsSync(file)) {
@@ -41,18 +55,16 @@ class ContentFiles {
     return name;
   }
   record(item) {
-    const { body, html, rtf, ocr, originalBody, foregroundBody, contentAsset: _old, ...metadata } = item;
-    let cached = this.cache.get(item.id);
-    if (!cached || cached.body !== body || cached.html !== html || cached.rtf !== rtf || cached.ocr !== ocr || cached.originalBody !== originalBody || cached.foregroundBody !== foregroundBody) {
-      const payload = { body, ...(originalBody !== undefined ? { originalBody } : {}), ...(foregroundBody !== undefined ? { foregroundBody } : {}),
-        ...(html !== undefined ? { html } : {}), ...(rtf !== undefined ? { rtf } : {}), ...(ocr ? { ocr } : {}) };
-      validate(payload);
-      const raw = JSON.stringify(payload);
-      cached = { ...payload, stored: Buffer.byteLength(raw) > 16384 ? { contentAsset: this.write(raw) } : payload };
-      this.cache.set(item.id, cached);
-    }
-    return { ...metadata, preview: item.type === 'image' ? item.preview : (item.preview || body).slice(0, 2000), ...cached.stored };
+    const { body, html, rtf, ocr, originalBody, foregroundBody, contentAsset, ...metadata } = item;
+    if (contentAsset && body === undefined) return { ...metadata, contentAsset };
+    const payload = { body, ...(originalBody !== undefined ? { originalBody } : {}), ...(foregroundBody !== undefined ? { foregroundBody } : {}),
+      ...(html !== undefined ? { html } : {}), ...(rtf !== undefined ? { rtf } : {}), ...(ocr ? { ocr } : {}) };
+    validate(payload);
+    const raw = JSON.stringify(payload); let stored = payload;
+    if (Buffer.byteLength(raw) > 16384) { const name = this.write(raw); this.remember(name, payload); stored = { contentAsset: name }; }
+    return { ...metadata, ...(typeof metadata.title === 'string' ? { title: detached(metadata.title) } : {}),
+      preview: item.type === 'image' ? item.preview : detached((item.preview || body).slice(0, 2000)), ...stored };
   }
-  retain(ids) { for (const id of this.cache.keys()) if (!ids.has(id)) this.cache.delete(id); }
+  retain(items) { const names = new Set(items.map(item => item.contentAsset)); for (const name of this.summaries.keys()) if (!names.has(name)) this.summaries.delete(name); }
 }
-module.exports = { ContentFiles };
+module.exports = { ContentFiles, validOCR };

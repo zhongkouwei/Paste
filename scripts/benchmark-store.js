@@ -8,7 +8,7 @@ const { SearchService } = require('../src/search-service');
 const count = Number(process.argv[2] || 1000);
 if (!Number.isInteger(count) || count < 1 || count > 10000) throw new Error('Expected item count from 1 to 10000');
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paste-benchmark-'));
-const store = new ClipStore(directory), service = new SearchService(), measurements = {};
+const store = new ClipStore(directory), service = new SearchService({ directory }), measurements = {};
 function measure(name, action, iterations = 1) {
   const samples = []; let result;
   for (let n = 0; n < iterations; n++) { const start = performance.now(); result = action(); samples.push(performance.now() - start); }

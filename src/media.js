@@ -48,7 +48,7 @@ class MediaService {
       || ['previewKey', 'iconKey'].some(key => value[key] !== undefined && (typeof value[key] !== 'string' || !/^(image|icon):[a-f0-9]{64}$/.test(value[key]))))) throw new Error('Invalid media selection');
     const values = new Map();
     for (const request of requests) {
-      const item = this.store.get(request.id); if (!item) continue;
+      const item = this.store.getMetadata(request.id); if (!item) continue;
       const references = this.store.media.get(item);
       for (const [field, raw] of [['previewKey', 'preview'], ['iconKey', 'icon']]) {
         const key = request[field];

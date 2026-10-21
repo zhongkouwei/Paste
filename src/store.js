@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { ContentFiles } = require('./content-files');
+const { ContentFiles, validOCR } = require('./content-files');
 const { MediaReferences } = require('./media');
 const { COLORS, TYPES, DEFAULT_SETTINGS, prune, sanitizeSettings } = require('./model');
 
@@ -28,13 +28,6 @@ function atomicFile(file, contents) {
     fs.renameSync(temporary, file);
   } finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
 }
-function validOCR(result) {
-  if (!result || !['ready', 'none', 'error'].includes(result.status) || typeof result.text !== 'string'
-    || Buffer.byteLength(result.text) > 1024 * 1024 || !Array.isArray(result.lines) || result.lines.length > 10000) return false;
-  let words = 0;
-  return result.lines.every(line => line && typeof line.text === 'string' && (line.words === undefined
-    || (Array.isArray(line.words) && (words += line.words.length) <= 20000 && line.words.every(word => typeof word?.text === 'string'))));
-}
 
 class ClipStore {
   constructor(directory, { now = () => new Date().toISOString(), legacyDirectories = [] } = {}) {
@@ -51,24 +44,20 @@ class ClipStore {
 
   parse(raw) {
     const data = JSON.parse(raw);
-    let items = Array.isArray(data) ? data : data.items;
+    const items = Array.isArray(data) ? data : data.items;
     if (data.version && data.version > 3) throw new UnsupportedLibraryError('Unsupported clipboard library; use a newer application');
     if (!Array.isArray(items)) throw new Error('Invalid clipboard library');
-    items = items.map(item => {
-      if (!item?.contentAsset) return item;
-      const { contentAsset, ...metadata } = item;
-      const payload = this.contents.read(contentAsset); this.contents.remember(item.id, payload, contentAsset);
-      return { ...metadata, ...payload };
-    });
-    const valid = items.filter(item => item && typeof item.id === 'string' && TYPES.includes(item.type)
-      && typeof item.body === 'string' && typeof item.signature === 'string');
-    if (valid.length !== items.length) throw new Error('Invalid clipboard library items');
+    if (items.some(item => !item || typeof item.id !== 'string' || !TYPES.includes(item.type) || typeof item.signature !== 'string')) throw new Error('Invalid clipboard library items');
     const boards = Array.isArray(data.boards) ? data.boards.filter(b => typeof b.id === 'string' && typeof b.name === 'string' && /^#[\da-f]{6}$/i.test(b.color)) : [];
-    const favorites = valid.filter(item => item.isFavorite && !item.boardIds?.length);
+    const favorites = items.filter(item => item.isFavorite && !item.boardIds?.length);
     if (favorites.length && !boards.some(b => b.id === 'favorites')) boards.push({ id: 'favorites', name: '已固定', color: COLORS[0] });
-    return { version: 3, boards, settings: sanitizeSettings(data.settings || {}), items: valid.map(item => {
+    return { version: 3, boards, settings: sanitizeSettings(data.settings || {}), items: items.map(item => {
+      const payload = item.contentAsset ? this.contents.read(item.contentAsset) : item;
+      if (typeof payload.body !== 'string') throw new Error('Invalid clipboard library items');
+      const { body, html, rtf, ocr, originalBody, foregroundBody, ...metadata } = item;
+      if (item.contentAsset) this.contents.remember(item.contentAsset, payload);
       const normalized = {
-      ...item, signature: ['text', 'code', 'color', 'link'].includes(item.type) ? textSignature(item.body, item.html, item.rtf) : item.signature,
+      ...(item.contentAsset ? metadata : item), signature: ['text', 'code', 'color', 'link'].includes(item.type) ? textSignature(payload.body, payload.html, payload.rtf) : item.signature,
       boardIds: Array.isArray(item.boardIds) ? item.boardIds.filter(id => boards.some(b => b.id === id)) : item.isFavorite ? ['favorites'] : [],
       createdAt: Number.isFinite(Date.parse(item.createdAt)) ? item.createdAt : this.now()
       };
@@ -131,10 +120,10 @@ class ClipStore {
         } else if (backupSource !== backupFile) atomicFile(backupFile, raw);
       } else atomicFile(backupFile, JSON.stringify(record));
       fs.renameSync(temporary, this.file);
-      committed = true; this.revision += 1;
+      committed = true; this.revision += 1; this.data.items = record.items;
       const directory = fs.openSync(this.directory, 'r');
       try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
-      const ids = new Set(this.data.items.map(item => item.id)); this.contents.retain(ids); this.media.retain(ids);
+      const ids = new Set(this.data.items.map(item => item.id)); this.contents.retain(this.data.items); this.media.retain(ids);
       for (const id of this.counts.keys()) if (!ids.has(id)) this.counts.delete(id);
     } catch (error) { if (committed) throw new CommittedWriteError(error); throw error; }
     finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
@@ -144,14 +133,14 @@ class ClipStore {
     const previous = this.data;
     this.data = { ...previous, items: [...previous.items], boards: [...previous.boards] };
     try { const result = action(); this.persist(); return result; }
-    catch (error) { if (!(error instanceof CommittedWriteError)) this.data = previous; throw error; }
+    catch (error) { if (!(error instanceof CommittedWriteError)) this.data = previous; this.contents.retain(this.data.items); throw error; }
   }
 
   add(snapshot) {
     if (!snapshot || !TYPES.includes(snapshot.type) || typeof snapshot.body !== 'string') throw new Error('Invalid clipboard snapshot');
     return this.mutate(() => {
       const signature = ['text', 'code', 'color', 'link'].includes(snapshot.type) ? textSignature(snapshot.body, snapshot.html, snapshot.rtf) : snapshot.signature || hash(`${snapshot.type}:${snapshot.body}`);
-      const existing = this.data.items.find(item => item.signature === signature);
+      const previous = this.data.items.find(item => item.signature === signature), existing = previous && this.get(previous.id);
       const item = { ...existing, ...snapshot, signature, id: existing?.id || crypto.randomUUID(),
         title: existing?.renamed ? existing.title : snapshot.title || snapshot.body.slice(0, 80),
         createdAt: this.now(), firstCopiedAt: existing?.firstCopiedAt || this.now(),
@@ -161,18 +150,24 @@ class ClipStore {
     });
   }
 
-  get(id) { return this.data.items.find(item => item.id === id); }
+  getMetadata(id) { return this.data.items.find(item => item.id === id); }
+  get(id) {
+    const item = this.getMetadata(id); if (!item?.contentAsset) return item;
+    const { contentAsset, ...metadata } = item, payload = this.contents.read(contentAsset), value = { ...metadata, ...payload };
+    if (value.ocr && (!validOCR(value.ocr) || value.ocr.signature !== value.signature)) delete value.ocr;
+    return value;
+  }
 
-  edit(id) {
+  edit(id, content = false) {
     const index = this.data.items.findIndex(item => item.id === id);
-    const item = { ...this.data.items[index] }; this.data.items[index] = item; return item;
+    const item = { ...(content ? this.get(id) : this.data.items[index]) }; this.data.items[index] = item; return item;
   }
 
   migrateImageSignatures(signatureFor) {
     const updates = [], failed = [];
     for (const item of this.data.items.filter(value => value.type === 'image' && value.signatureFormat !== 'pixels-v1')) {
       try {
-        const signature = signatureFor(item);
+        const signature = signatureFor(this.get(item.id));
         if (!/^[a-f0-9]{64}$/.test(signature)) throw new Error('Invalid image signature');
         updates.push({ id: item.id, signature });
       } catch { failed.push(item.id); }
@@ -184,9 +179,9 @@ class ClipStore {
   }
 
   update(id, changes) {
-    if (!this.get(id)) throw new Error('Clipboard item no longer exists');
+    if (!this.getMetadata(id)) throw new Error('Clipboard item no longer exists');
     return this.mutate(() => {
-      const item = this.edit(id);
+      const item = this.edit(id, typeof changes.body === 'string' && ['text', 'code', 'link', 'color'].includes(this.getMetadata(id).type));
       if (typeof changes.title === 'string') { item.title = changes.title.trim().slice(0, 200); item.renamed = true; }
       if (typeof changes.body === 'string' && ['text', 'code', 'link', 'color'].includes(item.type)) {
         if (Buffer.byteLength(changes.body) > 16 * 1024 * 1024) throw new Error('Text exceeds 16 MB limit');
@@ -208,12 +203,12 @@ class ClipStore {
   }
 
   replaceImage(id, { buffer, size, original, turns, preview, signature, foreground, backgroundRemoved = false }) {
-    const item = this.get(id);
+    const item = this.getMetadata(id);
     if (!item || item.type !== 'image' || ![0, 1, 2, 3].includes(turns)) throw new Error('Invalid image edit');
     const asset = this.putAsset(buffer), originalAsset = this.putAsset(original), foregroundAsset = foreground ? this.putAsset(foreground) : undefined;
     if (backgroundRemoved && !foregroundAsset) throw new Error('缺少前景图片');
     return this.mutate(() => {
-      const image = this.edit(id), nextSignature = signature || hash(buffer);
+      const image = this.edit(id, true), nextSignature = signature || hash(buffer);
       if (image.signature !== nextSignature) delete image.ocr;
       delete image.originalBody; delete image.foregroundBody;
       return Object.assign(image, { asset, originalAsset, foregroundAsset: foregroundAsset || null, backgroundRemoved, body: asset, size, imageTurns: turns,
@@ -222,11 +217,11 @@ class ClipStore {
   }
 
   setOCR(id, signature, result) {
-    const item = this.get(id);
+    const item = this.getMetadata(id);
     if (!item || item.type !== 'image' || item.signature !== signature) return false;
     if (!validOCR(result)) throw new Error('Invalid image text result');
     return this.mutate(() => {
-      this.edit(id).ocr = { signature, text: result.text, lines: result.lines, status: result.status, engine: result.engine || '',
+      this.edit(id, true).ocr = { signature, text: result.text, lines: result.lines, status: result.status, engine: result.engine || '',
         error: result.error || '', completedAt: this.now() }; return true;
     });
   }
@@ -278,7 +273,7 @@ class ClipStore {
   }
 
   pinItems(ids, boardId, remove = false) {
-    if (!Array.isArray(ids) || !ids.length || ids.length > 10000 || ids.some(id => !this.get(id))) throw new Error('Invalid clipboard selection');
+    if (!Array.isArray(ids) || !ids.length || ids.length > 10000 || ids.some(id => !this.getMetadata(id))) throw new Error('Invalid clipboard selection');
     if (!this.data.boards.some(board => board.id === boardId)) throw new Error('Pinboard no longer exists');
     return this.mutate(() => {
       for (const id of new Set(ids)) {
@@ -315,7 +310,7 @@ class ClipStore {
   }
 
   exportData() {
-    const data = structuredClone(this.data);
+    const data = structuredClone({ ...this.data, items: this.data.items.map(item => this.get(item.id)) });
     data.version = 2;
     for (const item of data.items) {
       if (item.asset) { item.body = `data:image/png;base64,${this.readAsset(item.asset).toString('base64')}`; delete item.asset; }
@@ -338,25 +333,27 @@ class ClipStore {
 
   snapshot() {
     return { version: this.data.version, revision: this.revision, boards: this.data.boards, settings: this.data.settings, recovery: this.recovery, items: this.data.items.map(item => {
-      const { id, type, title, signature, source, boardIds, isFavorite, renamed, createdAt, size, ocr } = item;
+      const { id, type, title, signature, source, boardIds, isFavorite, renamed, createdAt, size } = item;
+      const summary = item.contentAsset ? this.contents.summaries.get(item.contentAsset) : null;
+      const ocr = summary?.ocr || item.ocr, currentOCR = ocr?.signature === signature ? ocr : null;
       const { previewKey, iconKey } = this.media.get(item), { icon: _icon, ...sourceMetadata } = source || {};
       let count = this.counts.get(id);
-      if (!count || count.body !== item.body) {
-        let characters = type === 'image' ? 0 : item.body.length;
-        if (type !== 'image') { const pairs = /[\uD800-\uDBFF][\uDC00-\uDFFF]/g; while (pairs.exec(item.body)) characters -= 1; }
-        count = { body: item.body, value: characters }; this.counts.set(id, count);
+      if (!count || count.body !== (item.contentAsset || item.body)) {
+        let characters = type === 'image' ? 0 : summary ? summary.characters : item.body.length;
+        if (type !== 'image' && !summary) { const pairs = /[\uD800-\uDBFF][\uDC00-\uDFFF]/g; while (pairs.exec(item.body)) characters -= 1; }
+        count = { body: item.contentAsset || item.body, value: characters }; this.counts.set(id, count);
       }
       return { id, type, title, signature, source: source ? { ...sourceMetadata, ...(iconKey ? { iconKey } : {}) } : source, boardIds, isFavorite, renamed, createdAt, size,
-        ...(ocr ? { ocr: { hasText: !!ocr.text, status: ocr.status, signature: ocr.signature, completedAt: ocr.completedAt } } : {}),
-        preview: type === 'image' ? '' : (item.preview || item.body).slice(0, 2000), ...(previewKey ? { previewKey } : {}),
-        body: type !== 'image' && item.body.length <= 2000 ? item.body : '', characterCount: count.value };
+        ...(currentOCR ? { ocr: { hasText: summary ? currentOCR.hasText : !!currentOCR.text, status: currentOCR.status, signature: currentOCR.signature, completedAt: currentOCR.completedAt } } : {}),
+        preview: type === 'image' ? '' : (item.preview || summary?.preview || item.body).slice(0, 2000), ...(previewKey ? { previewKey } : {}),
+        body: type === 'image' ? '' : summary ? summary.body : item.body.length <= 2000 ? item.body : '', characterCount: count.value };
     }) };
   }
 
   search(query) {
     const { SearchIndex } = require('./search');
     this.searchIndex ||= new SearchIndex();
-    this.searchIndex.sync(this.data.items, this.revision);
+    this.searchIndex.sync(this.data.items, this.revision, item => item.contentAsset ? this.get(item.id) : item);
     return { revision: this.revision, ids: this.searchIndex.find(query) };
   }
   close() { this.searchIndex?.close(); }

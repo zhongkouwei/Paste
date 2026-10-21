@@ -28,8 +28,9 @@ class SearchService {
     if (revision !== this.revision) {
       for (const item of items) {
         const text = item.ocr?.signature === item.signature ? item.ocr?.text : '';
-        const fields = [item.type, item.body, item.title, item.source?.name, item.note, text], previous = this.entries.get(item.id);
-        if (!previous || fields.some((value, index) => value !== previous[index])) updates.push({ id: item.id, body: item.body,
+        const fields = [item.type, item.contentAsset || item.body, item.title, item.source?.name, item.note, text, item.signature], previous = this.entries.get(item.id);
+        if (!previous || fields.some((value, index) => value !== previous[index])) updates.push({ id: item.id,
+          ...(item.contentAsset ? { contentAsset: item.contentAsset } : { body: item.body }),
           type: item.type, title: item.title, source: { name: item.source?.name }, note: item.note, signature: item.signature,
           ...(text ? { ocr: { signature: item.signature, text } } : {}) });
         next.set(item.id, fields);

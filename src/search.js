@@ -11,16 +11,17 @@ class SearchIndex {
     this.matches = this.db.prepare('SELECT 1 AS valid FROM docs WHERE id=? AND fingerprint=? AND CAST(text AS BLOB)=CAST(? AS BLOB)');
     this.remove = this.db.prepare('DELETE FROM docs WHERE id=?');
   }
-  sync(items, revision) {
+  sync(items, revision, resolve) {
     if (this.revision === revision) return;
-    this.apply(items, [], revision, true);
+    this.apply(items, [], revision, true, resolve);
   }
-  apply(items, deleted, revision, complete = false) {
+  apply(items, deleted, revision, complete = false, resolve = item => item) {
     const next = new Map(this.entries), ids = complete ? new Set(items.map(item => item.id)) : null;
     const removed = new Set([...deleted, ...(ids ? [...this.entries.keys()].filter(id => !ids.has(id)) : [])]);
     let written = 0, reused = 0, removals = 0; this.db.exec('BEGIN');
     try {
-      for (const item of items) {
+      for (const source of items) {
+        const item = resolve(source);
         const text = searchText(item), fingerprint = crypto.createHash('sha256').update(text).digest('hex');
         if (this.entries.get(item.id) === fingerprint && this.matches.get(item.id, fingerprint, text)?.valid === 1) reused++;
         else { this.put.run(item.id, text, fingerprint); written++; }
