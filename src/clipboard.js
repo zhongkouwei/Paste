@@ -61,9 +61,11 @@ class ClipboardService {
         'electron application/osclipboard;format="public.file-url"': new Blob([file]) })));
       return hash(`file:${files.join('\n')}`);
     } else {
-      contents = { 'text/plain': item.body };
-      if (!plain) { if (item.html) contents['text/html'] = htmlPayload(item.html); if (item.rtf) contents['text/rtf'] = item.rtf; }
-      signature = textSignature(item.body, plain ? '' : item.html, plain ? '' : item.rtf);
+      const body = item.body.toWellFormed(), html = plain ? '' : htmlPayload(item.html).toWellFormed();
+      const rtf = !plain && typeof item.rtf === 'string' ? item.rtf.toWellFormed() : '';
+      contents = { 'text/plain': body };
+      if (html) contents['text/html'] = html; if (rtf) contents['text/rtf'] = rtf;
+      signature = textSignature(body, html, rtf);
     }
     await this.clipboard.write([new this.ClipboardItem(contents)]);
     return signature;

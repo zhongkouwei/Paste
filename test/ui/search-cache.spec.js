@@ -30,9 +30,11 @@ async function seed() {
   expect((await page.evaluate(() => window.paste.search('unique-tail-79-end'))).ids).toEqual(['79']);
 }
 const stats = () => application.evaluate(() => globalThis.__pasteTest.searchService.diagnostics());
-test('full-tail search reuses private persisted rows after a real Electron restart without rewriting the original library', async () => {
+test('full-tail search reuses persisted rows across signature normalization after a real restart without rewriting the original library', async () => {
   await seed(); const before = fs.readFileSync(path.join(directory, 'library.json'));
+  const oldSignature = await application.evaluate(() => globalThis.__pasteTest.store.getMetadata('79').signature);
   expect((await stats()).written).toBe(80); await application.close(); await launch();
+  expect(await application.evaluate(() => globalThis.__pasteTest.store.getMetadata('79').signature)).not.toBe(oldSignature);
   expect((await page.evaluate(() => window.paste.search('unique-tail-79-end'))).ids).toEqual(['79']);
   const value = await stats(); expect(value.mode).toBe('disk'); expect(value.written).toBe(0); expect(value.reused).toBe(80); expect(value.pageCacheKiB).toBe(8192);
   expect(fs.readFileSync(path.join(directory, 'library.json'))).toEqual(before);

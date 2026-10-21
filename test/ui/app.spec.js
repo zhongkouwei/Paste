@@ -99,6 +99,52 @@ test.afterAll(async () => {
   if (directory) fs.rmSync(directory, { recursive: true, force: true });
 });
 
+test('real clipboard rich payloads with embedded field delimiters keep separate pinned identities and recopy correctly', async () => {
+  const previous = await page.evaluate(() => window.paste.getLibrary()).then(value => value.settings); let cleanup;
+  try {
+    await page.evaluate(() => window.paste.saveSettings({ paused: false, excludedApps: [] }));
+    cleanup = await application.evaluate(async ({ clipboard, ClipboardItem }) => {
+      const hooks = globalThis.__pasteTest, sources = [{ body: 'Real identity wire\nhtml:<p>Alpha</p>', html: '<p>Beta</p>' },
+        { body: 'Real identity wire', html: '<p>Alpha</p>\nhtml:<p>Beta</p>' }], captured = [];
+      for (const source of sources) {
+        await clipboard.write([new ClipboardItem({ 'text/plain': source.body, 'text/html': source.html })]); await hooks.poll();
+        const read = await hooks.clip.read(), item = hooks.store.data.items.find(value => value.signature === read.signature);
+        captured.push({ id: item.id, body: hooks.store.get(item.id).body, html: hooks.store.get(item.id).html, signature: item.signature });
+        if (captured.length === 1) { const board = hooks.store.saveBoard({ name: 'Identity original', color: '#ef6259' }); hooks.store.update(item.id, { title: 'My pinned original', boardIds: [board.id] }); globalThis.__identityBoard = board.id; }
+      }
+      await clipboard.write([new ClipboardItem({ 'text/plain': sources[0].body, 'text/html': sources[0].html })]); await hooks.poll();
+      const saved = hooks.store.get(captured[0].id); return { captured, board: globalThis.__identityBoard, saved: { body: saved.body, html: saved.html, title: saved.title, boardIds: saved.boardIds },
+        count: hooks.store.data.items.filter(value => captured.some(item => value.signature === item.signature)).length };
+    });
+    const { htmlPayload } = require('../../src/store');
+    expect(cleanup.captured[0].id).not.toBe(cleanup.captured[1].id); expect(cleanup.count).toBe(2);
+    expect(cleanup.saved).toMatchObject({ body: 'Real identity wire\nhtml:<p>Alpha</p>', title: 'My pinned original', boardIds: [cleanup.board] });
+    expect(htmlPayload(cleanup.captured[0].html)).toBe('<p>Beta</p>'); expect(htmlPayload(cleanup.captured[1].html)).toBe('<p>Alpha</p>\nhtml:<p>Beta</p>');
+  } finally {
+    if (cleanup) await application.evaluate((_electron, value) => { const { store } = globalThis.__pasteTest; store.delete(value.captured.map(item => item.id)); store.deleteBoard(value.board); }, cleanup);
+    await page.evaluate(value => window.paste.saveSettings(value), previous);
+  }
+});
+test('self-copy remembers actual Unicode wire content while preserving stored surrogate and nullable originals', async () => {
+  const previous = await page.evaluate(() => window.paste.getLibrary()).then(value => value.settings); let created = [];
+  try {
+    await page.evaluate(() => window.paste.saveSettings({ paused: false, plainText: false, excludedApps: [] }));
+    const result = await application.evaluate(async () => {
+      const { store } = globalThis.__pasteTest, rows = [{ body: 'Stored surrogate \uD800', html: '<b>Stored \uD801</b>', rtf: '' }, { body: 'Stored nullable formats', html: null, rtf: null }];
+      return rows.map(value => ({ id: store.add({ ...value, type: 'text' }).id, ...value }));
+    }); created = result.map(item => item.id);
+    for (const source of result) {
+      const count = await application.evaluate(() => globalThis.__pasteTest.store.data.items.length);
+      await page.evaluate(id => window.paste.copy(id), source.id);
+      const wire = await application.evaluate(async () => { const hooks = globalThis.__pasteTest; const value = await hooks.clip.read(); await hooks.poll(); return { text: value.text, signature: value.signature, remembered: hooks.monitor.signature, count: hooks.store.data.items.length }; });
+      expect(wire.text).toBe(source.body.toWellFormed()); expect(wire.signature).toBe(wire.remembered); expect(wire.count).toBe(count);
+      const stored = await page.evaluate(id => window.paste.getItem(id), source.id); expect(stored.body).toBe(source.body); expect(stored.html).toBe(source.html); expect(stored.rtf).toBe(source.rtf);
+    }
+  } finally {
+    if (created.length) await application.evaluate((_electron, ids) => globalThis.__pasteTest.store.delete(ids), created);
+    await page.evaluate(value => window.paste.saveSettings(value), previous);
+  }
+});
 test('measured desktop geometry, multiple viewports, no broken image or overflow', async () => {
   for (const width of [1920, 1280, 768, 390]) {
     await application.evaluate(({ BrowserWindow }, width) => { BrowserWindow.getAllWindows()[0].setBounds({ x: 0, y: 0, width, height: 332 }); }, width);

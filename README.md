@@ -56,7 +56,7 @@ node scripts/benchmark-export.js 1000
 
 - `check`：所有源码、脚本与测试的 JavaScript 语法检查。
 - `test`：存储、迁移、损坏恢复、Pinboard、搜索与保留策略。
-- `test:ui`：真实 Electron + IPC。`app.spec.js` 读写系统剪贴板，使用隔离测试数据、不读取已有历史；测试前保存、结束后恢复系统剪贴板。运行该套件前退出其他剪贴板记录工具，可避免其收录测试内容。`media.spec.js`、`media-requests.spec.js`、`rich-lists.spec.js`、`rich-copy.spec.js`、`plain-paste.spec.js` 和 `search-cache.spec.js` 只用合成存储/图像和 IPC，不读写系统剪贴板，无需停止原版；富文本/纯文本套件的合成 ClipboardEvent 使用独立 DataTransfer，不访问系统剪贴板。可单独运行 `npm run test:ui -- test/ui/search-cache.spec.js` 或其他独立文件。
+- `test:ui`：真实 Electron + IPC。`app.spec.js` 读写系统剪贴板，使用隔离测试数据、不读取已有历史；测试前保存、结束后恢复系统剪贴板。运行该套件前退出其他剪贴板记录工具，可避免其收录测试内容。`media.spec.js`、`media-requests.spec.js`、`rich-lists.spec.js`、`rich-copy.spec.js`、`plain-paste.spec.js`、`search-cache.spec.js`、`export.spec.js`、`import.spec.js` 和 `text-identity.spec.js` 只用合成存储/图像和 IPC，不读写系统剪贴板，无需停止原版；富文本/纯文本套件的合成 ClipboardEvent 使用独立 DataTransfer，不访问系统剪贴板。可单独运行 `npm run test:ui -- test/ui/search-cache.spec.js` 或其他独立文件。
 - 隔离数据目录不隔离全机剪贴板。`app.spec.js` 启动前检查已知 Paste/Paste Easy/Paste Like 进程，存在未停止的程序或无法检查时，该套件先失败，不启动其测试应用或写剪贴板；其他名称的工具仍须人工确认已退出。可先运行 `node scripts/clipboard-test-environment.js` 检查。第八轮发现原版仍常驻，因此更早的合成测试内容可能已被它收录，未核实或直接清理原版历史；不可把恢复当前剪贴板当作恢复其他应用的历史。
 - `test:ui` 运行前自动编译原生桥和编辑器；构建产物也包含编辑器离线包，不依赖 CDN。
 - `test:packaged`：对构建产物运行同一组端到端测试。
@@ -75,6 +75,10 @@ version 1/2 库在读取时保留原文件，下一次成功保存迁移；原�
 删除历史保留 Pinboard 中的项目；删除 Pinboard 不删除其项目。正在编辑的项目在窗口关闭前免于自动到期/容量清理和清空历史，显式删除会被拒绝。历史期限变更立即执行，固定内容豁免。`PASTE_DATA_DIR` 可指定隔离数据目录；`--test-mode` 关闭自动监听与全局快捷键，仅用于开发验收。
 
 监听按系统剪贴板变化计数读取内容；未变化时不重复读取/解码图片，读取途中变化会丢弃旧候选并重试。暂停期间不补录，设置保存和自主复制分别串行执行。HTML 签名忽略 Electron 添加的已知编码前缀；图片按尺寸与解码像素识别，旧图片记录首次升级会一次性迁移签名，保留 ID/固定状态和原始文件。
+
+文本身份由原生 `JSON.stringify(['text-v2', body, htmlPayload(html), rtf])` 的 SHA-256 决定，正文/HTML/RTF 有明确字段边界，未配对 UTF-16 单元转义后再哈希。旧版直接拼接 `text:...\nhtml:...\nrtf:...` 会让嵌入相同分隔符的不同内容碰撞，直接 UTF-8 编码还会把不同未配对代理项变成同一替代字符，导致重复制/旧目录合并/备份合并误覆盖。新算法保留已知 HTML 传输前缀归一化，正常内容、字段原文、ID、改名、成员和排序不改；启动按既有加载流程重算文本签名，不因仅打开库就写回清单，不在加载时按签名合并记录。后续成功事务写入新签名，旧版本迁移原件/备份和原始内容文件保留；`text-v2` 是内部身份域，不是库或导出格式版本。不要降级回旧算法构建写回新库；本次修复不能凭空重建已经被旧逻辑覆盖的原文，是否有可用历史副本须另行核实，本轮未扫描真实用户历史。
+
+原记录仍按 UTF-16 保留，复制时按系统 Unicode 标量传输规则使用 `toWellFormed()` 输出，未配对代理项变为 U+FFFD，空格式不伪造 HTML/RTF。监听器记住实际写出字段的签名，避免自主复制非法 Unicode 或空格式记录后反复收录；计算不读回剪贴板，因此不会误把稍后外部写入认成自主复制。该规则不改存储/备份原文，不代表任何非法 UTF-16 都能经第三方应用无损传输。
 
 主面板仅接收最多 2000 字符的展示摘要，不接收大正文/HTML/RTF/OCR 全文；复制、拖出、编辑和导出仍取完整内容。图片预览和来源图标在常规库通知中只传内容哈希引用，按可见卡片与邻近预取范围批量读取，相同图标复用。缩略图最长边 480px、图标 128px，保持比例且不放大小图，不修改原图；主进程和界面各保留最多 96 份、16 MiB 编码数据的 LRU 缓存，最多两个界面请求并行。缓存限制不等于解码图片或整个应用的内存上限。旧图片回复不能覆盖新版本，损坏预览显示不可用而不删除原记录；原图仍可独立预览/复制/导出。
 

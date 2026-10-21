@@ -15,7 +15,8 @@ function htmlPayload(value = '') {
   while (html.startsWith(prefix, offset)) offset += prefix.length;
   return html.slice(offset);
 }
-const textSignature = (body, html = '', rtf = '') => hash(`text:${body}\nhtml:${htmlPayload(html)}\nrtf:${rtf}`);
+// JSON frames fields and escapes lone UTF-16 surrogates before UTF-8 hashing.
+const textSignature = (body, html = '', rtf = '') => hash(JSON.stringify(['text-v2', body, htmlPayload(html), rtf]));
 class CommittedWriteError extends Error {
   constructor(cause) { super('清单已提交，但目录同步失败；当前内容已保留，断电耐久性尚未确认。', { cause }); }
 }
