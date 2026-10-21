@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { ClipStore, hash, textSignature, htmlPayload } = require('../src/store');
-const { filterItems, prune, DEFAULT_SETTINGS, sanitizeSettings, classifyText } = require('../src/model');
+const { filterItems, imageTextMatches, prune, DEFAULT_SETTINGS, sanitizeSettings, classifyText } = require('../src/model');
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paste-store-test-'));
@@ -214,4 +214,33 @@ test('image backups embed both current pixels and the restorable original withou
   store.exportData = () => { throw new Error('missing image asset'); };
   const before = fs.readFileSync(destination, 'utf8'); assert.throws(() => store.exportTo(destination), /missing image/);
   assert.equal(fs.readFileSync(destination, 'utf8'), before);
+});
+test('recognized text is versioned, searchable and not allowed to overwrite newer images', t => {
+  const store = fixture(t), asset = store.putAsset(Buffer.from('image'));
+  const item = store.add({ type: 'image', body: asset, asset, signature: hash('pixels') });
+  const result = { status: 'ready', text: 'Invoice 2048', lines: [{ text: 'Invoice 2048' }], engine: 'test' };
+  assert.equal(store.setOCR(item.id, item.signature, result), true);
+  assert.deepEqual(filterItems(store.snapshot().items, { query: 'invoice 2048', type: 'image' }).map(value => value.id), [item.id]);
+  assert.equal(store.snapshot().items[0].ocr.lines, undefined); assert.deepEqual(new ClipStore(store.directory).get(item.id).ocr.lines, result.lines);
+  const signature = item.signature;
+  store.replaceImage(item.id, { buffer: Buffer.from('changed'), original: Buffer.from('image'), turns: 0, backgroundRemoved: true, foreground: Buffer.from('foreground'), size: { width: 3, height: 2 } });
+  assert.equal(store.get(item.id).ocr, undefined); assert.equal(store.setOCR(item.id, signature, result), false);
+  assert.deepEqual(filterItems(store.snapshot().items, { query: 'invoice' }), []);
+  const backup = store.exportData().items[0]; assert.equal(backup.foregroundAsset, undefined);
+  assert.equal(backup.foregroundBody, `data:image/png;base64,${Buffer.from('foreground').toString('base64')}`);
+});
+test('image search uses native word boxes, falls back for phrases and rejects invalid geometry', () => {
+  const word = { x: .4, y: .2, width: .1, height: .1 }, line = { x: .1, y: .2, width: .7, height: .1 };
+  const ocr = { lines: [{ text: 'Invoice 2048', box: line, words: [{ text: '2048', box: word }] }] };
+  assert.deepEqual(imageTextMatches(ocr, '2048 2048'), [word]);
+  assert.deepEqual(imageTextMatches(ocr, 'invoice'), [line]);
+  assert.deepEqual(imageTextMatches(ocr, ''), []);
+  assert.deepEqual(imageTextMatches({ lines: [null, { text: 'bad', box: { x: Infinity, y: 0, width: 1, height: 1 } }] }, 'bad'), []);
+});
+test('a malformed derived OCR cache is discarded without losing its original image', t => {
+  const store = fixture(t), buffer = Buffer.from('original image'), asset = store.putAsset(buffer);
+  const item = store.add({ type: 'image', body: asset, asset, signature: hash(buffer) });
+  item.ocr = { signature: item.signature, text: { bad: true }, lines: 'invalid', status: 'ready' }; store.persist();
+  const reopened = new ClipStore(store.directory);
+  assert.equal(reopened.get(item.id).ocr, undefined); assert.deepEqual(reopened.readAsset(reopened.get(item.id).asset), buffer);
 });

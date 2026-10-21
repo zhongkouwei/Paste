@@ -29,7 +29,7 @@
       if (type !== 'all' && item.type !== type && !(type === 'text' && item.type === 'code')) return false;
       if (source && item.source?.bundleId !== source) return false;
       if (after && item.createdAt < after) return false;
-      const haystack = `${item.title}\n${item.body || ''}\n${item.source?.name || ''}\n${item.note || ''}`.toLocaleLowerCase();
+      const haystack = `${item.title}\n${item.body || ''}\n${item.ocr && item.ocr.signature === item.signature ? item.ocr.text : ''}\n${item.source?.name || ''}\n${item.note || ''}`.toLocaleLowerCase();
       return terms.every(term => haystack.includes(term));
     });
     const order = boards.find(entry => entry.id === board)?.itemOrder;
@@ -47,6 +47,22 @@
     const unit = seconds < 3600 ? 'minute' : seconds < 86400 ? 'hour' : 'day';
     const divisor = unit === 'minute' ? 60 : unit === 'hour' ? 3600 : 86400;
     return new Intl.RelativeTimeFormat(locale, { numeric: 'always', style: 'long' }).format(-Math.floor(seconds / divisor), unit);
+  }
+
+  function imageTextMatches(ocr, query) {
+    const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean), matches = new Map();
+    const add = box => {
+      if (!box || !['x', 'y', 'width', 'height'].every(key => Number.isFinite(box[key]) && box[key] >= 0 && box[key] <= 1)
+        || box.width <= 0 || box.height <= 0) return;
+      matches.set(`${box.x}:${box.y}:${box.width}:${box.height}`, box);
+    };
+    for (const line of Array.isArray(ocr?.lines) ? ocr.lines : []) for (const term of terms) {
+      if (!line || typeof line.text !== 'string') continue;
+      const words = (Array.isArray(line.words) ? line.words : []).filter(word => typeof word?.text === 'string' && word.text.toLocaleLowerCase().includes(term));
+      if (words.length) words.forEach(word => add(word.box));
+      else if (line.text.toLocaleLowerCase().includes(term)) add(line.box);
+    }
+    return [...matches.values()];
   }
 
   function prune(items, settings, now = Date.now(), protectedId = null) {
@@ -98,5 +114,5 @@
     return (aliases[key] || key).toLowerCase() === event.key.toLowerCase();
   }
 
-  return { TYPES, COLORS, DEFAULT_SETTINGS, classifyText, filterItems, relativeTime, prune, sanitizeSettings, modifierPressed, shortcutMatches };
+  return { TYPES, COLORS, DEFAULT_SETTINGS, classifyText, filterItems, relativeTime, imageTextMatches, prune, sanitizeSettings, modifierPressed, shortcutMatches };
 });

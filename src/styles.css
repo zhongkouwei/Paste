@@ -68,6 +68,7 @@ body.searching #addBoard { display: none; }
 .clip-card .image-preview { padding: 0; background-color: #eee; background-image: conic-gradient(#ddd 25%,transparent 0 50%,#ddd 0 75%,transparent 0); background-size: 16px 16px; }
 @media (prefers-color-scheme: dark) { .clip-card .image-preview { background-color: #252525; background-image: conic-gradient(#202020 25%,transparent 0 50%,#202020 0 75%,transparent 0); } }
 .image-preview img { width: 100%; height: 100%; object-fit: contain; }
+.ocr-match { position: absolute; border: 1px solid #e8a82b; background: #ffd65f70; border-radius: 2px; pointer-events: none; }
 .color-preview { display: grid; align-items: center; justify-content: center; font: 24px/1 Menlo, monospace; }
 .clip-pin { position: absolute; right: 7px; bottom: 8px; width: 14px; height: 14px; color: var(--muted); }
 .native-drag { position: absolute; right: 4px; bottom: 4px; width: 22px; height: 22px; opacity: 0; cursor: grab; background: var(--card); }

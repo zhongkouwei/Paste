@@ -13,6 +13,13 @@ function htmlPayload(value = '') {
   return html.slice(offset);
 }
 const textSignature = (body, html = '', rtf = '') => hash(`text:${body}\nhtml:${htmlPayload(html)}\nrtf:${rtf}`);
+function validOCR(result) {
+  if (!result || !['ready', 'none', 'error'].includes(result.status) || typeof result.text !== 'string'
+    || Buffer.byteLength(result.text) > 1024 * 1024 || !Array.isArray(result.lines) || result.lines.length > 10000) return false;
+  let words = 0;
+  return result.lines.every(line => line && typeof line.text === 'string' && (line.words === undefined
+    || (Array.isArray(line.words) && (words += line.words.length) <= 20000 && line.words.every(word => typeof word?.text === 'string'))));
+}
 
 class ClipStore {
   constructor(directory, { now = () => new Date().toISOString(), legacyDirectories = [] } = {}) {
@@ -36,11 +43,15 @@ class ClipStore {
     const boards = Array.isArray(data.boards) ? data.boards.filter(b => typeof b.id === 'string' && typeof b.name === 'string' && /^#[\da-f]{6}$/i.test(b.color)) : [];
     const favorites = valid.filter(item => item.isFavorite && !item.boardIds?.length);
     if (favorites.length && !boards.some(b => b.id === 'favorites')) boards.push({ id: 'favorites', name: '已固定', color: COLORS[0] });
-    return { version: 2, boards, settings: sanitizeSettings(data.settings || {}), items: valid.map(item => ({
+    return { version: 2, boards, settings: sanitizeSettings(data.settings || {}), items: valid.map(item => {
+      const normalized = {
       ...item, signature: ['text', 'code', 'color', 'link'].includes(item.type) ? textSignature(item.body, item.html, item.rtf) : item.signature,
       boardIds: Array.isArray(item.boardIds) ? item.boardIds.filter(id => boards.some(b => b.id === id)) : item.isFavorite ? ['favorites'] : [],
       createdAt: Number.isFinite(Date.parse(item.createdAt)) ? item.createdAt : this.now()
-    })) };
+      };
+      if (normalized.ocr && (!validOCR(normalized.ocr) || normalized.ocr.signature !== normalized.signature)) delete normalized.ocr;
+      return normalized;
+    }) };
   }
 
   load() {
@@ -152,12 +163,28 @@ class ClipStore {
     return this.mutate(() => { this.data.items = this.data.items.filter(item => !selected.has(item.id)); });
   }
 
-  replaceImage(id, { buffer, size, original, turns, preview, signature }) {
+  replaceImage(id, { buffer, size, original, turns, preview, signature, foreground, backgroundRemoved = false }) {
     const item = this.get(id);
     if (!item || item.type !== 'image' || ![0, 1, 2, 3].includes(turns)) throw new Error('Invalid image edit');
-    const asset = this.putAsset(buffer), originalAsset = this.putAsset(original);
-    return this.mutate(() => Object.assign(this.get(id), { asset, originalAsset, body: asset, size, imageTurns: turns,
-      signature: signature || hash(buffer), signatureFormat: signature ? 'pixels-v1' : 'png-v0', preview: typeof preview === 'string' ? preview : '' }));
+    const asset = this.putAsset(buffer), originalAsset = this.putAsset(original), foregroundAsset = foreground ? this.putAsset(foreground) : undefined;
+    if (backgroundRemoved && !foregroundAsset) throw new Error('缺少前景图片');
+    return this.mutate(() => {
+      const image = this.get(id), nextSignature = signature || hash(buffer);
+      if (image.signature !== nextSignature) delete image.ocr;
+      delete image.originalBody; delete image.foregroundBody;
+      return Object.assign(image, { asset, originalAsset, foregroundAsset: foregroundAsset || null, backgroundRemoved, body: asset, size, imageTurns: turns,
+        signature: nextSignature, signatureFormat: signature ? 'pixels-v1' : 'png-v0', preview: typeof preview === 'string' ? preview : '' });
+    });
+  }
+
+  setOCR(id, signature, result) {
+    const item = this.get(id);
+    if (!item || item.type !== 'image' || item.signature !== signature) return false;
+    if (!validOCR(result)) throw new Error('Invalid image text result');
+    return this.mutate(() => {
+      item.ocr = { signature, text: result.text, lines: result.lines, status: result.status, engine: result.engine || '',
+        error: result.error || '', completedAt: this.now() }; return true;
+    });
   }
 
   clear() {
@@ -245,6 +272,7 @@ class ClipStore {
     for (const item of data.items) {
       if (item.asset) { item.body = `data:image/png;base64,${this.readAsset(item.asset).toString('base64')}`; delete item.asset; }
       if (item.originalAsset) { item.originalBody = `data:image/png;base64,${this.readAsset(item.originalAsset).toString('base64')}`; delete item.originalAsset; }
+      if (item.foregroundAsset) { item.foregroundBody = `data:image/png;base64,${this.readAsset(item.foregroundAsset).toString('base64')}`; delete item.foregroundAsset; }
     }
     return data;
   }
@@ -262,8 +290,9 @@ class ClipStore {
 
   snapshot() {
     return { ...this.data, recovery: this.recovery, items: this.data.items.map(item => {
-      const { html, rtf, ...metadata } = item;
-      return { ...metadata, body: item.asset ? '' : item.body, characterCount: item.type === 'image' ? 0 : [...item.body].length };
+      const { html, rtf, ocr, ...metadata } = item;
+      return { ...metadata, ...(ocr ? { ocr: { text: ocr.text, status: ocr.status, signature: ocr.signature, completedAt: ocr.completedAt } } : {}),
+        body: item.asset ? '' : item.body, characterCount: item.type === 'image' ? 0 : [...item.body].length };
     }) };
   }
 }

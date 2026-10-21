@@ -4,5 +4,5 @@ const path = require('node:path');
 if (process.platform !== 'darwin') process.exit(0);
 const root = path.resolve(__dirname, '..');
 fs.mkdirSync(path.join(root, 'native/bin'), { recursive: true });
-execFileSync('xcrun', ['clang', '-O2', '-fobjc-arc', '-framework', 'Cocoa', '-framework', 'ApplicationServices', '-framework', 'CoreImage', '-framework', 'ImageIO',
-  path.join(root, 'native/bridge.m'), '-o', path.join(root, 'native/bin/paste-bridge')], { stdio: 'inherit' });
+execFileSync('xcrun', ['clang', '-O2', '-fobjc-arc', '-framework', 'Cocoa', '-framework', 'ApplicationServices', '-framework', 'CoreImage', '-framework', 'ImageIO', '-framework', 'Vision', '-framework', 'CoreVideo', '-framework', 'CoreML',
+  path.join(root, 'native/bridge.m'), path.join(root, 'native/images.m'), '-o', path.join(root, 'native/bin/paste-bridge')], { stdio: 'inherit' });

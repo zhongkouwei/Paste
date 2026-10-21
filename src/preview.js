@@ -2,7 +2,7 @@
 const $ = selector => document.querySelector(selector);
 const api = window.paste;
 const labels = { text: '文本', code: '文本', link: '链接', image: '图片', color: '颜色', file: '文件' };
-let state, dirty = false, statusTimer, richEditor, imageBusy = false;
+let state, dirty = false, statusTimer, richEditor, imageBusy = false, ocrOpen = false, ocrBusy = false, saveBusy = false;
 function icons() { lucide.createIcons(); }
 function status(message) {
   $('#previewStatus').textContent = message; $('#previewStatus').hidden = false;
@@ -21,7 +21,12 @@ function updateTools() {
     for (const button of document.querySelectorAll('#imageTools [data-image]')) {
       const action = button.dataset.image;
       button.disabled = imageBusy || (action === 'undo' && !state.imageEdit.canUndo)
-        || (action === 'redo' && !state.imageEdit.canRedo) || (action === 'restore' && !state.imageEdit.turns);
+        || (action === 'redo' && !state.imageEdit.canRedo) || (action === 'restore' && !state.imageEdit.turns && !state.imageEdit.backgroundRemoved)
+        || (action === 'background' && !state.imageEdit.canRemoveBackground);
+      if (action === 'background') {
+        button.title = state.imageEdit.backgroundRemoved ? '恢复背景' : '移除背景';
+        button.setAttribute('aria-label', button.title); button.setAttribute('aria-pressed', String(state.imageEdit.backgroundRemoved));
+      }
     }
     $('#savePreview').disabled = imageBusy;
   }
@@ -31,6 +36,24 @@ function updateTools() {
     if (['undo', 'redo'].includes(command)) button.disabled = !richEditor.can(command);
     else button.setAttribute('aria-pressed', String(richEditor.active(command)));
   }
+}
+function renderOCR() {
+  const enabled = state?.item.type === 'image' && state.mode === 'view' && state.capabilities?.textRecognition;
+  $('#recognizePreview').hidden = !enabled; $('#recognizePreview').setAttribute('aria-pressed', String(!!enabled && ocrOpen));
+  $('#ocrPanel').hidden = !enabled || !ocrOpen;
+  const ocr = state?.item.ocr, text = ocr?.signature === state?.item.signature ? ocr.text : '';
+  if ($('#ocrText').value !== text) $('#ocrText').value = text;
+  $('#copyOCR').disabled = !text || ocrBusy; $('#retryOCR').disabled = ocrBusy;
+  const message = ocrBusy ? '正在识别…' : ocr?.status === 'error' ? ocr.error || '文字识别失败' : !text ? '未识别到文字' : '';
+  $('#ocrState').textContent = message; $('#ocrState').hidden = !message;
+}
+async function recognize(retry = false) {
+  if (ocrBusy) return;
+  const id = state.id; ocrBusy = true; renderOCR();
+  try {
+    const result = await api.recognizeItem(id, retry);
+    if (state.id === id) state.item.ocr = result;
+  } finally { ocrBusy = false; renderOCR(); }
 }
 function renderImage() {
   const content = $('#previewContent'); content.classList.add('picture');
@@ -84,10 +107,11 @@ function renderFiles(item) {
 }
 function render(value) {
   if (!value) return;
+  if (state?.id !== value.id || value.mode !== 'view') ocrOpen = false;
   if (state?.id === value.id && state.mode === value.mode && (dirty || value.mode !== 'view')) {
     state.boards = value.boards; state.item.boardIds = value.item.boardIds;
-    if (value.imageEdit) { state.imageEdit = value.imageEdit; state.item = value.item; markDirty(value.imageEdit.changed); renderImage(); }
-    renderPinboards(); return;
+    if (value.imageEdit) { state.imageEdit = value.imageEdit; state.item = value.item; markDirty(value.imageEdit.changed || imageBusy || value.imageEdit.busy); renderImage(); }
+    renderPinboards(); renderOCR(); return;
   }
   state = value; dirty = false;
   richEditor?.destroy(); richEditor = null;
@@ -124,15 +148,19 @@ function render(value) {
   } else if (item.type === 'file') content.append(renderFiles(item));
   else if (item.html) content.append(richPreview(item.html));
   else { const text = document.createElement('pre'); text.textContent = item.body; content.append(text); }
-  renderPinboards(); icons();
+  renderPinboards(); renderOCR(); icons();
 }
 $('#closePreview').onclick = () => attempt(() => api.closePreview());
 $('#copyPreview').onclick = () => attempt(async () => { const result = await api.copy(state.id, { paste: false }); if (!result.ok) status(result.error); });
 $('#editPreview').onclick = () => attempt(() => api.openPreview(state.id, { mode: 'edit', ids: state.ids }));
 $('#savePreview').onclick = () => attempt(async () => {
-  const input = $('#previewContent input, #previewContent textarea');
-  if (dirty) await api.savePreview(state.imageEdit ? {} : state.mode === 'rename' ? { title: input.value } : richEditor ? richEditor.content() : { body: input.value });
-  markDirty(false); await api.closePreview();
+  if (saveBusy) return;
+  saveBusy = true; $('.preview-shell').inert = true; $('#savePreview').setAttribute('aria-busy', 'true');
+  try {
+    const input = $('#previewContent input, #previewContent textarea');
+    if (dirty) await api.savePreview(state.imageEdit ? {} : state.mode === 'rename' ? { title: input.value } : richEditor ? richEditor.content() : { body: input.value });
+    markDirty(false); await api.closePreview();
+  } finally { saveBusy = false; $('.preview-shell').inert = false; $('#savePreview').setAttribute('aria-busy', 'false'); }
 });
 for (const button of document.querySelectorAll('#editTools [data-command]')) {
   button.onmousedown = event => event.preventDefault();
@@ -140,15 +168,19 @@ for (const button of document.querySelectorAll('#editTools [data-command]')) {
 }
 for (const button of document.querySelectorAll('#imageTools [data-image]')) button.onclick = () => attempt(async () => {
   const wasDirty = dirty;
-  imageBusy = true; markDirty(true); updateTools();
+  imageBusy = true; markDirty(true); updateTools(); $('#previewContent').setAttribute('aria-busy', 'true');
   try { render(await api.editImage(button.dataset.image)); }
   catch (error) { markDirty(wasDirty); throw error; }
-  finally { imageBusy = false; updateTools(); }
+  finally { imageBusy = false; if (state.imageEdit) markDirty(state.imageEdit.changed); updateTools(); $('#previewContent').setAttribute('aria-busy', 'false'); }
 });
+$('#recognizePreview').onclick = () => attempt(async () => { ocrOpen = !ocrOpen; renderOCR(); if (ocrOpen) await recognize(); });
+$('#retryOCR').onclick = () => attempt(() => recognize(true));
+$('#copyOCR').onclick = () => attempt(async () => { await api.copyImageText(state.id); status('已复制文字'); });
 $('#pinPreview').onclick = () => { $('#previewPinboards').hidden = !$('#previewPinboards').hidden; };
 $('#sharePreview').onclick = () => attempt(() => api.shareItem(state.id));
 document.addEventListener('pointerdown', event => { if (!event.target.closest('#previewPinboards, #pinPreview')) $('#previewPinboards').hidden = true; });
 document.addEventListener('keydown', event => {
+  if (saveBusy) { event.preventDefault(); return; }
   if (state?.imageEdit && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
     event.preventDefault(); const button = $(`#imageTools [data-image="${event.shiftKey ? 'redo' : 'undo'}"]`); if (!button.disabled) button.click(); return;
   }

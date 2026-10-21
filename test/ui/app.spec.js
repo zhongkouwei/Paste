@@ -246,7 +246,9 @@ test('rich editing preserves styled selections, undo/redo, pins and clipboard ro
   })).toBe(true);
   await preview.screenshot({ path: 'test-results/preview-rich-edit-narrow.png' });
   await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/preview.html')).setBounds({ width: 720, height: 500 }));
-  const closed = preview.waitForEvent('close'); await preview.getByRole('button', { name: '保存', exact: true }).click(); await closed;
+  const closed = preview.waitForEvent('close');
+  expect(await preview.evaluate(() => { document.querySelector('#savePreview').click(); return document.querySelector('.preview-shell').inert; })).toBe(true);
+  await closed;
   const saved = await page.evaluate(id => window.paste.getItem(id), id);
   expect(saved.body).toBe('Styled clipboard'); expect(saved.html).toContain('<strong>'); expect(saved.html).toContain('<u>');
   expect(saved.html).toContain('font-family: Georgia'); expect(saved.boardIds).toContain(board.id);
@@ -383,6 +385,138 @@ test('native image editing preserves pixels, originals, pins, failures and resta
   expect(migrated.boardIds).toContain(board.id); expect(migrated.originalAsset).toBe(original.asset);
   expect(await application.evaluate((_electron, asset) => globalThis.__pasteTest.hash(globalThis.__pasteTest.store.readAsset(asset)), original.asset)).toBe(original.png);
 });
+test('real Vision OCR is indexed automatically, selectable, copyable and searchable', async () => {
+  const image = await page.evaluate(() => {
+    const canvas = document.createElement('canvas'); canvas.width = 1200; canvas.height = 420;
+    const context = canvas.getContext('2d'); context.fillStyle = '#fff'; context.fillRect(0, 0, 1200, 420); context.fillStyle = '#111';
+    context.font = '64px Arial'; context.fillText('Paste Easy 2048', 60, 140);
+    context.font = '64px "PingFang SC", sans-serif'; context.fillText('剪贴板文字识别', 60, 280);
+    return canvas.toDataURL('image/png');
+  });
+  const id = await application.evaluate(async (_electron, body) => {
+    await globalThis.__pasteTest.clip.write({ type: 'image', body }); await globalThis.__pasteTest.poll();
+    return globalThis.__pasteTest.store.data.items[0].id;
+  }, image);
+  await expect.poll(async () => (await page.evaluate(id => window.paste.getItem(id), id)).ocr?.status, { timeout: 30000 }).toBe('ready');
+  const item = await page.evaluate(id => window.paste.getItem(id), id);
+  expect(item.ocr.text).toContain('Paste Easy 2048'); expect(item.ocr.text).toContain('剪贴板文字识别');
+  expect(item.ocr.engine).toBe('apple-vision-text-3'); expect(item.ocr.lines.length).toBeGreaterThanOrEqual(2);
+  expect(item.ocr.lines.every(line => line.confidence >= 0 && line.confidence <= 1 && Object.values(line.box).every(value => value >= 0 && value <= 1))).toBe(true);
+  const opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id), id);
+  const preview = await opened; await preview.getByRole('button', { name: '识别文字', exact: true }).click();
+  await expect(preview.getByRole('textbox', { name: '识别结果' })).toHaveValue(item.ocr.text);
+  await preview.getByRole('textbox', { name: '识别结果' }).press('Meta+a');
+  expect(await preview.locator('#ocrText').evaluate(input => input.selectionEnd - input.selectionStart)).toBe(item.ocr.text.length);
+  await preview.getByRole('button', { name: '复制识别文字' }).click();
+  await expect.poll(() => application.evaluate(({ clipboard }) => clipboard.readText())).toBe(item.ocr.text);
+  const count = (await page.evaluate(() => window.paste.getLibrary())).items.length;
+  await application.evaluate(() => globalThis.__pasteTest.poll());
+  expect((await page.evaluate(() => window.paste.getLibrary())).items.length).toBe(count);
+  await preview.getByRole('button', { name: '重新识别', exact: true }).click();
+  await expect.poll(async () => (await page.evaluate(id => window.paste.getItem(id), id)).ocr?.completedAt).not.toBe(item.ocr.completedAt);
+  await preview.screenshot({ path: 'test-results/preview-ocr.png' });
+  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/preview.html')).setBounds({ width: 320, height: 500 }));
+  expect(await preview.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.querySelector('#ocrText').getBoundingClientRect().height > 20)).toBe(true);
+  await preview.screenshot({ path: 'test-results/preview-ocr-narrow.png' });
+  const closed = preview.waitForEvent('close'); await preview.getByRole('button', { name: '关闭预览' }).click(); await closed;
+  await page.keyboard.press('Meta+f'); await page.getByRole('searchbox', { name: '搜索剪贴板' }).fill('2048');
+  await expect(page.locator('.clip-card')).toHaveCount(1); await expect(page.locator('.clip-card')).toHaveAttribute('data-id', id);
+  await expect(page.locator('.ocr-match')).toHaveCount(1);
+  const overlay = await page.locator('.ocr-match').evaluate(mark => {
+    const box = mark.getBoundingClientRect(), body = mark.parentElement.getBoundingClientRect();
+    return { inside: box.left >= body.left && box.top >= body.top && box.right <= body.right && box.bottom <= body.bottom, width: box.width };
+  });
+  expect(overlay.inside).toBe(true); expect(overlay.width).toBeLessThan(70);
+  await page.screenshot({ path: 'test-results/search-image-text.png' });
+  await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+  await application.evaluate(async ({ clipboard, ClipboardItem }) => clipboard.write([new ClipboardItem({ 'text/plain': 'Before OCR context-menu copy' })]));
+  await page.locator(`[data-id="${id}"]`).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '复制图片中的文字', exact: true }).click();
+  await expect.poll(() => application.evaluate(({ clipboard }) => clipboard.readText())).toBe(item.ocr.text);
+  await application.evaluate(async (_electron, id) => {
+    const hooks = globalThis.__pasteTest; await hooks.imageText.idle();
+    globalThis.__originalOCR = structuredClone(hooks.store.get(id).ocr); globalThis.__recognize = hooks.imageProcessor.recognize;
+    delete hooks.store.get(id).ocr;
+    hooks.imageProcessor.recognize = async (_buffer, { signal }) => new Promise((resolve, reject) => {
+      globalThis.__finishOCR = () => resolve({ ok: true, text: 'Late OCR result', lines: [] });
+      signal.addEventListener('abort', () => reject(new Error('cancelled fixture')), { once: true });
+    });
+  }, id);
+  try {
+    await page.evaluate(id => { window.pendingOCRCopy = window.paste.copyImageText(id).then(() => 'copied', error => error.message); }, id);
+    await expect.poll(() => application.evaluate(() => !!globalThis.__finishOCR)).toBe(true);
+    await application.evaluate(async ({ clipboard, ClipboardItem }) => {
+      await clipboard.write([new ClipboardItem({ 'text/plain': 'Newer external clipboard copy' })]); globalThis.__finishOCR();
+    });
+    expect(await page.evaluate(() => window.pendingOCRCopy)).toContain('后续复制');
+    expect(await application.evaluate(({ clipboard }) => clipboard.readText())).toBe('Newer external clipboard copy');
+  } finally {
+    await application.evaluate((_electron, id) => {
+      globalThis.__finishOCR?.(); const hooks = globalThis.__pasteTest; hooks.imageProcessor.recognize = globalThis.__recognize;
+      hooks.store.get(id).ocr = globalThis.__originalOCR; hooks.store.persist(); hooks.imageText.onChanged();
+      delete globalThis.__finishOCR; delete globalThis.__recognize; delete globalThis.__originalOCR;
+    }, id);
+  }
+});
+test('real foreground segmentation retains alpha, composes with rotation and restores across saves and restart', async () => {
+  const base64 = fs.readFileSync(path.join(__dirname, '../fixtures/foreground-mug.png')).toString('base64');
+  const original = await application.evaluate(async (_electron, base64) => {
+    const hooks = globalThis.__pasteTest;
+    await hooks.clip.write({ type: 'image', body: `data:image/png;base64,${base64}` }); await hooks.poll();
+    const item = hooks.store.data.items[0]; return { id: item.id, asset: item.asset, size: item.size, signature: item.signature };
+  }, base64);
+  const board = (await page.evaluate(() => window.paste.getLibrary())).boards[0] || await page.evaluate(() => window.paste.saveBoard({ name: 'Mask test', color: '#ef6259' }));
+  await page.evaluate(({ id, board }) => window.paste.pinItems([id], board), { id: original.id, board: board.id });
+  const open = async (mode = 'edit') => {
+    const opened = application.waitForEvent('window'); await page.evaluate(({ id, mode }) => window.paste.openPreview(id, { mode }), { id: original.id, mode });
+    const preview = await opened; await preview.waitForLoadState('domcontentloaded'); return preview;
+  };
+  const samples = async preview => application.evaluate(({ nativeImage }, body) => {
+    const image = nativeImage.createFromDataURL(body), size = image.getSize(), bitmap = image.toBitmap();
+    const at = (x, y) => [...bitmap.subarray((Math.floor(y * size.height) * size.width + Math.floor(x * size.width)) * 4, (Math.floor(y * size.height) * size.width + Math.floor(x * size.width)) * 4 + 4)];
+    let transparent = 0, solid = 0;
+    for (let n = 3; n < bitmap.length; n += 4) { if (bitmap[n] === 0) transparent += 1; if (bitmap[n] >= 250) solid += 1; }
+    return { corner: at(.02, .02), center: at(.45, .55), hole: at(.78, .5), transparent, solid };
+  }, (await preview.evaluate(() => window.paste.getPreview())).item.body);
+  const preview = await open(), before = await samples(preview);
+  await preview.getByRole('button', { name: '移除背景', exact: true }).click();
+  await expect(preview.getByRole('button', { name: '恢复背景', exact: true })).toBeEnabled({ timeout: 30000 });
+  const cut = await samples(preview);
+  expect(cut.corner[3]).toBe(0); expect(cut.hole[3]).toBe(0); expect(cut.center[3]).toBe(255);
+  expect(cut.transparent).toBeGreaterThan(original.size.width * original.size.height * .4);
+  expect(cut.solid).toBeGreaterThan(original.size.width * original.size.height * .2);
+  expect(cut.center.slice(0, 3).every((value, index) => Math.abs(value - before.center[index]) <= 2)).toBe(true);
+  await preview.screenshot({ path: 'test-results/preview-foreground.png' });
+  await preview.keyboard.press('Meta+z'); await expect(preview.getByRole('button', { name: '移除背景', exact: true })).toBeEnabled();
+  expect((await samples(preview)).corner[3]).toBe(255);
+  await preview.keyboard.press('Meta+Shift+z'); await expect(preview.getByRole('button', { name: '恢复背景', exact: true })).toBeEnabled();
+  await preview.getByRole('button', { name: '向右旋转' }).click();
+  await expect.poll(() => preview.evaluate(() => window.paste.getPreview().then(value => value.imageEdit.turns))).toBe(1);
+  let closed = preview.waitForEvent('close'); await preview.getByRole('button', { name: '保存', exact: true }).click(); await closed;
+  const saved = await page.evaluate(id => window.paste.getItem(id), original.id);
+  expect(saved.backgroundRemoved).toBe(true); expect(saved.imageTurns).toBe(1); expect(saved.foregroundAsset).toMatch(/^[a-f0-9]{64}\.png$/);
+  expect(saved.originalAsset).toBe(original.asset); expect(saved.boardIds).toContain(board.id);
+  await page.evaluate(id => window.paste.copy(id, { paste: false }), original.id);
+  expect(await application.evaluate(async ({ nativeImage }) => { const value = await globalThis.__pasteTest.clip.read(); return nativeImage.createFromBuffer(value.image).toBitmap()[3]; })).toBe(0);
+  const restored = await open(); await restored.getByRole('button', { name: '恢复背景', exact: true }).click();
+  await expect(restored.getByRole('button', { name: '移除背景', exact: true })).toBeEnabled();
+  expect((await restored.evaluate(() => window.paste.getPreview())).imageEdit.turns).toBe(1);
+  expect((await samples(restored)).corner[3]).toBe(255);
+  closed = restored.waitForEvent('close'); await restored.getByRole('button', { name: '保存', exact: true }).click(); await closed;
+  expect((await page.evaluate(id => window.paste.getItem(id), original.id)).backgroundRemoved).toBe(false);
+  const reset = await open(); await reset.getByRole('button', { name: '恢复原图' }).click();
+  closed = reset.waitForEvent('close'); await reset.getByRole('button', { name: '保存', exact: true }).click(); await closed;
+  expect((await page.evaluate(id => window.paste.getItem(id), original.id)).asset).toBe(original.asset);
+  await application.close(); application = await launchApplication(); page = await application.firstWindow();
+  await page.waitForFunction(() => document.body.dataset.panelReady === 'true');
+  const reopened = await page.evaluate(id => window.paste.getItem(id), original.id);
+  expect(reopened.asset).toBe(original.asset); expect(reopened.foregroundAsset).toBe(saved.foregroundAsset); expect(reopened.boardIds).toContain(board.id);
+  await page.evaluate(id => window.paste.recognizeItem(id), original.id);
+  expect((await page.evaluate(id => window.paste.getItem(id), original.id)).ocr.status).toBe('none');
+  const clipboardBefore = await application.evaluate(({ clipboard }) => clipboard.readText());
+  await expect(page.evaluate(id => window.paste.copyImageText(id), original.id)).rejects.toThrow(/未识别到/);
+  expect(await application.evaluate(({ clipboard }) => clipboard.readText())).toBe(clipboardBefore);
+});
 test('file clipboard entries remain file URLs rather than degraded text', async () => {
   const files = ['example.txt', 'other file.txt'].map(name => path.join(directory, name));
   files.forEach(file => fs.writeFileSync(file, 'Test file'));
@@ -430,6 +564,16 @@ test('confidential and transient clipboard markers are not captured', async () =
       return globalThis.__pasteTest.store.data.items.length - count;
     }, marker);
     expect(difference).toBe(0);
+    const imageResult = await application.evaluate(async ({ clipboard, ClipboardItem, nativeImage }, marker) => {
+      const hooks = globalThis.__pasteTest, original = hooks.imageText.enqueue, count = hooks.store.data.items.length; let calls = 0;
+      hooks.imageText.enqueue = function (...args) { calls += 1; return original.apply(this, args); };
+      try {
+        const image = nativeImage.createFromBitmap(Buffer.alloc(32 * 32 * 4, 255), { width: 32, height: 32, scaleFactor: 1 }).toPNG();
+        await clipboard.write([new ClipboardItem({ 'image/png': new Blob([image]), [`electron application/osclipboard;format="${marker}"`]: new Blob(['1']) })]);
+        await hooks.poll(); return { difference: hooks.store.data.items.length - count, calls };
+      } finally { hooks.imageText.enqueue = original; }
+    }, marker);
+    expect(imageResult).toEqual({ difference: 0, calls: 0 });
   }
 });
 test('native change counts avoid payload rereads and paused copies are not replayed', async () => {

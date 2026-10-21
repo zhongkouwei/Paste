@@ -66,3 +66,42 @@ test('oversized, empty or non-PNG dimensions are rejected before native processi
   assert.throws(() => pngSize(png(0, 2)));
   assert.throws(() => pngSize(png(100000, 100000)));
 });
+test('background edits compose with rotations and share one immutable foreground base', async () => {
+  const original = png(), foreground = png(3, 2, 9); let cutouts = 0; const sources = [];
+  const draft = new ImageDraft({ original, cutout: async source => { assert.equal(source, original); cutouts += 1; return { buffer: foreground, size: pngSize(foreground) }; },
+    transform: async (source, turns) => { sources.push(source); const size = turns % 2 ? { width: 2, height: 3 } : { width: 3, height: 2 }; return { buffer: png(size.width, size.height, turns), size }; } });
+  await draft.apply('background'); assert.equal(draft.state().backgroundRemoved, true);
+  await draft.apply('right'); assert.equal(sources[0], foreground);
+  await draft.apply('background'); assert.equal(draft.turns, 1); assert.equal(sources[1], original);
+  await draft.apply('undo'); assert.equal(draft.state().backgroundRemoved, true);
+  await draft.apply('restore'); assert.equal(draft.image.buffer, original); assert.equal(draft.state().changed, false);
+  await draft.apply('background'); assert.equal(cutouts, 1);
+  const reopened = new ImageDraft({ original, foreground, current: foreground, backgroundRemoved: true, transform: draft.transform });
+  await reopened.apply('background'); assert.equal(reopened.image.buffer, original);
+  await reopened.apply('undo'); assert.equal(reopened.image.buffer, foreground);
+});
+test('failed foreground detection never commits an edit or replaces the original', async () => {
+  const original = png(), draft = new ImageDraft({ original, cutout: async () => { throw new Error('no subject'); } });
+  await assert.rejects(draft.apply('background'), /no subject/);
+  assert.equal(draft.image.buffer, original); assert.equal(draft.foreground, undefined); assert.equal(draft.state().canUndo, false);
+});
+test('a committed draft establishes a new clean baseline for asynchronous library notifications', async () => {
+  const { draft } = fixture(); await draft.apply('right'); assert.equal(draft.state().changed, true);
+  draft.markSaved(); assert.equal(draft.state().changed, false);
+  await draft.apply('undo'); assert.equal(draft.state().changed, true);
+});
+test('OCR temporary files are private, cleaned after errors, and cancelled on shutdown', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paste-ocr-test-')); t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const processor = new ImageProcessor(directory, async (command, request) => {
+    assert.equal(command, 'image-ocr'); assert.equal((await fs.stat(request.input)).mode & 0o777, 0o600);
+    return { ok: true, text: 'Text', lines: [] };
+  });
+  assert.equal((await processor.recognize(png())).text, 'Text'); assert.deepEqual(await fs.readdir(directory), []);
+  processor.run = async () => ({ ok: false, error: 'no-foreground' });
+  await assert.rejects(processor.cutout(png()), /前景主体/); assert.deepEqual(await fs.readdir(directory), []);
+  let started;
+  const ready = new Promise(resolve => { started = resolve; });
+  processor.run = async (_command, _request, { signal }) => { started(); return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })); };
+  const pending = processor.recognize(png()), rejected = assert.rejects(pending, /aborted/); await ready;
+  await processor.close(); await rejected; assert.deepEqual(await fs.readdir(directory), []);
+});

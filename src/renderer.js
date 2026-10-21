@@ -1,12 +1,13 @@
 /* global lucide, PasteModel */
 const $ = selector => document.querySelector(selector);
 const api = window.paste;
-const { filterItems, relativeTime, COLORS, modifierPressed, shortcutMatches } = PasteModel;
+const { filterItems, relativeTime, imageTextMatches, COLORS, modifierPressed, shortcutMatches } = PasteModel;
 const state = { items: [], boards: [], settings: {}, status: {}, board: 'history', query: '', type: 'all', source: '', after: '',
   selected: new Set(), anchor: 0, searching: false, target: '', editingBoard: null, detail: null };
 const labels = { text: '文本', code: '文本', link: '链接', image: '图片', color: '颜色', file: '文件' };
 const icons = { text: 'text', code: 'code', link: 'link', image: 'image', color: 'palette', file: 'file' };
 let toastTimer, renderFrame, dragging = null;
+const imageTextCache = new Map(), imageTextPending = new Set();
 
 function icon(name) { return `<i data-lucide="${name}"></i>`; }
 function escape(value) { return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]); }
@@ -19,7 +20,7 @@ async function attempt(task) { try { return await task(); } catch (error) { toas
 
 function accept(library) {
   if (!library) return;
-  Object.assign(state, { items: library.items, boards: library.boards, settings: library.settings, status: library.status || {} });
+  Object.assign(state, { items: library.items, boards: library.boards, settings: library.settings, capabilities: library.capabilities || {}, status: library.status || {} });
   if (state.board !== 'history' && !state.boards.some(board => board.id === state.board)) state.board = 'history';
   if (state.status.error) toast(state.status.error);
   if (library.recovery) toast(library.recovery);
@@ -96,6 +97,35 @@ function renderCards() {
   $('#emptyTitle').textContent = state.query || state.type !== 'all' || state.source || state.after ? '无结果'
     : state.board === 'history' ? '剪贴板为空' : 'Pinboard 为空';
   refreshIcons();
+  paintImageMatches();
+}
+function paintImageMatches() {
+  if (!state.query.trim()) return;
+  for (const node of document.querySelectorAll('.clip-card[data-type=image]')) {
+    const item = state.items.find(value => value.id === node.dataset.id);
+    if (!item?.ocr?.text || item.ocr.signature !== item.signature || !item.size?.width || !item.size?.height) continue;
+    const key = `${item.id}:${item.signature}:${item.ocr.completedAt || ''}`, cached = imageTextCache.get(key);
+    if (!cached) {
+      if (!imageTextPending.has(key)) {
+        imageTextPending.add(key);
+        api.getOCR(item.id).then(value => {
+          imageTextCache.set(key, value || { lines: [] });
+          while (imageTextCache.size > 64) imageTextCache.delete(imageTextCache.keys().next().value);
+          paintImageMatches();
+        }).catch(error => toast(error.message)).finally(() => imageTextPending.delete(key));
+      }
+      continue;
+    }
+    const body = node.querySelector('.image-preview'); body.querySelectorAll('.ocr-match').forEach(mark => mark.remove());
+    const scale = Math.min(body.clientWidth / item.size.width, body.clientHeight / item.size.height);
+    const left = (body.clientWidth - item.size.width * scale) / 2, top = (body.clientHeight - item.size.height * scale) / 2;
+    for (const box of imageTextMatches(cached, state.query)) {
+      const mark = document.createElement('span'); mark.className = 'ocr-match'; mark.setAttribute('aria-hidden', 'true');
+      Object.assign(mark.style, { left: `${left + box.x * item.size.width * scale}px`, top: `${top + box.y * item.size.height * scale}px`,
+        width: `${box.width * item.size.width * scale}px`, height: `${box.height * item.size.height * scale}px` });
+      body.append(mark);
+    }
+  }
 }
 function render() {
   const items = visibleItems();
@@ -160,6 +190,7 @@ function itemMenu(item, x, y) {
     { label: '以纯文本粘贴', action: () => activate(item.id, true, true), disabled: ['image', 'file'].includes(item.type) },
     { label: '复制', icon: 'copy', key: '⌘C', action: () => activate(item.id, false) }, null,
     { label: '编辑', icon: 'pencil', action: () => openDetail(item.id, true), disabled: item.type === 'file' },
+    ...(item.type === 'image' && state.capabilities?.textRecognition ? [{ label: '复制图片中的文字', icon: 'scan-text', action: async () => { await api.copyImageText(item.id); toast('已复制文字'); } }] : []),
     { label: '重命名', action: () => openDetail(item.id, 'rename') },
     ...(item.type === 'file' ? [{ label: '在 Finder 中显示', icon: 'folder-search', action: () => api.revealItem(item.id) }] : []),
     { label: state.selected.size > 1 ? `删除 ${state.selected.size} 个项目` : '删除', icon: 'trash-2', key: '⌫', action: async () => accept(await api.deleteItems([...state.selected])) }, null,

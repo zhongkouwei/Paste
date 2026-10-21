@@ -11,6 +11,7 @@ const { Transfers, fileDetails } = require('./transfers');
 const { GlobalHotkeys } = require('./hotkeys');
 const { ClipboardMonitor } = require('./monitor');
 const { ImageProcessor, ImageDraft } = require('./image-editor');
+const { ImageTextIndex } = require('./image-text');
 const clip = new ClipboardService({ ...electron, fileBridge: process.platform === 'darwin' ? {
   read: () => native('read-files'), write: files => nativeInput('write-files', { files })
 } : undefined });
@@ -20,7 +21,9 @@ const TEST_MODE = process.argv.includes('--test-mode');
 app.setPath('userData', process.env.PASTE_DATA_DIR ? path.resolve(process.env.PASTE_DATA_DIR) : path.join(app.getPath('appData'), 'Paste Easy'));
 let mainWindow, settingsWindow, previewWindow, tray, store, transfers, pollTimer, targetApp;
 let previewState = null, previewDirty = false, previewOpening = false, activeShare;
-let hotkeys, monitor, imageProcessor, imageDraft, quitting = false, quitAfterPreview = false, copyQueue = Promise.resolve(), settingsQueue = Promise.resolve();
+let hotkeys, monitor, imageProcessor, imageDraft, imageText, capabilities = {}, processingClosing = false, processingStopped = false;
+let quitting = false, quitAfterPreview = false, copyQueue = Promise.resolve(), settingsQueue = Promise.resolve();
+let copyRequest = 0;
 let sourceCache = null, lastSourceAt = 0, suppressBlur = false;
 let lastError = '', stack = [], stackMode = false;
 const PANEL_HEIGHT = 332;
@@ -31,15 +34,18 @@ async function native(command, ...args) {
   const { stdout } = await execute(helper, [command, ...args.map(String)], { timeout: 4000, maxBuffer: 2 * 1024 * 1024 });
   return JSON.parse(stdout);
 }
-async function nativeInput(command, data, timeout = 4000) {
+async function nativeInput(command, data, timeout = 4000, options = {}) {
   if (!fs.existsSync(helper)) throw new Error('缺少原生辅助程序，请先构建应用。');
-  const operation = execute(helper, [command], { timeout, maxBuffer: 2 * 1024 * 1024 });
+  const operation = execute(helper, [command], { timeout, maxBuffer: command === 'image-ocr' ? 8 * 1024 * 1024 : 2 * 1024 * 1024, signal: options.signal });
   operation.child.stdin.end(JSON.stringify(data));
-  const { stdout } = await operation;
-  return JSON.parse(stdout);
+  try { const { stdout } = await operation; return JSON.parse(stdout); }
+  catch (error) {
+    try { const result = JSON.parse(error.stdout); if (result.ok === false) return result; } catch {}
+    throw error;
+  }
 }
 
-function snapshot() { return { ...store.snapshot(), status: { error: lastError, stackMode, stackCount: stack.length } }; }
+function snapshot() { return { ...store.snapshot(), capabilities, status: { error: lastError, stackMode, stackCount: stack.length } }; }
 function emit() {
   stack = stack.filter(id => !!store.get(id));
   for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('library:changed', snapshot());
@@ -100,8 +106,10 @@ function capture(item) {
     item = { ...item, body: asset, asset, size, preview: image.resize({ width: Math.min(480, size.width) }).toDataURL() };
     delete item.imageBuffer;
   }
-  store.add(item); lastError = ''; if (store.data.settings.sound && !TEST_MODE) shell.beep(); emit();
+  const saved = store.add(item); lastError = ''; if (store.data.settings.sound && !TEST_MODE) shell.beep(); emit(); queueImageText(saved);
 }
+function imageBytes(item) { return item.asset ? store.readAsset(item.asset) : nativeImage.createFromDataURL(item.body).toPNG(); }
+function queueImageText(item) { if (capabilities.textRecognition && item.type === 'image') imageText.enqueue(item.id).catch(error => console.error('Image text recognition:', error.message)); }
 async function poll() { return monitor.tick(); }
 
 function placePanel() {
@@ -127,7 +135,7 @@ function getPreviewState() {
   if (!previewState) return null;
   const item = itemDetail(previewState.id);
   if (imageDraft) { item.body = `data:image/png;base64,${imageDraft.image.buffer.toString('base64')}`; item.size = imageDraft.image.size; }
-  return { ...previewState, item, imageEdit: imageDraft?.state(), boards: store.data.boards };
+  return { ...previewState, item, imageEdit: imageDraft?.state(), capabilities, boards: store.data.boards };
 }
 function closePreview() {
   if (previewWindow && !previewWindow.isDestroyed()) previewWindow.close();
@@ -140,11 +148,14 @@ function showPreview(id, { mode = 'view', anchor, ids = [] } = {}) {
   imageDraft?.dispose(); imageDraft = null;
   const item = store.get(id);
   if (mode === 'edit' && item.type === 'image') {
-    const current = item.asset ? store.readAsset(item.asset) : nativeImage.createFromDataURL(item.body).toPNG();
+    const current = imageBytes(item);
     const original = item.originalAsset ? store.readAsset(item.originalAsset) : item.originalBody?.startsWith('data:image/png;base64,')
       ? Buffer.from(item.originalBody.slice('data:image/png;base64,'.length), 'base64') : current;
-    imageDraft = new ImageDraft({ original, current, turns: item.imageTurns || 0,
-      transform: (buffer, turns) => imageProcessor.rotate(buffer, turns) });
+    const foreground = item.foregroundAsset ? store.readAsset(item.foregroundAsset) : item.foregroundBody?.startsWith('data:image/png;base64,')
+      ? Buffer.from(item.foregroundBody.slice('data:image/png;base64,'.length), 'base64') : undefined;
+    imageDraft = new ImageDraft({ original, current, foreground, turns: item.imageTurns || 0, backgroundRemoved: !!item.backgroundRemoved,
+      transform: (buffer, turns, options) => imageProcessor.rotate(buffer, turns, options),
+      cutout: capabilities.backgroundRemoval ? (buffer, options) => imageProcessor.cutout(buffer, options) : undefined });
   }
   previewState = { id, mode, ids: Array.isArray(ids) ? ids.filter(value => !!store.get(value)).slice(0, 100000) : [] };
   store.protectedItemId = mode !== 'view' ? id : null;
@@ -246,9 +257,33 @@ async function performSaveSettings(changes) {
   emit(); return snapshot();
 }
 
-function copy(id, options) {
-  const operation = copyQueue.then(() => performCopy(id, options));
+function queueCopy(action) {
+  const operation = copyQueue.then(action);
   copyQueue = operation.catch(() => {}); return operation;
+}
+function copy(id, options) { copyRequest += 1; return queueCopy(() => performCopy(id, options)); }
+async function recognizeItem(id, retry = false) {
+  if (!capabilities.textRecognition) throw new Error('此系统不支持图片文字识别');
+  const item = store.get(id); if (!item || item.type !== 'image') throw new Error('图片已被删除');
+  const signature = item.signature;
+  await imageText.enqueue(id, { force: retry === true, priority: true });
+  const current = store.get(id);
+  if (!current || current.signature !== signature) throw new Error('图片已改变，请重试识别');
+  if (current.ocr?.status === 'error') throw new Error(current.ocr.error || '图片文字识别失败');
+  return current.ocr;
+}
+async function copyImageText(id) {
+  const request = ++copyRequest, version = (await native('change-count')).count;
+  await recognizeItem(id);
+  return queueCopy(async () => {
+    const currentVersion = (await native('change-count')).count;
+    if (request !== copyRequest || (Number.isInteger(version) && version !== currentVersion)) throw new Error('图片文字复制已被后续复制替代');
+    const item = store.get(id), ocr = item?.ocr;
+    if (!ocr?.text || ocr.signature !== item.signature) throw new Error('未识别到可复制的文字');
+    await monitor.suspend(async () => monitor.remember(await clip.write({ type: 'text', body: ocr.text })));
+    if (!TEST_MODE) { mainWindow.hide(); closePreview(); }
+    return { ok: true, copied: true };
+  });
 }
 async function performCopy(id, { paste = false, plain = false } = {}) {
   const item = store.get(id);
@@ -277,6 +312,9 @@ function registerIPC() {
     'item:get': (_event, id) => { const item = store.get(id); return item?.asset ? { ...item, body: `data:image/png;base64,${store.readAsset(item.asset).toString('base64')}` } : item; },
     'item:detail': (_event, id) => itemDetail(id),
     'item:copy': (_event, id, options) => copy(id, options),
+    'item:recognize': (_event, id, retry) => recognizeItem(id, retry),
+    'item:copyText': (_event, id) => copyImageText(id),
+    'item:ocr': (_event, id) => { const item = store.get(id); return item?.ocr && item.ocr.signature === item.signature ? item.ocr : null; },
     'item:update': (_event, id, changes) => { store.update(id, changes || {}); emit(); return snapshot(); },
     'item:delete': (_event, ids) => { if (!Array.isArray(ids) || ids.length > 10000) throw new Error('Invalid selection'); store.delete(ids); emit(); return snapshot(); },
     'history:clear': async () => {
@@ -295,7 +333,7 @@ function registerIPC() {
     'preview:open': (_event, id, options) => showPreview(id, options),
     'preview:get': () => getPreviewState(),
     'preview:close': closePreview,
-    'preview:dirty': (event, value) => { if (event.sender === previewWindow?.webContents) previewDirty = !!value; },
+    'preview:dirty': (event, value) => { if (event.sender === previewWindow?.webContents) previewDirty = !!value || !!imageDraft?.busy; },
     'preview:image': async (event, action) => {
       if (event.sender !== previewWindow?.webContents || !imageDraft) throw new Error('图片编辑已关闭');
       const draft = imageDraft;
@@ -315,8 +353,11 @@ function registerIPC() {
           const { buffer, size } = imageDraft.image, image = nativeImage.createFromBuffer(buffer);
           if (image.isEmpty()) throw new Error('图片旋转结果不可用');
           store.replaceImage(previewState.id, { buffer, size, original: imageDraft.original, turns: imageDraft.turns,
+            foreground: imageDraft.foreground, backgroundRemoved: imageDraft.state().backgroundRemoved,
             signature: imageSignature(buffer, nativeImage),
             preview: image.resize({ width: Math.min(480, size.width) }).toDataURL() });
+          imageDraft.markSaved();
+          queueImageText(store.get(previewState.id));
         }
       } else store.update(previewState.id, changes || {});
       previewDirty = false; emit(); return snapshot();
@@ -375,7 +416,9 @@ else {
       if (unavailableImages.length) store.recovery = [store.recovery, `${unavailableImages.length} 个历史图片无法读取，原记录已保留。`].filter(Boolean).join(' ');
       nativeTheme.themeSource = store.data.settings.theme;
       transfers = new Transfers(store);
-      imageProcessor = new ImageProcessor(app.getPath('userData'), (command, data) => nativeInput(command, data, 20000));
+      imageProcessor = new ImageProcessor(app.getPath('userData'), (command, data, options) => nativeInput(command, data, 30000, options));
+      capabilities = await native('image-capabilities');
+      imageText = new ImageTextIndex({ store, processor: imageProcessor, readImage: imageBytes, onChanged: emit });
       monitor = new ClipboardMonitor({
         readVersion: async () => {
           const value = (await native('change-count')).count;
@@ -401,12 +444,13 @@ else {
         stack: () => { stackMode = true; emit(); showPanel('stack'); }
       }, TEST_MODE);
       registerIPC(); applyRuntimeSettings();
-      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor };
+      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, imageProcessor, imageText };
       try { hotkeys.apply(store.data.settings); } catch (error) { report(error); }
       for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(event, () => { if (mainWindow.isVisible()) placePanel(); });
       app.on('activate', () => showPanel());
       mainWindow.webContents.once('did-finish-load', () => { if (process.argv.includes('--show') || TEST_MODE) showPanel(); });
       if (!TEST_MODE) pollTimer = setInterval(poll, 650);
+      for (const item of store.data.items) queueImageText(item);
       mainWindow.on('close', event => { if (!quitting) { event.preventDefault(); if (store.data.settings.background) mainWindow.hide(); else app.quit(); } });
     } catch (error) { console.error(error); dialog.showErrorBox('Paste Easy 无法加载历史', `${error.message}\n原始数据未被覆盖。`); app.quit(); }
   });
@@ -414,6 +458,13 @@ else {
 app.on('before-quit', event => {
   if (previewWindow && !previewWindow.isDestroyed()) { event.preventDefault(); quitAfterPreview = true; closePreview(); return; }
   quitting = true;
+  if (!processingStopped) {
+    event.preventDefault(); clearInterval(pollTimer);
+    if (!processingClosing) {
+      processingClosing = true;
+      Promise.allSettled([imageText?.close(), imageProcessor?.close()]).then(() => { processingStopped = true; app.quit(); });
+    }
+  }
 });
 app.on('will-quit', () => { globalShortcut.unregisterAll(); clearInterval(pollTimer); });
 app.on('window-all-closed', event => event.preventDefault());
