@@ -352,6 +352,23 @@ test('real editor clipboard copy respects partial words and noncontiguous table 
   }
   await preview.close();
 });
+test('real plain clipboard paste preserves blank lines, padded ordinals and Markdown punctuation through save and copy', async () => {
+  const text = '  001) **literal**\n\n\n\t002) <b>not HTML</b> 🙂\n\n';
+  const id = await application.evaluate(() => {
+    const hooks = globalThis.__pasteTest, item = hooks.store.add({ type: 'text', body: 'Replace me' }); hooks.imageText.onChanged(); return item.id;
+  });
+  const opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id, { mode: 'edit' }), id);
+  const preview = await opened; await preview.waitForFunction(() => document.body.dataset.previewReady === 'true');
+  const editor = preview.getByRole('textbox', { name: '剪贴板内容' }); await editor.press('Meta+a');
+  await application.evaluate(async ({ clipboard, ClipboardItem }, text) => clipboard.write([new ClipboardItem({ 'text/plain': text })]), text);
+  await editor.press('Meta+v'); await expect(editor.locator('ol,strong,b')).toHaveCount(0);
+  const closed = preview.waitForEvent('close'); await preview.getByRole('button', { name: '保存', exact: true }).click(); await closed;
+  const saved = await page.evaluate(id => window.paste.getItem(id), id); expect(saved.body).toBe(text); expect(saved.html).not.toContain('<ol');
+  await page.evaluate(id => window.paste.copy(id, { paste: false }), id);
+  expect(await application.evaluate(({ clipboard }) => clipboard.readText())).toBe(text);
+  const exported = await application.evaluate((_electron, id) => globalThis.__pasteTest.store.exportData().items.find(item => item.id === id), id);
+  expect(exported.body).toBe(text);
+});
 test('opening an editor or undoing all changes never normalizes the original HTML or RTF', async () => {
   await application.evaluate(async ({ clipboard, ClipboardItem }) => {
     await clipboard.write([new ClipboardItem({ 'text/plain': 'No change', 'text/html': '<div><b>No change</b></div>', 'text/rtf': '{\\rtf1\\ansi No change}' })]);

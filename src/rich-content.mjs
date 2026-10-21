@@ -4,6 +4,13 @@ import { getSchema, getTextBetween, getTextSerializersFromSchema } from '@tiptap
 import StarterKit from '@tiptap/starter-kit';
 import { TableKit } from '@tiptap/extension-table';
 import { listProblem, plainText } from './rich-lists.mjs';
+import { Fragment, Slice } from '@tiptap/pm/model';
+
+export function plainTextSlice(text, context) {
+  const schema = context.doc.type.schema, marks = context.marks();
+  return Slice.maxOpen(Fragment.fromArray(text.split(/\r\n?|\n/).map(line =>
+    schema.nodes.paragraph.create(null, line ? schema.text(line, marks) : null))));
+}
 
 export const MAX_IMAGE_URL = 8 * 1024 * 1024;
 export function embeddedImage(value) {

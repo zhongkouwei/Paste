@@ -4,7 +4,7 @@ import { TextStyleKit } from '@tiptap/extension-text-style';
 import { Table, TableCell, TableHeader, TableKit, TableView } from '@tiptap/extension-table';
 import Image from '@tiptap/extension-image';
 import { closeHistory } from '@tiptap/pm/history';
-import { createRichContentPolicy, safeStyle, selectedTableText } from './rich-content.mjs';
+import { createRichContentPolicy, safeStyle, selectedTableText, plainTextSlice } from './rich-content.mjs';
 import { RichOrderedList, RichBulletList, RichListItem, plainText } from './rich-lists.mjs';
 import { clipboardText, copiedListNumbers } from './rich-copy.mjs';
 
@@ -42,14 +42,15 @@ export function create(element, { html, text = '', onUpdate, onSelection, onUnsu
   const content = html ? sanitize(html) : { type: 'doc', content: text.split('\n').map(line => ({
     type: 'paragraph', content: line ? [{ type: 'text', text: line }] : []
   })) };
-  const editor = new Editor({ element, extensions: [StarterKit.configure({ link: { openOnClick: false },
+  const editor = new Editor({ element, enablePasteRules: false, extensions: [StarterKit.configure({ link: { openOnClick: false },
     orderedList: false, bulletList: false, listItem: false, trailingNode: { notAfter: ['orderedList', 'bulletList'] } }), TextStyleKit,
     RichOrderedList, RichBulletList, RichListItem,
     PreservedStyle, TableKit.configure({ table: false, tableCell: false, tableHeader: false }), RichTable, preciseCell(TableCell), preciseCell(TableHeader),
     EmbeddedImage.configure({ inline: true, allowBase64: true })], content,
     parseOptions: { preserveWhitespace: 'full' },
     editorProps: { attributes: { role: 'textbox', 'aria-label': '剪贴板内容', 'aria-multiline': 'true', class: 'rich-editor' }, transformPastedHTML: sanitize,
-      clipboardTextSerializer: clipboardText, transformCopied: (slice, view) => copiedListNumbers(slice, view.state.selection),
+      clipboardTextSerializer: clipboardText, clipboardTextParser: plainTextSlice,
+      transformCopied: (slice, view) => copiedListNumbers(slice, view.state.selection),
       handlePaste: (_view, event) => {
         const clipboard = event.clipboardData, html = clipboard?.getData('text/html');
         const reason = html ? inspect(html).reason : clipboard?.files.length ? '请单独复制图片后编辑，当前选区未修改。' : '';

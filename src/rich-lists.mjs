@@ -15,6 +15,13 @@ export function listInteger(value) {
   if (typeof value !== 'string' || !/^[+-]?\d+$/.test(value.trim())) return null;
   const number = Number(value); return Number.isInteger(number) && number >= -2147483648 && number <= 2147483647 ? number : null;
 }
+export function listInput(text) {
+  const match = orderedListInputRegex.exec(text);
+  if (!match) return null;
+  const value = listInteger(match[1]);
+  if (value === null || String(value) !== match[1]) return null;
+  return { index: match.index, text: match[0], replaceWith: match[1] };
+}
 export function marker(style, value) {
   if (style === 'none') return '';
   return (counters.get(style) || counters.get('decimal')).renderMarker(value).replace(/\u00a0$/, ' ');
@@ -63,8 +70,10 @@ export const RichOrderedList = OrderedList.extend({
     }), 0];
   },
   renderText: selectedListText,
+  // A clipboard's text/plain representation is literal content, not Markdown.
+  addProseMirrorPlugins() { return []; },
   addInputRules() {
-    return [wrappingInputRule({ find: orderedListInputRegex, type: this.type,
+    return [wrappingInputRule({ find: listInput, type: this.type,
       getAttributes: match => ({ start: Number(match[1]) }),
       joinPredicate: (match, node) => {
         if (node.attrs.reversed || ![null, '1'].includes(node.attrs.type) || ![null, 'decimal'].includes(node.attrs.markerStyle)) return false;
