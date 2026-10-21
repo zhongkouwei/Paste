@@ -12,11 +12,72 @@ let searchRequest = 0, searchPending = false, queryMatches = new Set(), searchSe
 let composing = false;
 let calendarTimer, suggestionSignature = '', suggestionsDismissed = false;
 const imageTextCache = new Map(), imageTextPending = new Set();
+const mediaCache = new Map(), mediaPending = new Set(), mediaSkipped = new Set();
+let mediaBytes = 0, mediaActive = 0;
 
 function icon(name) { return `<i data-lucide="${name}"></i>`; }
 function escape(value) { return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]); }
 function safeColor(value) { return /^#[a-f0-9]{6}$/i.test(value) ? value : '#77808a'; }
 function safeImage(value) { return /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(value || '') ? value : ''; }
+function cachedMedia(key) {
+  if (!mediaCache.has(key)) return '';
+  const value = mediaCache.get(key); mediaCache.delete(key); mediaCache.set(key, value); return value;
+}
+function paintMedia() {
+  const requests = [], wanted = new Set();
+  for (const node of document.querySelectorAll('.clip-card')) {
+    const item = state.items.find(item => item.id === node.dataset.id); if (!item) continue;
+    for (const [field, key] of [['previewKey', item.previewKey], ['iconKey', item.source?.iconKey]]) {
+      if (!key) continue;
+      const rendered = field === 'previewKey' ? node.querySelector('.image-preview img') : node.querySelector('.source-icon');
+      if (rendered?.dataset.mediaKey === key) continue;
+      const value = safeImage(cachedMedia(key));
+      if (!value && mediaCache.has(key) && field === 'previewKey') {
+        const placeholder = node.querySelector('.media-placeholder');
+        if (placeholder) { placeholder.setAttribute('aria-label', '图片预览不可用'); placeholder.title = '图片预览不可用'; }
+      }
+      if (value) {
+        const target = field === 'previewKey' ? node.querySelector('.image-preview') : node.querySelector('.source-fallback');
+        if (target && (field !== 'previewKey' || !target.querySelector('img'))) {
+          const image = document.createElement('img'); image.src = value; image.draggable = false;
+          image.dataset.mediaKey = key;
+          image.alt = field === 'previewKey' ? item.title : item.source?.name || '';
+          if (field === 'previewKey') {
+            // OCR overlays own their nodes; replace only the media placeholder.
+            const placeholder = target.querySelector('.media-placeholder');
+            if (placeholder) placeholder.replaceWith(image); else target.prepend(image);
+          }
+          else { image.className = 'source-icon'; target.replaceWith(image); }
+        }
+      }
+      if (mediaCache.has(key) || mediaPending.has(key) || mediaSkipped.has(key) || wanted.has(key)) continue;
+      wanted.add(key);
+      let request = requests.find(request => request.id === item.id);
+      if (!request) { request = { id: item.id }; requests.push(request); }
+      request[field] = key;
+    }
+  }
+  if (!requests.length || mediaActive >= 2) return;
+  const batch = requests.slice(0, 32), keys = new Set(batch.flatMap(request => [request.previewKey, request.iconKey].filter(Boolean)));
+  for (const key of keys) mediaPending.add(key); mediaActive += 1;
+  api.getMedia(batch).then(values => {
+    const returned = new Set();
+    for (const { key, value } of values) {
+      if (!keys.has(key) || typeof value !== 'string') continue;
+      returned.add(key);
+      if (mediaCache.has(key)) mediaBytes -= mediaCache.get(key).length;
+      mediaCache.set(key, value); mediaBytes += value.length;
+    }
+    // A removed/replaced item may have no reply; retry only after a library change.
+    for (const key of keys) if (!returned.has(key)) mediaSkipped.add(key);
+    paintMedia();
+    while (mediaCache.size > 96 || mediaBytes > 16 * 1024 * 1024) {
+      const key = mediaCache.keys().next().value; mediaBytes -= mediaCache.get(key).length; mediaCache.delete(key);
+    }
+  }).catch(error => { for (const key of keys) mediaSkipped.add(key); toast(error.message); }).finally(() => {
+    for (const key of keys) mediaPending.delete(key); mediaActive -= 1; paintMedia();
+  });
+}
 function refreshIcons() { lucide.createIcons({ attrs: { 'aria-hidden': 'true' } }); }
 function visibleItems() { return filterItems(state.query.trim() ? state.items.filter(item => queryMatches.has(item.id)) : state.items,
   { ...state, ...dateRange(state.date), board: state.searching ? 'history' : state.board, pinboard: state.searching ? state.pinboard : '', query: '' }); }
@@ -130,6 +191,7 @@ function setFilter(kind, value, focus = false) {
 function accept(library) {
   if (!library) return;
   if (Number.isInteger(state.revision) && library.revision < state.revision) return;
+  mediaSkipped.clear();
   Object.assign(state, { items: library.items, boards: library.boards, settings: library.settings, revision: library.revision, capabilities: library.capabilities || {}, status: library.status || {} });
   if (state.board !== 'history' && !state.boards.some(board => board.id === state.board)) state.board = 'history';
   if (state.status.error) toast(state.status.error);
@@ -204,15 +266,16 @@ function renderBoards() {
 function optionID(id) { return `clip-${id.split('').map(character => character.charCodeAt(0).toString(16)).join('-')}`; }
 function card(item, index, total) {
   const selected = state.selected.has(item.id);
-  const image = safeImage(item.preview), sourceIcon = safeImage(item.source?.icon);
+  const image = safeImage(cachedMedia(item.previewKey)), sourceIcon = safeImage(cachedMedia(item.source?.iconKey));
   let body = `<pre>${escape(item.preview || item.body)}</pre>`;
   let kind = '';
-  if (item.type === 'image') { body = image ? `<img src="${image}" alt="${escape(item.title)}" draggable="false">` : icon('image-off'); kind = 'image-preview'; }
+  if (item.type === 'image') { body = image ? `<img src="${image}" data-media-key="${escape(item.previewKey)}" alt="${escape(item.title)}" draggable="false">`
+    : `<span class="media-placeholder" role="img" aria-label="${!item.previewKey || mediaCache.has(item.previewKey) ? '图片预览不可用' : '正在加载图片预览'}">${icon('image-off')}</span>`; kind = 'image-preview'; }
   if (item.type === 'color' && /^#[\da-f]{3,8}$/i.test(item.body)) { body = `<span>${escape(item.body)}</span>`; kind = 'color-preview'; }
   const caption = item.type === 'image' ? `${item.size?.width || '?'} × ${item.size?.height || '?'}`
     : item.type === 'file' ? '文件' : `${item.characterCount ?? [...(item.body || '')].length} 个字符`;
   return `<article id="${optionID(item.id)}" class="clip-card ${selected ? 'selected' : ''}" role="option" draggable="true" aria-selected="${selected}" aria-posinset="${index + 1}" aria-setsize="${total}" aria-label="${escape(item.title)}" data-id="${escape(item.id)}" data-index="${index}" data-type="${escape(item.type)}" style="left:${24 + index * 264}px;--source-color:${safeColor(item.source?.color)}">
-    <header class="clip-header"><span class="clip-type">${labels[item.type] || '文本'}</span><time class="clip-time">${relativeTime(item.createdAt)}</time>${sourceIcon ? `<img class="source-icon" src="${sourceIcon}" alt="${escape(item.source?.name)}" draggable="false">` : `<span class="source-fallback" title="${escape(item.source?.name || '')}">${icon(icons[item.type] || 'text')}</span>`}</header>
+    <header class="clip-header"><span class="clip-type">${labels[item.type] || '文本'}</span><time class="clip-time">${relativeTime(item.createdAt)}</time>${sourceIcon ? `<img class="source-icon" src="${sourceIcon}" data-media-key="${escape(item.source?.iconKey)}" alt="${escape(item.source?.name)}" draggable="false">` : `<span class="source-fallback" title="${escape(item.source?.name || '')}">${icon(icons[item.type] || 'text')}</span>`}</header>
     <div class="clip-body ${kind}" ${kind === 'color-preview' ? `style="background:${escape(item.body)};color:#111"` : ''}>${body}</div>
     <footer class="clip-footer">${item.renamed ? escape(item.title) : caption}</footer>${item.boardIds?.length ? `<span class="clip-pin">${icon('pin')}</span>` : ''}
     ${['image', 'file'].includes(item.type) ? `<button class="native-drag icon-button" draggable="true" data-native-drag="${escape(item.id)}" title="拖出原始文件" aria-label="拖出原始文件">${icon('grip-vertical')}</button>` : ''}
@@ -232,6 +295,7 @@ function renderCards() {
   $('#emptyTitle').textContent = searchPending ? '正在搜索…' : state.query || activeFilters(state).length ? '无结果'
     : state.board === 'history' ? '剪贴板为空' : 'Pinboard 为空';
   refreshIcons();
+  paintMedia();
   paintImageMatches();
 }
 function paintImageMatches() {

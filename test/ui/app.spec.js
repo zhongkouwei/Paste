@@ -1294,6 +1294,28 @@ test('large libraries remain virtualized and can navigate to the last clip', asy
   await page.keyboard.press('Home');
   await page.screenshot({ path: 'test-results/panel-dark.png' });
 });
+test('portrait capture bounds only the thumbnail while clipboard copy and exported original retain full pixels', async () => {
+  const body = await page.evaluate(() => {
+    const canvas = document.createElement('canvas'); canvas.width = 80; canvas.height = 3200;
+    const context = canvas.getContext('2d'); context.fillStyle = '#35a078'; context.fillRect(0, 0, 80, 3200);
+    context.fillStyle = '#e5634c'; context.fillRect(8, 3000, 64, 160); return canvas.toDataURL();
+  });
+  const captured = await application.evaluate(async ({ nativeImage }, body) => {
+    const hooks = globalThis.__pasteTest; await hooks.clip.write({ type: 'image', body }); await hooks.poll();
+    const item = hooks.store.data.items[0], original = nativeImage.createFromDataURL(body);
+    return { id: item.id, originalHash: hooks.hash(original.toBitmap()), previewSize: nativeImage.createFromDataURL(item.preview).getSize(), size: item.size };
+  }, body);
+  expect(captured.previewSize).toEqual({ width: 12, height: 480 }); expect(captured.size).toEqual({ width: 80, height: 3200 });
+  await expect(page.locator(`[data-id="${captured.id}"] .image-preview img`)).toBeVisible();
+  await page.evaluate(id => window.paste.copy(id), captured.id);
+  const copied = await application.evaluate(async ({ clipboard, nativeImage }, id) => {
+    const entry = (await clipboard.read())[0], png = Buffer.from(await (await entry.getType('image/png')).arrayBuffer());
+    const image = nativeImage.createFromBuffer(png), hooks = globalThis.__pasteTest;
+    const exported = hooks.store.exportData().items.find(item => item.id === id), full = nativeImage.createFromDataURL(exported.body);
+    return { size: image.getSize(), hash: hooks.hash(image.toBitmap()), exportedHash: hooks.hash(full.toBitmap()) };
+  }, captured.id);
+  expect(copied.size).toEqual({ width: 80, height: 3200 }); expect(copied.hash).toBe(captured.originalHash); expect(copied.exportedHash).toBe(captured.originalHash);
+});
 test('settings open as a real window and save privacy, theme and retention', async () => {
   const opened = application.waitForEvent('window');
   await page.keyboard.press('Meta+,');

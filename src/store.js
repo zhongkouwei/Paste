@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { ContentFiles } = require('./content-files');
+const { MediaReferences } = require('./media');
 const { COLORS, TYPES, DEFAULT_SETTINGS, prune, sanitizeSettings } = require('./model');
 
 const hash = input => crypto.createHash('sha256').update(input).digest('hex');
@@ -42,7 +43,7 @@ class ClipStore {
     this.now = now;
     this.legacyDirectories = legacyDirectories;
     this.data = { version: 3, items: [], boards: [], settings: { ...DEFAULT_SETTINGS } };
-    this.contents = new ContentFiles(directory); this.counts = new Map(); this.revision = 0;
+    this.contents = new ContentFiles(directory); this.media = new MediaReferences(); this.counts = new Map(); this.revision = 0;
     this.recovery = '';
     fs.mkdirSync(path.join(directory, 'assets'), { recursive: true, mode: 0o700 });
     this.load();
@@ -133,7 +134,7 @@ class ClipStore {
       committed = true; this.revision += 1;
       const directory = fs.openSync(this.directory, 'r');
       try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
-      const ids = new Set(this.data.items.map(item => item.id)); this.contents.retain(ids);
+      const ids = new Set(this.data.items.map(item => item.id)); this.contents.retain(ids); this.media.retain(ids);
       for (const id of this.counts.keys()) if (!ids.has(id)) this.counts.delete(id);
     } catch (error) { if (committed) throw new CommittedWriteError(error); throw error; }
     finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
@@ -338,15 +339,16 @@ class ClipStore {
   snapshot() {
     return { version: this.data.version, revision: this.revision, boards: this.data.boards, settings: this.data.settings, recovery: this.recovery, items: this.data.items.map(item => {
       const { id, type, title, signature, source, boardIds, isFavorite, renamed, createdAt, size, ocr } = item;
+      const { previewKey, iconKey } = this.media.get(item), { icon: _icon, ...sourceMetadata } = source || {};
       let count = this.counts.get(id);
       if (!count || count.body !== item.body) {
         let characters = type === 'image' ? 0 : item.body.length;
         if (type !== 'image') { const pairs = /[\uD800-\uDBFF][\uDC00-\uDFFF]/g; while (pairs.exec(item.body)) characters -= 1; }
         count = { body: item.body, value: characters }; this.counts.set(id, count);
       }
-      return { id, type, title, signature, source, boardIds, isFavorite, renamed, createdAt, size,
+      return { id, type, title, signature, source: source ? { ...sourceMetadata, ...(iconKey ? { iconKey } : {}) } : source, boardIds, isFavorite, renamed, createdAt, size,
         ...(ocr ? { ocr: { hasText: !!ocr.text, status: ocr.status, signature: ocr.signature, completedAt: ocr.completedAt } } : {}),
-        preview: type === 'image' ? item.preview : (item.preview || item.body).slice(0, 2000),
+        preview: type === 'image' ? '' : (item.preview || item.body).slice(0, 2000), ...(previewKey ? { previewKey } : {}),
         body: type !== 'image' && item.body.length <= 2000 ? item.body : '', characterCount: count.value };
     }) };
   }

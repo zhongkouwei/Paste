@@ -13,6 +13,7 @@ const { ClipboardMonitor } = require('./monitor');
 const { ImageProcessor, ImageDraft } = require('./image-editor');
 const { ImageTextIndex } = require('./image-text');
 const { SearchService } = require('./search-service');
+const { MediaService, thumbnail } = require('./media');
 const { applicationMenuTemplate, previewShortcut } = require('./app-menu');
 const clip = new ClipboardService({ ...electron, fileBridge: process.platform === 'darwin' ? {
   read: () => native('read-files'), write: files => nativeInput('write-files', { files })
@@ -24,7 +25,7 @@ app.setPath('userData', process.env.PASTE_DATA_DIR ? path.resolve(process.env.PA
 let mainWindow, settingsWindow, previewWindow, tray, store, transfers, pollTimer, targetApp;
 let previewState = null, previewDirty = false, previewOpening = false, activeShare;
 let hotkeys, monitor, imageProcessor, imageDraft, imageText, capabilities = {}, processingClosing = false, processingStopped = false;
-let searchService;
+let searchService, mediaService;
 let quitting = false, quitAfterPreview = false, copyQueue = Promise.resolve(), settingsQueue = Promise.resolve();
 let copyRequest = 0;
 let sourceCache = null, lastSourceAt = 0, suppressBlur = false;
@@ -107,7 +108,7 @@ function capture(item) {
     const image = nativeImage.createFromBuffer(item.imageBuffer), size = image.getSize();
     if (image.isEmpty()) throw new Error('剪贴板图片不可用');
     const asset = store.putAsset(item.imageBuffer);
-    item = { ...item, body: asset, asset, size, preview: image.resize({ width: Math.min(480, size.width) }).toDataURL() };
+    item = { ...item, body: asset, asset, size, preview: thumbnail(image) };
     delete item.imageBuffer;
   }
   const saved = store.add(item); lastError = ''; if (store.data.settings.sound && !TEST_MODE) shell.beep(); emit(); queueImageText(saved);
@@ -334,6 +335,7 @@ function registerIPC() {
   const handlers = {
     'library:get': () => snapshot(),
     'library:search': (_event, query) => searchService.search(store.data.items, store.revision, query),
+    'item:media': (_event, requests) => mediaService.read(requests),
     'item:get': (_event, id) => { const item = store.get(id); return item?.asset ? { ...item, body: `data:image/png;base64,${store.readAsset(item.asset).toString('base64')}` } : item; },
     'item:detail': (_event, id) => itemDetail(id),
     'item:copy': (_event, id, options) => copy(id, options),
@@ -380,7 +382,7 @@ function registerIPC() {
           store.replaceImage(previewState.id, { buffer, size, original: imageDraft.original, turns: imageDraft.turns,
             foreground: imageDraft.foreground, backgroundRemoved: imageDraft.state().backgroundRemoved,
             signature: imageSignature(buffer, nativeImage),
-            preview: image.resize({ width: Math.min(480, size.width) }).toDataURL() });
+            preview: thumbnail(image) });
           imageDraft.markSaved();
           queueImageText(store.get(previewState.id));
         }
@@ -445,6 +447,7 @@ else {
       capabilities = await native('image-capabilities');
       imageText = new ImageTextIndex({ store, processor: imageProcessor, readImage: imageBytes, onChanged: emit });
       searchService = new SearchService();
+      mediaService = new MediaService(store, nativeImage);
       monitor = new ClipboardMonitor({
         readVersion: async () => {
           const value = (await native('change-count')).count;
@@ -471,7 +474,7 @@ else {
         stack: () => { stackMode = true; emit(); showPanel('stack'); }
       }, TEST_MODE);
       registerIPC(); applyRuntimeSettings();
-      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, imageProcessor, imageText, searchService };
+      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, imageProcessor, imageText, searchService, mediaService, thumbnail };
       try { hotkeys.apply(store.data.settings); } catch (error) { report(error); }
       for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(event, () => { if (mainWindow.isVisible()) placePanel(); });
       app.on('activate', () => showPanel());
