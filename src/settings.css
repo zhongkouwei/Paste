@@ -1,0 +1,46 @@
+.settings-window { display: grid; grid-template-columns: 200px minmax(0,1fr); background: var(--surface); font-size: 14px; }
+.settings-sidebar { border-right: 1px solid var(--line); padding: 52px 10px 16px; display: flex; flex-direction: column; background: color-mix(in srgb, var(--surface) 97%, #000); -webkit-app-region: drag; }
+.settings-sidebar nav { display: flex; flex-direction: column; gap: 0; -webkit-app-region: no-drag; }
+.settings-sidebar button { display: flex; align-items: center; gap: 8px; width: 100%; height: 28px; text-align: left; padding: 0 10px; color: var(--muted); border-radius: 5px; }
+.settings-sidebar button svg { color: #3989c9; width: 15px; height: 15px; }
+.settings-sidebar button.active { background: var(--hover); color: var(--text); }
+.settings-brand { margin-top: auto; color: var(--muted); padding: 0 10px; font-size: 12px; }
+.settings-content { padding: 18px 20px 24px; overflow-y: auto; }
+.settings-content h1 { margin: 0 10px 16px; font-size: 16px; line-height: 18px; font-weight: 600; -webkit-app-region: drag; }
+.settings-content h2 { margin: 29px 10px 10px; font-size: 14px; font-weight: 600; }
+.settings-group { background: var(--field); border-radius: 8px; padding: 0 10px; }
+.setting-row { display: flex; gap: 12px; min-height: 36px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); padding: 8px 0; }
+.setting-row:last-child { border-bottom: 0; }
+.setting-row > span:first-child { min-width: 0; }
+small { display: block; color: var(--muted); font-size: 12px; line-height: 15px; padding-top: 3px; }
+input[type=checkbox][role=switch] { appearance: none; width: 27px; height: 16px; border-radius: 9px; background: #8885; position: relative; margin: 0; flex-shrink: 0; border: 1px solid #8885; }
+input[type=checkbox][role=switch]::after { content: ''; width: 12px; height: 12px; background: #eee; position: absolute; left: 1px; top: 1px; border-radius: 50%; box-shadow: 0 1px 2px #0003; }
+input[type=checkbox][role=switch]:checked { background: var(--selected); }
+input[type=checkbox][role=switch]:checked::after { left: 12px; }
+input { accent-color: var(--selected); }
+.radio-row { display: flex; gap: 5px; padding: 12px 0 5px; }
+.radio-row:last-of-type { padding-bottom: 12px; }
+.radio-row span { font-size: 13px; }
+.radio-row input { flex-shrink: 0; align-self: flex-start; margin-top: 2px; }
+.permission-state { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--muted); padding: 8px 10px; }
+.permission-state button { color: #4e8cf3; }
+.retention { padding: 18px 10px 12px; }
+.retention input { width: 100%; margin: 0; }
+.retention > div { display: flex; justify-content: space-between; font-size: 12px; margin-top: 10px; }
+.excluded-group ul { margin: 0; padding: 0; list-style: none; }
+.excluded-group li { display: flex; justify-content: space-between; align-items: center; min-height: 36px; font-size: 12px; overflow-wrap: anywhere; }
+.excluded-group form { display: flex; padding: 6px 0; border-top: 1px solid var(--line); }
+.excluded-group form input { width: 100%; min-width: 0; padding: 4px 7px; }
+.shortcut-list { margin-top: 20px; }
+kbd { font: 13px -apple-system, sans-serif; color: var(--muted); white-space: nowrap; }
+.shortcut { min-width: 130px; padding: 4px 12px; border-radius: 5px; background: var(--hover); font-size: 14px; }
+.shortcut.recording { outline: 2px solid var(--selected); }
+.standard-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--line); border-radius: 5px; padding: 5px 10px; background: var(--hover); font-size: 12px; }
+.standard-button svg { width: 14px; height: 14px; }
+#resetHotkey { margin-top: 20px; float: right; }
+.data-actions { display: flex; gap: 10px; margin: 20px 0; flex-wrap: wrap; }
+.danger { color: #e46259; }
+.about { padding: 60px 0; text-align: center; }
+.about h2 { font-size: 24px; }
+.about p { color: var(--muted); }
+#settingsStatus { position: fixed; bottom: 15px; left: 220px; right: 20px; background: var(--menu); border: 1px solid var(--line); padding: 10px; box-shadow: 0 4px 15px #0003; border-radius: 5px; font-size: 12px; }

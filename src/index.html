@@ -1,67 +1,48 @@
 <!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Paste Like</title>
-    <link rel="stylesheet" href="./styles.css" />
-  </head>
-  <body>
-    <main class="shell">
-      <header class="topbar">
-        <div class="brand">
-          <div class="mark" aria-hidden="true">P</div>
-          <div>
-            <h1>Paste Like</h1>
-            <p id="countLabel">Clipboard history</p>
-          </div>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Paste Easy</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="panel">
+    <header class="toolbar">
+      <div class="navigation">
+        <button id="searchToggle" class="icon-button" title="搜索" aria-label="搜索"><i data-lucide="search"></i></button>
+        <div id="searchBox" class="search-box" hidden>
+          <i data-lucide="search"></i>
+          <input id="searchInput" aria-label="搜索剪贴板" placeholder="搜索" autocomplete="off" type="search">
+          <button id="searchClear" class="icon-button small" title="清除搜索" aria-label="清除搜索"><i data-lucide="circle-x"></i></button>
+          <button id="filterToggle" class="icon-button small" title="筛选" aria-label="筛选"><i data-lucide="list-filter"></i></button>
         </div>
-        <div class="searchWrap">
-          <span aria-hidden="true">⌕</span>
-          <input id="searchInput" type="search" placeholder="Search copied text, links, code..." autocomplete="off" />
-        </div>
-        <nav class="tabs" aria-label="Filters">
-          <button class="tab active" data-filter="all">All</button>
-          <button class="tab" data-filter="favorite">Pinned</button>
-          <button class="tab" data-filter="text">Text</button>
-          <button class="tab" data-filter="link">Links</button>
-          <button class="tab" data-filter="code">Code</button>
-          <button class="tab" data-filter="image">Images</button>
-        </nav>
-        <button id="clearButton" class="iconButton" title="Clear history" aria-label="Clear history">⌫</button>
-        <button id="closeButton" class="iconButton" title="Close" aria-label="Close">×</button>
-      </header>
-
-      <section class="content">
-        <aside class="sidebar" aria-label="Pinboards">
-          <button class="board active" data-board="history">
-            <span class="boardIcon">◷</span>
-            <span>History</span>
-          </button>
-          <button class="board" data-filter="favorite">
-            <span class="boardIcon">★</span>
-            <span>Pinned</span>
-          </button>
-          <button class="board" data-filter="link">
-            <span class="boardIcon">↗</span>
-            <span>Links</span>
-          </button>
-          <button class="board" data-filter="code">
-            <span class="boardIcon">{ }</span>
-            <span>Code</span>
-          </button>
-        </aside>
-
-        <section class="timelineWrap">
-          <div id="emptyState" class="emptyState hidden">
-            <strong>No clips yet</strong>
-            <span>Copy text, links, code, or images and they will appear here.</span>
-          </div>
-          <div id="timeline" class="timeline" tabindex="0" aria-label="Clipboard items"></div>
-        </section>
-      </section>
-    </main>
-
-    <script src="./renderer.js"></script>
-  </body>
+        <nav id="boards" class="boards" aria-label="Pinboard"></nav>
+        <button id="addBoard" class="icon-button" title="创建 Pinboard" aria-label="创建 Pinboard"><i data-lucide="plus"></i></button>
+      </div>
+      <div class="toolbar-end">
+        <button id="stackButton" class="icon-button" title="Paste Stack" aria-label="Paste Stack"><i data-lucide="layers"></i><span id="stackCount" hidden></span></button>
+        <button id="moreButton" class="icon-button" title="更多" aria-label="更多"><i data-lucide="ellipsis"></i></button>
+      </div>
+    </header>
+    <section id="timeline" class="timeline" role="listbox" aria-label="剪贴板历史" aria-multiselectable="true" tabindex="0"><div id="track" class="track"></div></section>
+    <div id="emptyState" class="empty-state" hidden><span id="emptyTitle">剪贴板为空</span></div>
+    <div id="status" class="status" role="status" hidden></div>
+    <div id="menu" class="menu" role="menu" hidden></div>
+    <section id="filters" class="filter-panel" aria-label="筛选条件" hidden>
+      <div class="filter-heading">类型</div><div id="typeFilters" class="filter-options"></div>
+      <div class="filter-heading">应用</div><select id="sourceFilter" aria-label="来源应用"><option value="">所有应用</option></select>
+      <div class="filter-heading">日期</div><select id="dateFilter" aria-label="复制日期"><option value="">所有时间</option><option value="1">今天</option><option value="7">最近 7 天</option><option value="30">最近 30 天</option></select>
+    </section>
+  </main>
+  <dialog id="detailDialog" class="detail-dialog">
+    <header><h2 id="detailTitle">预览</h2><div><button id="editItem" class="icon-button" title="编辑" aria-label="编辑"><i data-lucide="pencil"></i></button><button id="closeDetail" class="icon-button" title="关闭预览" aria-label="关闭预览"><i data-lucide="x"></i></button></div></header>
+    <div id="detailBody"></div>
+    <footer><span id="detailMeta"></span><button id="saveEdit" hidden>保存</button><button id="copyDetail">复制</button></footer>
+  </dialog>
+  <script src="../node_modules/lucide/dist/umd/lucide.js"></script>
+  <script src="model.js"></script>
+  <script src="renderer.js"></script>
+</body>
 </html>

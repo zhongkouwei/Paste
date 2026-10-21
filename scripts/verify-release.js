@@ -1,0 +1,10 @@
+const { execFileSync } = require('node:child_process');
+const path = require('node:path');
+const fs = require('node:fs');
+const candidate = process.argv[2] || path.resolve(__dirname, '../release/mac-arm64/Paste Easy.app');
+if (process.platform !== 'darwin') throw new Error('Release verification requires macOS');
+if (!fs.existsSync(candidate)) throw new Error(`Application missing: ${candidate}`);
+execFileSync('codesign', ['--verify', '--deep', '--strict', '--verbose=2', candidate], { stdio: 'inherit' });
+execFileSync('spctl', ['--assess', '--type', 'execute', '--verbose=4', candidate], { stdio: 'inherit' });
+execFileSync('xcrun', ['stapler', 'validate', candidate], { stdio: 'inherit' });
+console.log('Signature, Gatekeeper assessment and stapled notarization passed.');
