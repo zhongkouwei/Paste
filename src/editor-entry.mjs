@@ -5,6 +5,7 @@ import { Table, TableCell, TableHeader, TableKit, TableView } from '@tiptap/exte
 import Image from '@tiptap/extension-image';
 import { closeHistory } from '@tiptap/pm/history';
 import { createRichContentPolicy, safeStyle, tableText } from './rich-content.mjs';
+import { RichOrderedList, RichBulletList, RichListItem, plainText } from './rich-lists.mjs';
 
 const policy = createRichContentPolicy(window);
 export const inspect = html => policy.inspect(html);
@@ -40,7 +41,9 @@ export function create(element, { html, text = '', onUpdate, onSelection, onUnsu
   const content = html ? sanitize(html) : { type: 'doc', content: text.split('\n').map(line => ({
     type: 'paragraph', content: line ? [{ type: 'text', text: line }] : []
   })) };
-  const editor = new Editor({ element, extensions: [StarterKit.configure({ link: { openOnClick: false } }), TextStyleKit,
+  const editor = new Editor({ element, extensions: [StarterKit.configure({ link: { openOnClick: false },
+    orderedList: false, bulletList: false, listItem: false, trailingNode: { notAfter: ['orderedList', 'bulletList'] } }), TextStyleKit,
+    RichOrderedList, RichBulletList, RichListItem,
     PreservedStyle, TableKit.configure({ table: false, tableCell: false, tableHeader: false }), RichTable, preciseCell(TableCell), preciseCell(TableHeader),
     EmbeddedImage.configure({ inline: true, allowBase64: true })], content,
     parseOptions: { preserveWhitespace: 'full' },
@@ -54,6 +57,8 @@ export function create(element, { html, text = '', onUpdate, onSelection, onUnsu
     onUpdate: ({ editor }) => { if (initialDocument) onUpdate?.(!editor.state.doc.eq(initialDocument)); },
     onSelectionUpdate: () => onSelection?.(), onTransaction: () => onSelection?.()
   });
+  // Settle structural plugins before taking the baseline, not on the first user selection.
+  editor.view.dispatch(editor.state.tr.setMeta('addToHistory', false));
   initialDocument = editor.state.doc;
   const commands = { bold: 'toggleBold', italic: 'toggleItalic', underline: 'toggleUnderline', strike: 'toggleStrike', undo: 'undo', redo: 'redo',
     insertTable: 'insertTable', addRowBefore: 'addRowBefore', addRowAfter: 'addRowAfter', deleteRow: 'deleteRow',
@@ -62,7 +67,7 @@ export function create(element, { html, text = '', onUpdate, onSelection, onUnsu
   const args = name => name === 'insertTable' ? { rows: 3, cols: 3, withHeaderRow: true } : undefined;
   return {
     focus: () => editor.view.focus(), destroy: () => editor.destroy(),
-    content: () => ({ body: editor.getText({ blockSeparator: '\n' }), html: editor.getHTML() }),
+    content: () => ({ body: plainText(editor.state.doc), html: editor.getHTML() }),
     active: name => editor.isActive(name),
     can: name => !!commands[name] && (name !== 'insertTable' || !editor.isActive('table')) && editor.can()[commands[name]](args(name)),
     command: name => {

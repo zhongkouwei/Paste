@@ -34,7 +34,7 @@ task_id：`2026-10-21-paste-parity-01a05dea`。此文件是同一任务的持续
 
 | 能力 | 当前证据 | 距离目标的剩余工作 |
 | --- | --- | --- |
-| 文本 / 富文本 | 实际 ClipboardItem/HTML/纯文本回写、隔离预览；Tiptap 样式、标准表格/行列/合并/标题行、内嵌栅格图；坐标文本、小数列宽、字节/重启/撤销全部保留已覆盖 | 完整 CSS/RTF、外部图片/其他嵌入内容、嵌套/caption 表格/相对列宽、写作工具及原版菜单/几何实测；不能称任意富文本无损 |
+| 文本 / 富文本 | 实际 ClipboardItem/HTML/纯文本回写、隔离预览；Tiptap 样式、标准表格/内嵌栅格图、倒序/逐项编号/嵌套列表；坐标文本、小数列宽、字节/重启/撤销全部保留已覆盖 | 完整 CSS/RTF、外部图片/其他嵌入内容、自定义计数器/图片标记、嵌套/caption 表格/相对列宽、写作工具及原版菜单/几何实测；不能称任意富文本无损 |
 | 图片 | 原图侧存、原像素 round-trip；系统旋转和 Vision 前景分割，背景恢复/撤销/重做/跨保存恢复原图，透明度、方向、主体颜色及重启已有实际测试 | 更广主体与边缘质量、高位深/广色域及大图压力、原版图像菜单实测、磁盘资产回收 |
 | 监听性能 | 系统变化计数避免未变内容重复读取；100 次未变检查只读一次的单测和 25 次真实计数检查 E2E 已通过；暂停不补录 | 仍每 650ms 启动原生桥读计数；能耗/持续运行和超大图库迁移压力需量化，不能把减少解码当作完整性能验收 |
 | 文件 | 原生 NSPasteboard 多文件 round-trip、独立文件列表、失效提示、按项 Finder 路径 E2E 通过；文件拖出 payload 已验证 | Finder/其他应用的真实拖放接收，失效文件恢复策略 |
@@ -206,6 +206,21 @@ task_id：`2026-10-21-paste-parity-01a05dea`。此文件是同一任务的持续
 - 这不是所有媒体故障已解决的声明：永久不返回的 IPC、原生同步解码阻塞、进程崩溃/重建和更广异常输入矩阵仍需继续；当前恢复逻辑只处理已返回的空结果或异常。完整 CSS/RTF、首次迁移/索引与总内存、磁盘媒体去重/增量元数据、原版逐状态像素/真实跨应用/辅助技术、iCloud/MCP/共享、加密/恢复/GC、许可/安装升级/Intel/签名公证完整范围保留。
 - 无新全局 skill；项目专属所有权/重试不变量与测试沿用同一记录和既有验证路径。完整剪贴板套件仍须前置检查与可恢复隔离；两个独立媒体套件不读写剪贴板，无需停止其他记录器。早期合成内容可能被原版收录的风险未核查/清理，不能据此宣称历史无副作用。
 
+## 第十一轮列表语义与原文基线
+
+- 本轮继续完整目标，未达到可发行或像素对齐标准。上一个警告诊断回合重复核实已知撤销/签名阻塞，没有功能增量；此轮恢复已有列表工作并取得实际实现/验证进展。当前代码、未提交差异、知识索引及测试约定已重新核对；CUA 再次确认 Mac 锁屏，不绕过，不冒充本机 Paste 新界面实测。
+- 根因先复现：现有 Tiptap 已支持 `start`/`type`，不是这两个属性缺失；真正缺的是 `reversed` 与 `li value`。原 `editor.getText` 展开 list/listItem/paragraph，丢掉全部标记且插入多余空行。新增同版本列表扩展适配、统一完整文档/格内列表文本输出，保留倒序隐式起点随 childCount 变化，`keepOnSplit: false` 防止新项目重复重启。逐项/嵌套格式用 HTML 属性和安全 CSS 保留，未修改 node_modules。
+- 引擎的 TrailingNode 会在第一次焦点交易为末尾列表加空段落，原基线此前已建立，导致未编辑也 dirty、保存重写原 HTML/清掉 RTF。调整配置使列表不强加尾段落，并在基线前运行非历史初始化交易，让表格等结构插件先稳定；列表 Enter 两次退出及表格编辑仍保留。保留 `start: null` 的隐式语义后，上游续接谓词把 null 当 0，实测输入第三项变成两个列表；仍用公开 wrappingInputRule，续接检查真实下一编号，不把倒序/非 decimal 列表误合并。
+- 不手写计数算法：新增直接依赖 `@tiptap/extension-list` 3.32.0（原已有同版本传递依赖）、`@jsamr/counter-style` 2.0.2（MIT、无运行依赖），公开 registry 与 integrity 已核对。该库提供内建数字/字母/罗马/部分国际化格式和范围回退；其旧 square preset 为 U+25FE，在自身适配层通过库的 cyclic 构造器按标准改为 U+25AA。只把末尾 NBSP 转普通空格，不重写 CJK 标点。
+- 新列表序列化器也参与编辑器复制，必须尊重部分选区：完整节点输出标记，部分祖先仅递归选中的内容，不复制未选兄弟或相邻私有文本。真实 Electron 合成 ClipboardEvent/DataTransfer 验证子串与整列表 HTML/纯文本；不访问系统剪贴板。编号样式不会从首项反向传播到整个列表，`list-style` shorthand 通过 CSSOM 拆为 type/position，内联 span 间空格保留，仅清理结构缩进。
+- 自定义 counter-reset/set/increment、图片标记、未支持样式/类型、非法或超 signed 32-bit 编号、超过 32 层嵌套明确拒绝编辑/粘贴，保留原文。CSS shorthand 的 image 初始值并非自定义图片，按实际 CSSOM 的 initial/none 处理。保护性拒绝不是最终功能完成；全部 CSS/RTF、其他嵌入/自定义列表、更多跨应用格式仍未实现。深浅色 720/320pt 截图为自身回归，不是 Paste 像素差分。
+- 新增 `test/rich-lists.test.js` 七项单测、独立 `test/ui/rich-lists.spec.js` 九项合成 E2E，以及 `app.spec.js` 的真实 ClipboardItem/纯文本/导出验证。独立列表套件不碰系统剪贴板，不必停止原版；完整 app 套件仍须前置检查、可恢复隔离与剪贴板恢复。定向测试曾误用 `clip.read().body`，实际接口是 `.text`；修正测试，未更改生产 API 迁就错误断言。选区序列化测试用引擎公开命令设置位置、随后走真实复制/粘贴事件和键盘拆分/输入；不把 CDP 快捷键组合当物理键盘验收。
+- 依据：[HTML ol/li 语义](https://html.spec.whatwg.org/multipage/grouping-content.html#the-ol-element)、[CSS Counter Styles](https://www.w3.org/TR/css-counter-styles-3/)、[counter-style 公开源码](https://github.com/jsamr/react-native-li/tree/master/packages/counter-style)。本轮未新增全局 skill，项目专属的模型/基线/选区不变量和继续入口留在此记录。
+- 最终验证（2026-10-22 04:12 Asia/Shanghai）：107 项 Node 单测、check/build/diff 全通过；源码 app 42 项（36.1 秒）+独立媒体/列表 22 项（31.0 秒），产物 app 42 项（38.3 秒）+独立 22 项（31.5 秒），各 64 项完整通过。9 项新列表产物流程重复五轮，共 45 次通过（52.2 秒）。实际查看 720pt 浅色与 320pt 深色列表截图，标记/换行可见、无外层横向溢出；仍非原版像素差分。
+- 三个变更运行模块和编译后的 `src/vendor/editor.js` 与受测 app.asar 逐字节一致；生产依赖/入口按结构核对相同。electron-builder 会删除打包 package.json 中的 scripts/devDependencies/build 等开发字段，不能把原始 manifest 字节差异当作源码漂移。公开生产 audit 0，完整 audit 仍 8 moderate（sprintf-js 构建链）；最终 codesign 严格完整性通过，release:verify 在 Gatekeeper 阶段非零，有效签名身份 0。旧撤销 Paste Like 未启动/修改，未清隔离或关闭防护，仍未发行。
+- 完整剪贴板验证在核对原版当前 PID/可执行路径/启动时间后进行可恢复隔离，失败分支及成功分支都 finally 恢复；最终驱动退出 0、原版身份未变，恢复后的前置检查再次拒绝活动记录器，不写剪贴板。然后才运行三个独立套件及重复回归。更早合成内容可能被原版收录仍未核查/清理，不能宣称零历史副作用。
+- 下一步先核实纯文本自动列表/手工超长编号与选区 HTML 编号、表格部分复制等边界；本轮 signed 32-bit 和深度限制是 HTML 策略，不覆盖所有引擎输入路径。随后继续完整 CSS/RTF、其他嵌入、冷启动/内存/磁盘媒体去重和增量元数据；解锁后完整同样本像素/物理 IME/VoiceOver/跨应用/多屏验收。iCloud/MCP/共享、隐私加密/恢复/GC、许可/图标/安装升级/Intel/签名公证完整缺口保留，不缩减目标。
+
 ## 继续入口
 
-请继续任务 `2026-10-21-paste-parity-01a05dea`。先读取 `/Users/bytedance/.codex/worktrees/afb0/Paste/docs/PARITY.md` 并核实 Git/外部状态，保持完整目标和发行门槛。已有图片/OCR/可见媒体引用、有界缓存、所有权与有限退避恢复、双轴缩略图、标准表格/内嵌图/列宽/撤销基线、变化计数、version 3 内容文件/Worker FTS5、全局搜索/可见四维筛选/显式候选/日历边界/Return 两阶段/CmdE/R/G/稳定多选，不要重复重建。先确认其他记录器已退出或有经确认、可恢复的集成测试隔离；两个独立媒体套件不读写剪贴板，无须停止原版，app.spec.js 仍须隔离；未核实原版历史时不要声称零副作用。优先推进完整 CSS/RTF/其他嵌入内容、冷启动/内存/磁盘媒体去重和增量元数据；重排/模糊先取得原版证据。Mac 解锁后完成同样本差分、物理 IME/VoiceOver、真实粘贴/拖出/分享/多屏。媒体占位与 OCR 层独立更新；同键仍有效 owner 共享失败预算，旧 owner/revision/epoch 不封锁新上下文；不要因编码缓存淘汰反复取已显示图片。永久挂起和同步解码仍未取消，不把返回异常的有限重试当作全部故障恢复。原生预览键测试用 Electron sendInputEvent，CDP 不能代替原生钩子；表格用 TableMap，不用 DOM cellIndex、不改 node_modules。GC 保留所有主/备份/迁移快照的 contentAsset、asset、originalAsset、foregroundAsset。iCloud/MCP/共享、隐私/恢复/许可/图标/安装升级/Intel/签名公证等未完成范围不能删除；不要用旧构建恢复新库或绕过系统安全。
+请继续任务 `2026-10-21-paste-parity-01a05dea`。先读取 `/Users/bytedance/.codex/worktrees/afb0/Paste/docs/PARITY.md` 并核实 Git/外部状态，保持完整目标和发行门槛。已有列表倒序/逐项重启/嵌套/原文基线、标准表格/内嵌图/列宽/撤销、图片/OCR/有界媒体引用与恢复、变化计数、version 3 内容文件/Worker FTS5、全局搜索/可见四维筛选/显式候选/日历/Return 两阶段/CmdE/R/G/稳定多选，不要重复重建。先检查纯文本自动列表/手工超长编号、选区 HTML 编号和表格部分复制；HTML 检查不等于所有输入路径已限界。继续完整 CSS/RTF/其他嵌入、冷启动/总内存/磁盘去重和增量元数据；重排/模糊先取得原版证据。三个独立媒体/列表套件不碰系统剪贴板，无须停止原版；app.spec.js 仍须前置检查和经确认、可恢复的隔离。未核实原版历史时不要声称零副作用。Mac 解锁后同样本逐状态像素差分、物理 IME/VoiceOver、真实粘贴/拖出/分享/多屏。媒体占位与 OCR 层独立；同键仍有效 owner 共享预算，旧 owner/revision/epoch 不封锁新上下文，不因编码缓存淘汰反复取已显示图；挂起和同步解码仍未取消。原生预览键测试用 Electron sendInputEvent；表格用 TableMap；不改 node_modules，列表计数用既有引擎/库。GC 保留所有主/备份/迁移快照的 contentAsset、asset、originalAsset、foregroundAsset。iCloud/MCP/共享、隐私加密/恢复/许可/图标/安装升级/Intel/签名公证未完成范围不能删除，不用旧构建恢复新库或绕过安全保护。

@@ -3,6 +3,7 @@ import { TableMap } from '@tiptap/pm/tables';
 import { getSchema } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { TableKit } from '@tiptap/extension-table';
+import { listProblem, plainText } from './rich-lists.mjs';
 
 export const MAX_IMAGE_URL = 8 * 1024 * 1024;
 export function embeddedImage(value) {
@@ -22,7 +23,7 @@ export function tableText(node) {
     const cells = [];
     for (let column = 0; column < map.width; column++) {
       const position = map.map[row * map.width + column];
-      cells.push(seen.has(position) ? '' : node.nodeAt(position).textBetween(0, node.nodeAt(position).content.size, '\n', leaf => leaf.attrs.alt || ''));
+      cells.push(seen.has(position) ? '' : plainText(node.nodeAt(position)));
       seen.add(position);
     }
     rows.push(cells.join('\t'));
@@ -32,7 +33,7 @@ export function tableText(node) {
 
 const STYLE_PROPERTIES = [
   'color', 'background-color', 'font-family', 'font-size', 'font-weight', 'font-style', 'line-height',
-  'text-align', 'text-decoration', 'text-indent', 'white-space', 'vertical-align', 'list-style-type',
+  'text-align', 'text-decoration', 'text-indent', 'white-space', 'vertical-align', 'list-style-type', 'list-style-position',
   'width', 'height', 'min-width', 'max-width', 'min-height', 'max-height', 'border-collapse', 'border-spacing', 'table-layout',
   'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
   'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
@@ -67,6 +68,11 @@ export function createRichContentPolicy(window) {
   });
   purifier.addHook('afterSanitizeAttributes', node => {
     if (node.tagName === 'IMG' && !embeddedImage(node.getAttribute('src'))) { node.remove(); return; }
+    if (['OL', 'UL', 'LI'].includes(node.tagName) &&
+      ((node.style.listStyleImage && !['none', 'initial'].includes(node.style.listStyleImage)) ||
+      ['counter-reset', 'counter-set', 'counter-increment'].some(name => node.style.getPropertyValue(name) && node.style.getPropertyValue(name) !== 'none'))) {
+      problem('自定义列表计数器或图片标记暂不支持编辑，原文未修改。');
+    }
     if (node.hasAttribute?.('style')) {
       const style = safeStyle(node); if (style) node.setAttribute('style', style); else node.removeAttribute('style');
     }
@@ -80,9 +86,16 @@ export function createRichContentPolicy(window) {
         FORBID_TAGS: ['style', 'link', 'base', 'iframe', 'form', 'input', 'button', 'video', 'audio', 'source', 'object', 'embed', 'canvas', 'template'],
         FORBID_ATTR: ['srcset', 'poster', 'background', 'class', 'id', 'contenteditable', 'tabindex', 'autofocus'] });
       const document = new window.DOMParser().parseFromString(sanitized, 'text/html');
-      for (const container of document.querySelectorAll('table,thead,tbody,tfoot,tr,colgroup')) {
+      for (const container of document.querySelectorAll('table,thead,tbody,tfoot,tr,colgroup,ol,ul')) {
         for (const child of [...container.childNodes]) if (child.nodeType === 3 && !child.textContent.trim()) child.remove();
       }
+      for (const item of document.querySelectorAll('li')) {
+        const children = [...item.childNodes];
+        if (children.every(child => child.nodeType === 3 ? !child.textContent.trim() : child.nodeType !== 1 || ['P', 'OL', 'UL', 'BLOCKQUOTE', 'PRE', 'TABLE', 'DIV'].includes(child.tagName))) {
+          for (const child of children) if (child.nodeType === 3) child.remove();
+        }
+      }
+      const listReason = listProblem(document); if (listReason) problem(listReason);
       let area = 0;
       for (const cell of document.querySelectorAll('td,th')) area += (Number(cell.getAttribute('rowspan')) || 1) * (Number(cell.getAttribute('colspan')) || 1);
       if (area > 20000) problem('表格单元格范围过大，原文未修改。');

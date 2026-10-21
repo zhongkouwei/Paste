@@ -300,6 +300,30 @@ test('rich editing preserves styled selections, undo/redo, pins and clipboard ro
   const matching = (await page.evaluate(() => window.paste.getLibrary())).items.filter(item => item.body === 'Styled clipboard');
   expect(matching).toHaveLength(1); expect(matching[0].id).toBe(id);
 });
+test('edited list numbering and HTML survive real clipboard copy, plain mode and export', async () => {
+  const html = '<p>List fixture</p><ol reversed type="A"><li><p>First</p></li><li value="7"><p>Restart</p><ul style="list-style-type:square"><li><p>Nested</p></li></ul></li><li><p>Last</p></li></ol>';
+  const id = await application.evaluate(async ({ clipboard, ClipboardItem }, html) => {
+    await clipboard.write([new ClipboardItem({ 'text/plain': 'List fixture', 'text/html': html })]);
+    await globalThis.__pasteTest.poll(); return globalThis.__pasteTest.store.data.items[0].id;
+  }, html);
+  const opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id, { mode: 'edit' }), id);
+  const preview = await opened, editor = preview.getByRole('textbox', { name: '剪贴板内容' });
+  await preview.waitForFunction(() => document.body.dataset.previewReady === 'true');
+  await editor.evaluate(element => { element.editor.commands.setTextSelection(1); element.editor.view.focus(); });
+  await preview.keyboard.insertText('Updated ');
+  const closed = preview.waitForEvent('close'); await preview.getByRole('button', { name: '保存', exact: true }).click(); await closed;
+  const expected = 'Updated List fixture\nC. First\nG. Restart\n  ▪ Nested\nF. Last';
+  const saved = await page.evaluate(id => window.paste.getItem(id), id); expect(saved.body).toBe(expected);
+  await page.evaluate(id => window.paste.copy(id, { paste: false }), id);
+  const actual = await application.evaluate(async () => globalThis.__pasteTest.clip.read());
+  expect(actual.text).toBe(expected); expect(actual.html).toContain('reversed'); expect(actual.html).toContain('value="7"');
+  expect(actual.signature).toBe(saved.signature);
+  await page.evaluate(id => window.paste.copy(id, { paste: false, plain: true }), id);
+  expect(await application.evaluate(({ clipboard }) => clipboard.readText())).toBe(expected);
+  expect(await application.evaluate(async ({ clipboard }) => (await clipboard.read())[0].types)).not.toContain('text/html');
+  const exported = await application.evaluate((_electron, id) => globalThis.__pasteTest.store.exportData().items.find(item => item.id === id), id);
+  expect(exported.body).toBe(expected); expect(exported.html).toBe(saved.html);
+});
 test('opening an editor or undoing all changes never normalizes the original HTML or RTF', async () => {
   await application.evaluate(async ({ clipboard, ClipboardItem }) => {
     await clipboard.write([new ClipboardItem({ 'text/plain': 'No change', 'text/html': '<div><b>No change</b></div>', 'text/rtf': '{\\rtf1\\ansi No change}' })]);
