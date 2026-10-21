@@ -24,6 +24,8 @@
       <span class="tool-divider"></span>
       <button class="icon-button" data-command="undo" title="撤销" aria-label="撤销"><i data-lucide="undo-2"></i></button>
       <button class="icon-button" data-command="redo" title="重做" aria-label="重做"><i data-lucide="redo-2"></i></button>
+      <span class="tool-divider"></span>
+      <button id="tableToggle" class="icon-button" title="表格" aria-label="表格" aria-haspopup="menu" aria-expanded="false"><i data-lucide="table-2"></i></button>
     </nav>
     <nav id="imageTools" class="edit-tools" aria-label="图片编辑" hidden>
       <button class="icon-button" data-image="left" title="向左旋转" aria-label="向左旋转"><i data-lucide="rotate-ccw"></i></button>
@@ -44,8 +46,9 @@
     </div>
     <footer class="preview-footer"><span id="previewMeta"></span><button id="copyPreview" class="icon-button" title="复制" aria-label="复制"><i data-lucide="copy"></i></button></footer>
     <div id="previewPinboards" class="preview-pinboards" hidden></div>
+    <div id="tableMenu" class="table-menu menu" role="menu" aria-label="表格操作" hidden></div>
     <p id="previewStatus" class="preview-status" role="status" hidden></p>
   </main>
-  <script src="../node_modules/lucide/dist/umd/lucide.js"></script><script src="../node_modules/dompurify/dist/purify.min.js"></script>
+  <script src="../node_modules/lucide/dist/umd/lucide.js"></script>
   <script src="model.js"></script><script src="vendor/editor.js"></script><script src="preview.js"></script>
 </body></html>

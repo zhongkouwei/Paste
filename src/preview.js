@@ -1,4 +1,4 @@
-/* global lucide, DOMPurify, PasteEditor */
+/* global lucide, PasteEditor */
 const $ = selector => document.querySelector(selector);
 const api = window.paste;
 const labels = { text: '文本', code: '文本', link: '链接', image: '图片', color: '颜色', file: '文件' };
@@ -20,11 +20,14 @@ function previewCommand(mode) {
   else attempt(() => api.openPreview(state.id, { mode, ids: state.ids }));
 }
 
-function sanitizeEditor(html) {
-  return DOMPurify.sanitize(html, { USE_PROFILES: { html: true },
-    FORBID_TAGS: ['style', 'link', 'base', 'iframe', 'form', 'input', 'button', 'video', 'audio', 'source', 'img'],
-    FORBID_ATTR: ['src', 'srcset', 'poster', 'background'] });
-}
+const tableCommands = [
+  ['insertTable', '插入表格', 'table-2'], ['addRowBefore', '在上方插入行', 'rows-3'], ['addRowAfter', '在下方插入行', 'rows-3'],
+  ['addColumnBefore', '在左侧插入列', 'columns-3'], ['addColumnAfter', '在右侧插入列', 'columns-3'],
+  ['mergeCells', '合并单元格', 'table-cells-merge'], ['splitCell', '拆分单元格', 'table-cells-split'],
+  ['toggleHeaderRow', '切换标题行', 'panel-top'], ['deleteRow', '删除行', 'list-minus'],
+  ['deleteColumn', '删除列', 'list-minus'], ['deleteTable', '删除表格', 'trash-2']
+];
+function closeTableMenu() { $('#tableMenu').hidden = true; $('#tableToggle').setAttribute('aria-expanded', 'false'); }
 function updateTools() {
   if (state?.imageEdit) {
     for (const button of document.querySelectorAll('#imageTools [data-image]')) {
@@ -40,10 +43,10 @@ function updateTools() {
     $('#savePreview').disabled = imageBusy;
   }
   if (!richEditor) return;
-  for (const button of document.querySelectorAll('#editTools [data-command]')) {
+  for (const button of document.querySelectorAll('#editTools [data-command], #tableMenu [data-command]')) {
     const command = button.dataset.command;
-    if (['undo', 'redo'].includes(command)) button.disabled = !richEditor.can(command);
-    else button.setAttribute('aria-pressed', String(richEditor.active(command)));
+    button.disabled = !richEditor.can(command);
+    if (['bold', 'italic', 'underline', 'strike'].includes(command)) button.setAttribute('aria-pressed', String(richEditor.active(command)));
   }
 }
 function renderOCR() {
@@ -77,11 +80,11 @@ function renderImage() {
 
 function richPreview(html) {
   const iframe = document.createElement('iframe'); iframe.title = '富文本预览'; iframe.setAttribute('sandbox', ''); iframe.referrerPolicy = 'no-referrer';
-  const sanitized = DOMPurify.sanitize(html, { USE_PROFILES: { html: true },
-    FORBID_TAGS: ['style', 'link', 'base', 'iframe', 'form', 'input', 'button', 'video', 'audio', 'source'],
-    FORBID_ATTR: ['src', 'srcset', 'href', 'poster', 'background'] });
+  const sanitized = PasteEditor.sanitize(html);
+  const parsed = new DOMParser().parseFromString(sanitized, 'text/html');
+  for (const link of parsed.querySelectorAll('[href]')) link.removeAttribute('href');
   iframe.srcdoc = '<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:; base-uri \'none\'; form-action \'none\'">'
-    + '<style>body{margin:0;padding:16px;color:#222;background:#fff;font:14px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;overflow-wrap:anywhere}img{max-width:100%}</style>' + sanitized;
+    + '<style>body{margin:0;padding:16px;color:#222;background:#fff;font:14px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;overflow-wrap:anywhere}img{max-width:100%;height:auto}table{border-collapse:collapse}td,th{border:1px solid #ccc;padding:6px;min-width:25px}p{margin:0 0 8px}</style>' + parsed.body.innerHTML;
   return iframe;
 }
 
@@ -123,6 +126,7 @@ function render(value) {
     renderPinboards(); renderOCR(); return;
   }
   state = value; dirty = false;
+  closeTableMenu();
   richEditor?.destroy(); richEditor = null;
   const item = value.item, editing = value.mode !== 'view';
   const supported = item.type !== 'text' || PasteEditor.supports(item.html);
@@ -140,11 +144,12 @@ function render(value) {
   if (value.imageEdit) renderImage();
   else if (editing && value.mode !== 'rename' && !supported) {
     content.append(richPreview(item.html)); $('#savePreview').hidden = true; $('#copyPreview').hidden = false;
-    status('此富文本暂不支持无损编辑，原始内容未修改。');
+    status(PasteEditor.inspect(item.html).reason);
   }
   else if (editing && value.mode !== 'rename' && item.type === 'text') {
-    richEditor = PasteEditor.create(content, { html: item.html, text: item.body, sanitize: sanitizeEditor,
-      onUpdate: () => { markDirty(true); if (richEditor) $('#previewMeta').textContent = `${[...richEditor.content().body].length} 个字符`; }, onSelection: updateTools });
+    content.classList.add('rich-document');
+    richEditor = PasteEditor.create(content, { html: item.html, text: item.body, onUnsupported: status,
+      onUpdate: changed => { markDirty(changed); if (richEditor) $('#previewMeta').textContent = `${[...richEditor.content().body].length} 个字符`; }, onSelection: updateTools });
     updateTools();
   } else if (editing) {
     const input = document.createElement(value.mode === 'rename' ? 'input' : 'textarea');
@@ -179,10 +184,21 @@ $('#savePreview').onclick = () => attempt(async () => {
     markDirty(false); await api.closePreview();
   } finally { saveBusy = false; $('.preview-shell').inert = false; $('#savePreview').setAttribute('aria-busy', 'false'); }
 });
-for (const button of document.querySelectorAll('#editTools [data-command]')) {
-  button.onmousedown = event => event.preventDefault();
-  button.onclick = () => { richEditor?.command(button.dataset.command); updateTools(); };
+for (const [command, name, icon] of tableCommands) {
+  const button = document.createElement('button'); button.type = 'button'; button.role = 'menuitem'; button.dataset.command = command;
+  button.onpointermove = () => { if (!button.disabled) button.focus({ preventScroll: true }); };
+  const symbol = document.createElement('i'); symbol.dataset.lucide = icon;
+  const label = document.createElement('span'); label.textContent = name; button.append(symbol, label); $('#tableMenu').append(button);
 }
+for (const button of document.querySelectorAll('#editTools [data-command], #tableMenu [data-command]')) {
+  button.onmousedown = event => event.preventDefault();
+  button.onclick = () => { closeTableMenu(); richEditor?.command(button.dataset.command); updateTools(); };
+}
+$('#tableToggle').onmousedown = event => event.preventDefault();
+$('#tableToggle').onclick = () => {
+  const open = $('#tableMenu').hidden; closeTableMenu();
+  if (open && richEditor) { updateTools(); $('#tableMenu').hidden = false; $('#tableToggle').setAttribute('aria-expanded', 'true'); $('#tableMenu button:not(:disabled)')?.focus(); }
+};
 for (const button of document.querySelectorAll('#imageTools [data-image]')) button.onclick = () => attempt(async () => {
   const wasDirty = dirty;
   imageBusy = true; markDirty(true); updateTools(); $('#previewContent').setAttribute('aria-busy', 'true');
@@ -195,13 +211,27 @@ $('#retryOCR').onclick = () => attempt(() => recognize(true));
 $('#copyOCR').onclick = () => attempt(async () => { await api.copyImageText(state.id); status('已复制文字'); });
 $('#pinPreview').onclick = () => { $('#previewPinboards').hidden = !$('#previewPinboards').hidden; };
 $('#sharePreview').onclick = () => attempt(() => api.shareItem(state.id));
-document.addEventListener('pointerdown', event => { if (!event.target.closest('#previewPinboards, #pinPreview')) $('#previewPinboards').hidden = true; });
+document.addEventListener('pointerdown', event => {
+  if (!event.target.closest('#previewPinboards, #pinPreview')) $('#previewPinboards').hidden = true;
+  if (!event.target.closest('#tableMenu, #tableToggle')) closeTableMenu();
+});
 document.addEventListener('compositionstart', () => { composing = true; });
 document.addEventListener('compositionend', () => { composing = false; });
 document.addEventListener('keydown', event => {
   if (saveBusy) { event.preventDefault(); return; }
   if (!state) return;
   if (PasteModel.isComposingKey(event, composing)) return;
+  if (!$('#tableMenu').hidden) {
+    const buttons = [...$('#tableMenu').querySelectorAll('button:not(:disabled)')], index = buttons.indexOf(document.activeElement);
+    if (['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) {
+      event.preventDefault(); const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+      buttons[next]?.focus(); return;
+    }
+    if (event.key === 'Escape') { event.preventDefault(); closeTableMenu(); richEditor?.focus(); return; }
+    if (event.key === 'Tab') { closeTableMenu(); return; }
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); if (!event.repeat) buttons[index]?.click(); return; }
+    if (!(event.metaKey || event.ctrlKey)) return;
+  }
   if (state?.mode === 'view' && PasteModel.shortcutMatches(event, 'CommandOrControl+E')) {
     event.preventDefault(); if (!event.repeat) previewCommand('edit'); return;
   }

@@ -26,10 +26,20 @@
 .edit-tools button:disabled { opacity: .35; pointer-events: none; }
 .tool-divider { width: 1px; height: 18px; margin: 0 6px; background: var(--line); }
 .rich-editor { min-height: 100%; outline: none; overflow-wrap: anywhere; white-space: pre-wrap; font: 14px/1.5 -apple-system, BlinkMacSystemFont, sans-serif; }
+.preview-content.rich-document { color-scheme: light; color: #222; background: #fff; --line: rgba(0,0,0,.14); --hover: rgba(0,0,0,.06); }
 .rich-editor p { margin: 0 0 8px; }
 .rich-editor p:last-child { margin-bottom: 0; }
 .rich-editor pre { font-family: 'SFMono-Regular', Menlo, monospace; }
 .rich-editor a { color: var(--selected); text-decoration: underline; }
+.rich-editor table { border-collapse: collapse; margin: 12px 0; table-layout: fixed; }
+.rich-editor td, .rich-editor th { border: 1px solid var(--line); min-width: 45px; padding: 6px 8px; position: relative; vertical-align: top; }
+.rich-editor th { font-weight: 600; background: var(--hover); }
+.rich-editor td > p, .rich-editor th > p { margin: 0; }
+.rich-editor .selectedCell::after { content: ''; position: absolute; inset: 0; pointer-events: none; background: #427af326; }
+.rich-editor .ProseMirror-selectednode { outline: 2px solid var(--selected); }
+.preview-content .rich-editor img { display: inline-block; max-height: none; height: auto; vertical-align: middle; }
+.table-menu { left: auto; right: 12px; top: 78px; max-height: calc(100% - 124px); min-width: 200px; }
+.table-menu button { font-size: 12px; }
 .preview-content pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/1.5 -apple-system, BlinkMacSystemFont, sans-serif; }
 .preview-content.code pre { font-family: 'SFMono-Regular', Menlo, monospace; }
 .preview-content.picture { padding: 0; display: flex; align-items: center; justify-content: center; background-color: #eee; background-image: conic-gradient(#ddd 25%,transparent 0 50%,#ddd 0 75%,transparent 0); background-size: 16px 16px; }

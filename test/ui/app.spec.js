@@ -298,18 +298,24 @@ test('rich editing preserves styled selections, undo/redo, pins and clipboard ro
   const matching = (await page.evaluate(() => window.paste.getLibrary())).items.filter(item => item.body === 'Styled clipboard');
   expect(matching).toHaveLength(1); expect(matching[0].id).toBe(id);
 });
-test('opening an editor without changes never normalizes the original HTML or RTF', async () => {
+test('opening an editor or undoing all changes never normalizes the original HTML or RTF', async () => {
   await application.evaluate(async ({ clipboard, ClipboardItem }) => {
     await clipboard.write([new ClipboardItem({ 'text/plain': 'No change', 'text/html': '<div><b>No change</b></div>', 'text/rtf': '{\\rtf1\\ansi No change}' })]);
     await globalThis.__pasteTest.poll();
   });
   await expect(page.locator('.clip-card').first()).toContainText('No change');
   const id = await page.locator('.clip-card').first().getAttribute('data-id'), before = await page.evaluate(id => window.paste.getItem(id), id);
-  const opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id, { mode: 'edit' }), id);
-  const preview = await opened; await expect(preview.getByRole('textbox', { name: '剪贴板内容' })).toHaveText('No change');
-  const closed = preview.waitForEvent('close'); await preview.getByRole('button', { name: '保存', exact: true }).click(); await closed;
-  const after = await page.evaluate(id => window.paste.getItem(id), id);
-  expect(after.html).toBe(before.html); expect(after.rtf).toBe(before.rtf); expect(after.signature).toBe(before.signature);
+  for (const undoAll of [false, true]) {
+    const opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id, { mode: 'edit' }), id);
+    const preview = await opened, editor = preview.getByRole('textbox', { name: '剪贴板内容' }); await expect(editor).toHaveText('No change');
+    if (undoAll) {
+      await editor.press('Meta+a'); await preview.keyboard.insertText('Temporary replacement'); await expect(editor).toHaveText('Temporary replacement');
+      await preview.getByRole('button', { name: '撤销', exact: true }).click(); await expect(editor).toHaveText('No change');
+    }
+    const closed = preview.waitForEvent('close'); await preview.getByRole('button', { name: '保存', exact: true }).click(); await closed;
+    const after = await page.evaluate(id => window.paste.getItem(id), id);
+    expect(after.html).toBe(before.html); expect(after.rtf).toBe(before.rtf); expect(after.signature).toBe(before.signature);
+  }
 });
 test('rich paste is sanitized and unsupported embedded documents cannot be silently flattened', async () => {
   await application.evaluate(async ({ clipboard, ClipboardItem }) => {
@@ -325,22 +331,177 @@ test('rich paste is sanitized and unsupported embedded documents cannot be silen
       'text/html': '<p><b>Safe paste</b><script>window.evil=true</script><img src="https://example.invalid/track" onerror="window.evil=true"><iframe src="https://example.invalid"></iframe></p><form><input value="secret"></form>' })]);
   });
   await editor.press('Meta+v');
+  await expect(editor).toHaveText('Safe editor fixture');
+  await expect(preview.locator('#previewStatus')).toHaveText(/暂不支持编辑/);
+  await application.evaluate(async ({ clipboard, ClipboardItem }) => {
+    await clipboard.write([new ClipboardItem({ 'text/plain': 'Safe paste', 'text/html': '<p><b>Safe paste</b><script>window.evil=true</script></p>' })]);
+  });
+  await editor.press('Meta+v');
   await expect(editor).toHaveText('Safe paste');
   await expect(preview.locator('#previewMeta')).toHaveText('10 个字符');
   await expect(editor.locator('script,iframe,img,form,input,[onerror],[src]')).toHaveCount(0);
   expect(await preview.evaluate(() => window.evil)).toBeUndefined();
   let closed = preview.waitForEvent('close'); await preview.getByRole('button', { name: '保存', exact: true }).click(); await closed;
   await application.evaluate(async ({ clipboard, ClipboardItem }) => {
-    await clipboard.write([new ClipboardItem({ 'text/plain': 'Table cell', 'text/html': '<table><tr><td>Table cell</td></tr></table>' })]); await globalThis.__pasteTest.poll();
+    await clipboard.write([new ClipboardItem({ 'text/plain': 'Embedded document', 'text/html': '<p>Embedded document</p><svg><text>Vector label</text></svg>' })]); await globalThis.__pasteTest.poll();
   });
-  await expect(page.locator('.clip-card').first()).toContainText('Table cell'); id = await page.locator('.clip-card').first().getAttribute('data-id');
+  await expect(page.locator('.clip-card').first()).toContainText('Embedded document'); id = await page.locator('.clip-card').first().getAttribute('data-id');
   const before = await page.evaluate(id => window.paste.getItem(id), id);
   opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id, { mode: 'edit' }), id);
   preview = await opened;
   await expect(preview.getByRole('button', { name: '保存', exact: true })).toBeHidden();
-  await expect(preview.frameLocator('iframe').locator('td')).toHaveText('Table cell');
+  await expect(preview.frameLocator('iframe').locator('p')).toHaveText('Embedded document');
   closed = preview.waitForEvent('close'); await preview.getByRole('button', { name: '关闭预览' }).click(); await closed;
   expect((await page.evaluate(id => window.paste.getItem(id), id)).html).toBe(before.html);
+});
+test('rich tables and embedded raster images retain structure, style, coordinates and exact image bytes through edits and restart', async () => {
+  const image = await page.evaluate(() => {
+    const canvas = document.createElement('canvas'); canvas.width = 96; canvas.height = 64;
+    const context = canvas.getContext('2d'); context.fillStyle = '#26a477'; context.fillRect(0, 0, 96, 64); context.fillStyle = '#f6c43d'; context.fillRect(10, 10, 32, 32); return canvas.toDataURL('image/png');
+  });
+  const html = `<p>Table fixture</p><table style="width:360px;border-collapse:collapse"><colgroup><col width="140" style="width:140.25px"><col style="width:219.75px"></colgroup><tbody>
+    <tr><th colspan="2" style="background-color:rgb(234,245,252);text-align:center"><p>Schedule</p></th></tr>
+    <tr><td rowspan="2" style="background-color:rgb(250,240,210);vertical-align:middle"><p>Alpha</p></td><td style="text-align:right"><p>Ready</p></td></tr>
+    <tr><td><p>Pending</p></td></tr></tbody></table><p>Embedded <img src="${image}" width="96" height="64" alt="Synthetic bitmap"> tail</p>`;
+  const id = await application.evaluate(async ({ clipboard, ClipboardItem }, html) => {
+    await clipboard.write([new ClipboardItem({ 'text/plain': 'Table fixture\nSchedule\nAlpha\tReady\n\tPending\nEmbedded Synthetic bitmap tail', 'text/html': html })]);
+    await globalThis.__pasteTest.poll(); return globalThis.__pasteTest.store.data.items[0].id;
+  }, html);
+  const before = await page.evaluate(id => window.paste.getItem(id), id);
+  let opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id, { mode: 'edit' }), id);
+  let preview = await opened, editor = preview.getByRole('textbox', { name: '剪贴板内容' });
+  await expect(editor.locator('table')).toHaveCount(1); await expect(editor.locator('tr')).toHaveCount(3);
+  expect(await editor.locator('table').evaluate(table => table.style.width)).toBe('360px');
+  expect(await editor.locator('col').evaluateAll(cols => cols.map(col => col.style.width))).toEqual(['140.25px', '219.75px']);
+  await expect(editor.locator('th')).toHaveAttribute('colwidth', '140.25,219.75'); await expect(editor.locator('td').last()).toHaveAttribute('colwidth', '219.75');
+  await expect(editor.locator('th')).toHaveAttribute('colspan', '2'); await expect(editor.locator('td').first()).toHaveAttribute('rowspan', '2');
+  await expect(editor.locator('td').first()).toHaveCSS('background-color', 'rgb(250, 240, 210)');
+  await expect(editor.locator('td').nth(1)).toHaveCSS('text-align', 'right');
+  await expect.poll(() => editor.locator('img').evaluate(img => img.complete && img.naturalWidth === 96 && img.naturalHeight === 64)).toBe(true);
+  await expect(editor.locator('img')).toHaveAttribute('src', image);
+  const theme = (await page.evaluate(() => window.paste.getLibrary())).settings.theme;
+  for (const value of ['light', 'dark']) {
+    await page.evaluate(theme => window.paste.saveSettings({ theme }), value);
+    await expect(editor).toHaveCSS('color', 'rgb(34, 34, 34)'); await expect(preview.locator('#previewContent')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+  }
+  await page.evaluate(theme => window.paste.saveSettings({ theme }), theme);
+  await closePreviewWithKey(preview, 'Meta+s');
+  const unchanged = await page.evaluate(id => window.paste.getItem(id), id); expect(unchanged.html).toBe(before.html); expect(unchanged.signature).toBe(before.signature);
+  opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id, { mode: 'edit' }), id);
+  preview = await opened; editor = preview.getByRole('textbox', { name: '剪贴板内容' }); await expect(editor.locator('table')).toHaveCount(1);
+  await editor.getByText('Ready', { exact: true }).dblclick(); await preview.keyboard.insertText('Reviewed');
+  await expect(editor.locator('td').nth(1)).toHaveText('Reviewed');
+  await preview.getByRole('button', { name: '表格', exact: true }).click(); await preview.getByRole('menuitem', { name: '在下方插入行', exact: true }).click();
+  await expect(editor.locator('tr')).toHaveCount(4); await preview.getByRole('button', { name: '撤销', exact: true }).click(); await expect(editor.locator('tr')).toHaveCount(3);
+  await preview.getByRole('button', { name: '重做', exact: true }).click(); await expect(editor.locator('tr')).toHaveCount(4);
+  await preview.getByRole('button', { name: '撤销', exact: true }).click(); await expect(editor.locator('tr')).toHaveCount(3);
+  await editor.locator('th p').click(); await preview.getByRole('button', { name: '表格', exact: true }).click();
+  await preview.getByRole('menuitem', { name: '拆分单元格', exact: true }).click(); await expect(editor.locator('th')).toHaveCount(2);
+  await preview.getByRole('button', { name: '撤销', exact: true }).click(); await expect(editor.locator('th')).toHaveCount(1);
+  await preview.screenshot({ path: 'test-results/preview-table-edit.png' });
+  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/preview.html')).setBounds({ width: 320, height: 400 }));
+  await preview.getByRole('button', { name: '表格', exact: true }).click();
+  expect(await preview.evaluate(() => {
+    const menu = document.querySelector('#tableMenu'), tools = document.querySelector('#editTools'), content = document.querySelector('#previewContent');
+    return document.documentElement.scrollWidth <= innerWidth && menu.getBoundingClientRect().right <= innerWidth && tools.getBoundingClientRect().bottom <= content.getBoundingClientRect().top;
+  })).toBe(true);
+  await preview.screenshot({ path: 'test-results/preview-table-narrow.png' }); await preview.keyboard.press('Escape'); await expect(editor).toBeFocused();
+  await closePreviewWithKey(preview, 'Meta+s');
+  let saved = await page.evaluate(id => window.paste.getItem(id), id);
+  expect(saved.body).toContain('Schedule\t\nAlpha\tReviewed\n\tPending'); expect(saved.body).toContain('Embedded Synthetic bitmap tail');
+  expect(saved.body).not.toContain('data:image'); expect(saved.html).toContain(image); expect(saved.id).toBe(before.id);
+  await page.evaluate(id => window.paste.copy(id, { paste: false }), id);
+  const copied = await application.evaluate(async () => globalThis.__pasteTest.clip.read());
+  expect(require('../../src/store').htmlPayload(copied.html)).toBe(saved.html); expect(copied.text).toBe(saved.body); expect(copied.signature).toBe(saved.signature);
+  await application.close(); application = await launchApplication(); page = await application.firstWindow(); await page.waitForSelector('.clip-card');
+  saved = await page.evaluate(id => window.paste.getItem(id), id); expect(saved.html).toContain(image); expect(saved.html).toContain('rowspan="2"');
+  opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id), id); preview = await opened;
+  const frame = preview.frameLocator('iframe'); await expect(frame.locator('td').nth(1)).toHaveText('Reviewed');
+  await expect(frame.locator('th')).toHaveAttribute('colwidth', '140.25,219.75'); await expect(frame.locator('td').last()).toHaveAttribute('colwidth', '219.75');
+  await expect(frame.locator('img')).toHaveAttribute('src', image); await expect.poll(() => frame.locator('img').evaluate(img => img.naturalWidth)).toBe(96);
+  await closePreviewWithKey(preview, 'Escape');
+});
+test('table commands support real insertion, columns, row headers, cell selection and deletion without losing surrounding text', async () => {
+  const [item] = await seedKeyboardItems('TableCommands', 1);
+  const opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id, { mode: 'edit' }), item.id);
+  const preview = await opened, editor = preview.getByRole('textbox', { name: '剪贴板内容' }); await expect(editor).toBeFocused();
+  const command = async name => { await preview.getByRole('button', { name: '表格', exact: true }).click(); await preview.getByRole('menuitem', { name, exact: true }).click(); };
+  await command('插入表格'); await expect(editor.locator('tr')).toHaveCount(3); await expect(editor.locator('th')).toHaveCount(3);
+  await command('在右侧插入列'); await expect(editor.locator('tr').first().locator('th')).toHaveCount(4);
+  await command('删除列'); await expect(editor.locator('th')).toHaveCount(3);
+  await command('切换标题行'); await expect(editor.locator('th')).toHaveCount(0);
+  await editor.locator('td').first().click();
+  const first = await editor.locator('td').nth(0).boundingBox(), second = await editor.locator('td').nth(1).boundingBox();
+  await preview.mouse.move(first.x + first.width / 2, first.y + first.height / 2); await preview.mouse.down();
+  await preview.mouse.move(second.x + second.width / 2, second.y + second.height / 2, { steps: 10 }); await preview.mouse.up();
+  await expect(editor.locator('.selectedCell')).toHaveCount(2); await command('合并单元格'); await expect(editor.locator('td[colspan="2"]')).toHaveCount(1);
+  await command('拆分单元格'); await expect(editor.locator('td[colspan="2"]')).toHaveCount(0);
+  await editor.locator('td').first().click(); await preview.keyboard.insertText('Cell one'); await preview.keyboard.press('Tab'); await preview.keyboard.insertText('Cell two');
+  await expect(editor.locator('td').nth(0)).toHaveText('Cell one'); await expect(editor.locator('td').nth(1)).toHaveText('Cell two');
+  await preview.keyboard.press('Shift+Tab'); expect(await preview.evaluate(() => getSelection().toString())).toBe('Cell one');
+  await preview.keyboard.insertText('Revised cell one'); await expect(editor.locator('td').first()).toHaveText('Revised cell one');
+  await command('删除表格'); await expect(editor.locator('table')).toHaveCount(0); await expect(editor).toContainText('Synthetic keyboard fixture');
+  await preview.getByRole('button', { name: '撤销', exact: true }).click(); await expect(editor.locator('table')).toHaveCount(1); await expect(editor).toContainText('Cell two');
+  await expect(editor.locator('td').first()).toHaveText('Revised cell one');
+  await closePreviewWithKey(preview, 'Meta+s'); expect((await page.evaluate(id => window.paste.getItem(id), item.id)).body).toContain('Revised cell one\tCell two');
+});
+test('real rich clipboard paste retains editable tables and embedded images instead of flattening the selection', async () => {
+  const [item] = await seedKeyboardItems('RichTablePaste', 1), image = await page.evaluate(() => {
+    const canvas = document.createElement('canvas'); canvas.width = 16; canvas.height = 8; const context = canvas.getContext('2d');
+    context.fillStyle = '#e85464'; context.fillRect(0, 0, 16, 8); return canvas.toDataURL();
+  });
+  const opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id, { mode: 'edit' }), item.id);
+  const preview = await opened, editor = preview.getByRole('textbox', { name: '剪贴板内容' }); await expect(editor).toBeFocused(); await editor.press('Meta+a');
+  await application.evaluate(async ({ clipboard, ClipboardItem }, image) => {
+    await clipboard.write([new ClipboardItem({ 'text/plain': 'Left\tRight\nPasted embedded image',
+      'text/html': `<table><tr><td><p>Left</p></td><td><p>Right</p></td></tr></table><p>Pasted <img src="${image}" alt="embedded image"></p>` })]);
+  }, image);
+  await editor.press('Meta+v'); await expect(editor.locator('table')).toHaveCount(1); await expect(editor.locator('td')).toHaveCount(2);
+  await expect(editor.getByRole('img', { name: 'embedded image', exact: true })).toHaveAttribute('src', image);
+  await expect.poll(() => editor.getByRole('img', { name: 'embedded image', exact: true }).evaluate(img => img.naturalWidth)).toBe(16);
+  await preview.getByRole('button', { name: '撤销', exact: true }).click(); await expect(editor.locator('table,img')).toHaveCount(0); await expect(editor).toHaveText(item.body.replace(/\n/g, ''));
+  await preview.getByRole('button', { name: '重做', exact: true }).click(); await expect(editor.locator('td')).toHaveCount(2);
+  await expect(editor.getByRole('img', { name: 'embedded image', exact: true })).toHaveAttribute('src', image);
+  await closePreviewWithKey(preview, 'Meta+s'); const saved = await page.evaluate(id => window.paste.getItem(id), item.id);
+  expect(saved.body).toContain('Left\tRight'); expect(saved.body).toContain('Pasted embedded image'); expect(saved.html).toContain(image);
+  expect(saved.body).not.toContain('RichTablePaste');
+});
+test('unsupported rich pastes preserve selection and original bytes while preview and editor never fetch external resources', async () => {
+  let requests = 0;
+  const server = require('node:http').createServer((_request, response) => { requests++; response.end('unexpected resource request'); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const url = `http://127.0.0.1:${server.address().port}/tracker`;
+    const html = `<p style="position:fixed;background-image:url('${url}');color:rgb(40,80,120)">Private rich fixture</p><img src="${url}"><a href="file:///etc/passwd">Blocked local link</a>`;
+    const id = await application.evaluate(async ({ clipboard, ClipboardItem }, html) => {
+      await clipboard.write([new ClipboardItem({ 'text/plain': 'Private rich fixture', 'text/html': html })]); await globalThis.__pasteTest.poll(); return globalThis.__pasteTest.store.data.items[0].id;
+    }, html);
+    let opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id), id);
+    let preview = await opened;
+    await expect(preview.frameLocator('iframe').locator('p')).toHaveText('Private rich fixture');
+    await expect(preview.frameLocator('iframe').locator('[src],[href]')).toHaveCount(0);
+    const cleaned = await preview.frameLocator('iframe').locator('p').getAttribute('style'); expect(cleaned).not.toMatch(/position|url/i);
+    expect(cleaned).toContain('color: rgb(40, 80, 120)'); await closePreviewWithKey(preview, 'Escape');
+    const [item] = await seedKeyboardItems('ProtectedRichPaste', 1), before = await page.evaluate(id => window.paste.getItem(id), item.id);
+    opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id, { mode: 'edit' }), item.id); preview = await opened;
+    const editor = preview.getByRole('textbox', { name: '剪贴板内容' }); await expect(editor).toBeFocused(); await editor.press('Meta+a');
+    const initial = await editor.innerHTML(), selection = await preview.evaluate(() => getSelection().toString());
+    for (const unsupported of [html, '<p>Bad span</p><table><tr><td colspan="999999">Lost?</td></tr></table>',
+      '<p>Math</p><math><mi>x</mi></math>', '<table><caption>Caption</caption><tr><td>Cell</td></tr></table>',
+      '<table><tr><td>Outer<table><tr><td>Inner</td></tr></table></td></tr></table>',
+      '<table><tr><td>A</td><td>B</td></tr><tr><td>Missing cell</td></tr></table>',
+      '<table><colgroup><col width="20%"></colgroup><tr><td>Relative column</td></tr></table>']) {
+      const blocked = await editor.evaluate((element, html) => {
+        const clipboardData = new DataTransfer(); clipboardData.setData('text/html', html); clipboardData.setData('text/plain', 'Must not replace the current selection');
+        const event = new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }); element.dispatchEvent(event); return event.defaultPrevented;
+      }, unsupported);
+      expect(blocked).toBe(true); expect(await editor.innerHTML()).toBe(initial); expect(await preview.evaluate(() => getSelection().toString())).toBe(selection);
+      await expect(preview.locator('#previewStatus')).toHaveText(/原文未修改/);
+    }
+    await closePreviewWithKey(preview, 'Meta+s');
+    const after = await page.evaluate(id => window.paste.getItem(id), item.id);
+    expect(after.body).toBe(before.body); expect(after.html).toBe(before.html); expect(after.signature).toBe(before.signature); expect(requests).toBe(0);
+  } finally { await new Promise(resolve => server.close(resolve)); }
 });
 test('native image editing preserves pixels, originals, pins, failures and restart migration', async () => {
   const original = await application.evaluate(async ({ clipboard, ClipboardItem, nativeImage }) => {
