@@ -446,7 +446,7 @@ else {
       imageProcessor = new ImageProcessor(app.getPath('userData'), (command, data, options) => nativeInput(command, data, 30000, options));
       capabilities = await native('image-capabilities');
       imageText = new ImageTextIndex({ store, processor: imageProcessor, readImage: imageBytes, onChanged: emit });
-      searchService = new SearchService();
+      searchService = new SearchService({ directory: app.getPath('userData') });
       mediaService = new MediaService(store, nativeImage);
       monitor = new ClipboardMonitor({
         readVersion: async () => {

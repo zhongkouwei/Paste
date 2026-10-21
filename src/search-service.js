@@ -2,9 +2,9 @@ const { Worker } = require('node:worker_threads');
 const path = require('node:path');
 
 class SearchService {
-  constructor() { this.entries = new Map(); this.pending = new Map(); this.sequence = 0; this.revision = -1; this.closed = false; this.terminations = []; }
+  constructor({ directory } = {}) { this.directory = directory; this.entries = new Map(); this.pending = new Map(); this.sequence = 0; this.revision = -1; this.closed = false; this.terminations = []; }
   start() {
-    const worker = new Worker(path.join(__dirname, 'search-worker.js')); this.worker = worker;
+    const worker = new Worker(path.join(__dirname, 'search-worker.js'), { workerData: { directory: this.directory } }); this.worker = worker;
     worker.on('message', message => {
       if (this.worker !== worker) return;
       const operation = this.pending.get(message.id); if (!operation) return;
@@ -40,9 +40,18 @@ class SearchService {
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       try {
-        this.worker.postMessage({ id, updates, deleted, revision, query });
+        this.worker.postMessage({ id, updates, deleted, revision, query, complete: this.revision === -1 });
         if (revision !== this.revision) { this.entries = next; this.revision = revision; }
       } catch (error) { this.failed(this.worker, error); }
+    });
+  }
+  diagnostics() {
+    if (this.closed) return Promise.reject(new Error('搜索已停止'));
+    if (!this.worker) this.start();
+    const id = ++this.sequence;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      try { this.worker.postMessage({ id, kind: 'diagnostics' }); } catch (error) { this.failed(this.worker, error); }
     });
   }
   async close() {

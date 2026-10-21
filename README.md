@@ -49,11 +49,12 @@ npm run test:packaged
 npm audit --omit=dev --registry=https://registry.npmjs.org
 npm run release:verify
 node scripts/benchmark-store.js 1000
+node scripts/benchmark-restart.js 1000
 ```
 
 - `check`：所有源码、脚本与测试的 JavaScript 语法检查。
 - `test`：存储、迁移、损坏恢复、Pinboard、搜索与保留策略。
-- `test:ui`：真实 Electron + IPC。`app.spec.js` 读写系统剪贴板，使用隔离测试数据、不读取已有历史；测试前保存、结束后恢复系统剪贴板。运行该套件前退出其他剪贴板记录工具，可避免其收录测试内容。`media.spec.js`、`media-requests.spec.js`、`rich-lists.spec.js`、`rich-copy.spec.js` 和 `plain-paste.spec.js` 只用合成存储/图像和 IPC，不读写系统剪贴板，无需停止原版；富文本/纯文本套件的合成 ClipboardEvent 使用独立 DataTransfer，不访问系统剪贴板。可单独运行 `npm run test:ui -- test/ui/plain-paste.spec.js` 或其他独立文件。
+- `test:ui`：真实 Electron + IPC。`app.spec.js` 读写系统剪贴板，使用隔离测试数据、不读取已有历史；测试前保存、结束后恢复系统剪贴板。运行该套件前退出其他剪贴板记录工具，可避免其收录测试内容。`media.spec.js`、`media-requests.spec.js`、`rich-lists.spec.js`、`rich-copy.spec.js`、`plain-paste.spec.js` 和 `search-cache.spec.js` 只用合成存储/图像和 IPC，不读写系统剪贴板，无需停止原版；富文本/纯文本套件的合成 ClipboardEvent 使用独立 DataTransfer，不访问系统剪贴板。可单独运行 `npm run test:ui -- test/ui/search-cache.spec.js` 或其他独立文件。
 - 隔离数据目录不隔离全机剪贴板。`app.spec.js` 启动前检查已知 Paste/Paste Easy/Paste Like 进程，存在未停止的程序或无法检查时，该套件先失败，不启动其测试应用或写剪贴板；其他名称的工具仍须人工确认已退出。可先运行 `node scripts/clipboard-test-environment.js` 检查。第八轮发现原版仍常驻，因此更早的合成测试内容可能已被它收录，未核实或直接清理原版历史；不可把恢复当前剪贴板当作恢复其他应用的历史。
 - `test:ui` 运行前自动编译原生桥和编辑器；构建产物也包含编辑器离线包，不依赖 CDN。
 - `test:packaged`：对构建产物运行同一组端到端测试。
@@ -75,7 +76,11 @@ version 1/2 库在读取时保留原文件，下一次成功保存迁移；原�
 
 媒体空回复只约束原请求的项目/库版本/面板会话，不封锁后来重新收录的相同图片。临时 IPC 错误在 250ms、1000ms 后最多自动重试两次；仍有效的同一媒体键在多个卡片间共用预算，不因来源图标的请求者轮换或后台通知而形成忙循环。用尽后显示不可用，重新打开面板可开始新一轮恢复；不为搜索中已隐藏的卡片执行计划重试，成功后保留原图并清除媒体错误提示。该策略不等于挂起请求超时取消或原生同步解码故障恢复。
 
-全文搜索在工作线程的内存 SQLite FTS5 trigram 索引中执行，并增量更新，结果带库版本以拒绝过期响应；支持中英文、单/双字符、字面标点与多词组合，不把输入当 SQL/FTS 语法。索引不持久化，重启后首次搜索需重建；查询限 2048 个 UTF-16 单元、32 词。首次内容拆分、内存占用、全量元数据清单/IPC、磁盘中的预览/图标重复与资产回收仍需优化，详见 docs/PARITY.md。
+全文搜索仍在工作线程的 SQLite FTS5 trigram 索引中执行，结果带库版本以拒绝过期响应；支持中英文、单/双字符、字面标点与多词组合，不把输入当 SQL/FTS 语法。正式应用使用 `search-cache/index.sqlite` 的私有派生缓存，首次搜索从当前原文同步，重启可复用未变索引；工作线程不另存整份原始项目集合，索引差异状态仅保存摘要指纹。SQLite 页缓存建议为 8 MiB，不是 Worker 或整应用内存上限。查询仍限 2048 个 UTF-16 单元、32 词。
+
+缓存目录权限 0700、数据库及 WAL/SHM 为 0600。重用前检查缓存版本与 FTS 外部正文一致性，并逐项核对当前原文的规范化字节，不能仅凭缓存自带指纹跳过同步；损坏缓存可从原库重建，初始化遇到文件锁、路径/写入失败或未知版本时回退内存搜索，不修改原库。该缓存及其日志包含未加密的规范化正文/OCR/备注等搜索内容；删除、到期或离线修改后在下次搜索同步，不代表即时清除全部副本或安全擦除。它不是备份，完整恢复不依赖该目录；隐私/容量管理必须考虑它。首次磁盘建索引可能更慢，正文读取/首次 IPC 克隆、首次内容拆分、总内存、全量元数据、媒体去重和资产回收仍待优化。
+
+`benchmark-restart.js` 在临时合成库落盘后启动两个全新的 Node 子进程，分别测量重开原库、快照和首次全文查询的时间/内存，第二个进程可观察缓存复用。未清空 OS 文件缓存、未强制 GC，Worker 的 RSS 为全进程指标，不能相加或当作正式 Electron 应用性能验收。
 
 导出 JSON 包含当前图片、可恢复原图和已有前景图，采用 0600 临时文件原子替换；不把本机图片资产路径当作完整备份。OCR 缓存保存在同一库中，绑定当前图片签名，图片改变后重新识别；行/词定位按需读取，不在每次全库通知中传输。导入恢复流程尚未实现。项目 `.npmrc` 和锁文件使用公开 npm registry，已通过独立缓存的重新安装；审计也必须使用公开库。本机全局默认镜像的零漏洞结果不能代替公开漏洞库，构建依赖仍有 8 项 moderate。
 

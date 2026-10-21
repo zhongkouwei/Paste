@@ -1,32 +1,43 @@
-const { DatabaseSync } = require('node:sqlite');
+const crypto = require('node:crypto');
+const { openSearchDatabase } = require('./search-database');
 const { searchText } = require('./model');
 
 class SearchIndex {
-  constructor() {
-    this.db = new DatabaseSync(':memory:'); this.entries = new Map(); this.revision = -1;
-    this.db.exec(`CREATE TABLE docs(id TEXT PRIMARY KEY, text TEXT NOT NULL);
-      CREATE VIRTUAL TABLE terms USING fts5(text, content='docs', content_rowid='rowid', tokenize='trigram case_sensitive 1');
-      CREATE TRIGGER added AFTER INSERT ON docs BEGIN INSERT INTO terms(rowid,text) VALUES(new.rowid,new.text); END;
-      CREATE TRIGGER removed AFTER DELETE ON docs BEGIN INSERT INTO terms(terms,rowid,text) VALUES('delete',old.rowid,old.text); END;
-      CREATE TRIGGER edited AFTER UPDATE ON docs BEGIN
-        INSERT INTO terms(terms,rowid,text) VALUES('delete',old.rowid,old.text);
-        INSERT INTO terms(rowid,text) VALUES(new.rowid,new.text); END;`);
-    this.put = this.db.prepare('INSERT INTO docs(id,text) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET text=excluded.text');
+  constructor(options = {}) {
+    Object.assign(this, openSearchDatabase(options.directory)); this.revision = -1;
+    this.entries = new Map(this.db.prepare('SELECT id,fingerprint FROM docs').all().map(row => [row.id, row.fingerprint]));
+    this.written = 0; this.reused = 0; this.deleted = 0;
+    this.put = this.db.prepare('INSERT INTO docs(id,text,fingerprint) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET text=excluded.text,fingerprint=excluded.fingerprint');
+    this.matches = this.db.prepare('SELECT 1 AS valid FROM docs WHERE id=? AND fingerprint=? AND CAST(text AS BLOB)=CAST(? AS BLOB)');
     this.remove = this.db.prepare('DELETE FROM docs WHERE id=?');
   }
   sync(items, revision) {
     if (this.revision === revision) return;
-    const next = new Map(); this.db.exec('BEGIN');
+    this.apply(items, [], revision, true);
+  }
+  apply(items, deleted, revision, complete = false) {
+    const next = new Map(this.entries), ids = complete ? new Set(items.map(item => item.id)) : null;
+    const removed = new Set([...deleted, ...(ids ? [...this.entries.keys()].filter(id => !ids.has(id)) : [])]);
+    let written = 0, reused = 0, removals = 0; this.db.exec('BEGIN');
     try {
       for (const item of items) {
-        const fields = [item.type, item.body, item.title, item.source?.name, item.note, item.ocr?.signature === item.signature ? item.ocr?.text : ''];
-        const previous = this.entries.get(item.id);
-        if (!previous || fields.some((value, index) => value !== previous[index])) this.put.run(item.id, searchText(item));
-        next.set(item.id, fields);
+        const text = searchText(item), fingerprint = crypto.createHash('sha256').update(text).digest('hex');
+        if (this.entries.get(item.id) === fingerprint && this.matches.get(item.id, fingerprint, text)?.valid === 1) reused++;
+        else { this.put.run(item.id, text, fingerprint); written++; }
+        next.set(item.id, fingerprint);
       }
-      for (const id of this.entries.keys()) if (!next.has(id)) this.remove.run(id);
+      for (const id of removed) if (next.has(id)) { this.remove.run(id); next.delete(id); removals++; }
       this.db.exec('COMMIT'); this.entries = next; this.revision = revision;
+      this.written += written; this.reused += reused; this.deleted += removals;
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+  diagnostics() {
+    const memory = process.memoryUsage();
+    return { mode: this.mode, warning: this.warning, recovered: this.recovered, rows: this.entries.size,
+      written: this.written, reused: this.reused, deleted: this.deleted,
+      pageCacheKiB: -this.db.prepare('PRAGMA cache_size').get().cache_size,
+      databaseBytes: this.db.prepare('PRAGMA page_count').get().page_count * this.db.prepare('PRAGMA page_size').get().page_size,
+      processRssMiB: +(memory.rss / 1048576).toFixed(1), threadHeapUsedMiB: +(memory.heapUsed / 1048576).toFixed(1) };
   }
   find(query) {
     if (typeof query !== 'string' || query.length > 2048) throw new Error('搜索内容超过长度限制');
