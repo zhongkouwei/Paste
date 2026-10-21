@@ -28,6 +28,9 @@ contextBridge.exposeInMainWorld('paste', {
   exportLibrary: () => invoke('library:export'),
   getExportState: () => invoke('library:exportState'), cancelExport: () => invoke('library:cancelExport'),
   onExportChanged: callback => listen('export:changed', callback),
+  prepareImport: () => invoke('library:prepareImport'), applyImport: (token, options) => invoke('library:applyImport', token, options),
+  getImportState: () => invoke('library:importState'), cancelImport: () => invoke('library:cancelImport'), revealImportBackup: () => invoke('library:revealImportBackup'),
+  onImportChanged: callback => listen('import:changed', callback),
   onChanged: callback => listen('library:changed', callback), onShown: callback => listen('panel:shown', callback),
   onPreviewChanged: callback => listen('preview:changed', callback),
   onPreviewCommand: callback => listen('preview:command', callback)

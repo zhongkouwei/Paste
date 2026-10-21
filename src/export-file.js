@@ -10,8 +10,8 @@ function destination(file, directories) {
   for (const directory of directories) {
     if (!fs.existsSync(directory)) continue;
     const relative = path.relative(fs.realpathSync(directory), target), parts = relative.toLowerCase().split(path.sep);
-    if (!relative || ['assets', 'contents', 'search-cache'].includes(parts[0])
-      || (parts.length === 1 && /^(?:library\.json|library-v2-|clipboard-history\.json)/.test(parts[0]))) throw new Error('不能用导出备份覆盖应用的内容库或内部文件。');
+    if (!relative || ['assets', 'contents', 'search-cache'].includes(parts[0]) || parts[0].startsWith('import-')
+      || (parts.length === 1 && /^(?:library\.json|library-v2-|clipboard-history\.json|backup-before-import-|import-)/.test(parts[0]))) throw new Error('不能用导出备份覆盖应用的内容库或内部文件。');
   }
   return target;
 }

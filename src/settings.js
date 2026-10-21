@@ -1,6 +1,7 @@
 /* global lucide */
 const $ = selector => document.querySelector(selector);
 let library, recording = null, timer, exportSelecting = false, exportState = { running: false, revision: -1 };
+let importSelecting = false, importState = { phase: 'idle', revision: -1 };
 const retention = [1, 7, 30, 365, 0];
 function status(message) { $('#settingsStatus').textContent = message; $('#settingsStatus').hidden = false; clearTimeout(timer); timer = setTimeout(() => { $('#settingsStatus').hidden = true; }, 5000); }
 async function attempt(task) { try { return await task(); } catch (error) { status(error.message); return undefined; } }
@@ -58,7 +59,7 @@ $('#resetHotkey').onclick = () => attempt(() => save({ hotkey: 'CommandOrControl
 $('#openPermission').onclick = () => attempt(() => window.paste.openPermission());
 function renderExport(value) {
   if (value.revision < exportState.revision) return;
-  exportState = value; $('#exportData').disabled = exportSelecting || value.running;
+  exportState = value; renderDataActions();
   $('#cancelExport').hidden = !value.running; $('#cancelExport').disabled = value.canceling;
   $('#exportProgress').hidden = !value.running;
   $('#exportProgress').textContent = value.canceling ? '正在取消导出…' : `正在导出 ${value.itemsDone || 0}/${value.total || 0}`;
@@ -70,11 +71,48 @@ $('#exportData').onclick = () => attempt(async () => {
 });
 $('#cancelExport').onclick = () => attempt(async () => { await window.paste.cancelExport(); renderExport(await window.paste.getExportState()); });
 window.paste.onExportChanged(renderExport);
+function renderDataActions() {
+  const importing = importSelecting || importState.phase !== 'idle', exporting = exportSelecting || exportState.running;
+  $('#exportData').disabled = exporting || importing; $('#importData').disabled = exporting || importing;
+  $('#clearHistory').disabled = exporting || importing;
+}
+function renderImport(value) {
+  if (value.revision < importState.revision) return;
+  const newPreview = value.token && value.token !== importState.token;
+  importState = value; renderDataActions();
+  if (newPreview) { $('[name=importMode][value=merge]').checked = true; $('#restoreSettings').checked = false; $('#confirmReplace').checked = false; }
+  const busy = ['preparing', 'applying'].includes(value.phase);
+  $('#cancelImport').hidden = value.phase === 'idle'; $('#cancelImport').disabled = !!value.canceling;
+  $('#importProgress').hidden = !busy;
+  $('#importProgress').textContent = value.canceling ? '正在取消恢复…' : value.phase === 'applying' ? '正在保留当前库并恢复备份…' : `正在校验备份：${value.done || 0} 项`;
+  $('#importPreview').hidden = value.phase !== 'ready'; $('#revealImportBackup').hidden = !value.hasCheckpoint;
+  if (value.summary) { const s = value.summary; $('#importSummary').textContent = `${s.items} 项 · ${s.boards} 个 Pinboard；合并新增 ${s.added} 项，重复 ${s.duplicates} 项；替换将移出当前 ${s.replaced} 项。`; }
+  renderImportChoice();
+}
+function renderImportChoice() {
+  const replace = $('[name=importMode]:checked').value === 'replace';
+  $('#replaceConfirmation').hidden = !replace; $('#applyImport').disabled = importState.phase !== 'ready' || (replace && !$('#confirmReplace').checked);
+  $('#applyImport').lastChild.textContent = replace ? '替换并恢复' : '合并备份';
+}
+document.querySelectorAll('[name=importMode], #confirmReplace').forEach(input => { input.onchange = renderImportChoice; });
+$('#importData').onclick = () => attempt(async () => {
+  importSelecting = true; renderDataActions();
+  try { const value = await window.paste.prepareImport(); if (value?.canceled) status('恢复已取消'); else if (value) renderImport(value); }
+  finally { importSelecting = false; renderDataActions(); }
+});
+$('#applyImport').onclick = () => attempt(async () => {
+  const result = await window.paste.applyImport(importState.token, { mode: $('[name=importMode]:checked').value, restoreSettings: $('#restoreSettings').checked });
+  status(result.canceled ? '恢复已取消' : result.warning || '备份已恢复，恢复前备份已保留');
+});
+$('#cancelImport').onclick = () => attempt(async () => renderImport(await window.paste.cancelImport()));
+$('#revealImportBackup').onclick = () => attempt(() => window.paste.revealImportBackup());
+window.paste.onImportChanged(renderImport);
 $('#clearHistory').onclick = () => attempt(async () => render(await window.paste.clearHistory()));
 window.paste.onChanged(render);
 attempt(async () => {
   render(await window.paste.getLibrary());
   renderExport(await window.paste.getExportState());
+  renderImport(await window.paste.getImportState());
   const permission = await window.paste.getPermission();
   $('#permissionState span').textContent = permission.accessibility ? '辅助功能已授权' : '自动粘贴需要辅助功能权限';
 });

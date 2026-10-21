@@ -61,8 +61,18 @@
     </section>
     <section data-section="data" hidden>
       <div class="settings-group"><div class="setting-row"><span>剪贴板项目</span><span id="itemCount"></span></div><div class="setting-row"><span>Pinboard</span><span id="boardCount"></span></div></div>
-      <div class="data-actions"><button id="exportData" class="standard-button"><i data-lucide="download"></i>导出备份…</button><button id="clearHistory" class="standard-button danger"><i data-lucide="trash-2"></i>删除历史…</button><button id="cancelExport" class="icon-button" aria-label="取消导出" title="取消导出" hidden><i data-lucide="x"></i></button></div>
+      <div class="data-actions"><button id="exportData" class="standard-button"><i data-lucide="download"></i>导出备份…</button><button id="importData" class="standard-button"><i data-lucide="upload"></i>恢复备份…</button><button id="clearHistory" class="standard-button danger"><i data-lucide="trash-2"></i>删除历史…</button><button id="cancelExport" class="icon-button" aria-label="取消导出" title="取消导出" hidden><i data-lucide="x"></i></button><button id="cancelImport" class="icon-button" aria-label="取消恢复" title="取消恢复" hidden><i data-lucide="x"></i></button></div>
       <p id="exportProgress" role="status" aria-live="polite" hidden></p>
+      <p id="importProgress" role="status" aria-live="polite" hidden></p>
+      <div id="importPreview" hidden>
+        <h2>恢复备份</h2><p id="importSummary"></p>
+        <label class="radio-row"><input type="radio" name="importMode" value="merge" checked><span>合并到当前库，保留现有内容</span></label>
+        <label class="radio-row"><input type="radio" name="importMode" value="replace"><span>替换当前库，仅保留备份内容</span></label>
+        <label class="radio-row"><input type="checkbox" id="restoreSettings"><span>同时恢复偏好设置（含快捷键及隐私排除项）</span></label>
+        <label class="radio-row" id="replaceConfirmation" hidden><input type="checkbox" id="confirmReplace"><span>确认替换；当前内容将保存在恢复前备份中</span></label>
+        <div class="data-actions"><button id="applyImport" class="standard-button"><i data-lucide="archive-restore"></i>合并备份</button></div>
+      </div>
+      <button id="revealImportBackup" class="standard-button" hidden><i data-lucide="folder-open"></i>恢复前备份</button>
     </section>
     <section data-section="about" hidden><div class="about"><h2>Paste Easy</h2><p>0.2.0</p><p>本地剪贴板历史</p></div></section>
     <div id="settingsStatus" role="status" hidden></div>

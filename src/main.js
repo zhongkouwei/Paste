@@ -10,7 +10,8 @@ const { ClipboardService, imageSignature } = require('./clipboard');
 const { Transfers, fileDetails } = require('./transfers');
 const { GlobalHotkeys } = require('./hotkeys');
 const { ClipboardMonitor } = require('./monitor');
-const { ImageProcessor, ImageDraft } = require('./image-editor');
+const { ImageProcessor, ImageDraft, pngSize } = require('./image-editor');
+const { ImportService } = require('./import-service');
 const { ImageTextIndex } = require('./image-text');
 const { SearchService } = require('./search-service');
 const { MediaService, thumbnail } = require('./media');
@@ -25,7 +26,7 @@ app.setPath('userData', process.env.PASTE_DATA_DIR ? path.resolve(process.env.PA
 let mainWindow, settingsWindow, previewWindow, tray, store, transfers, pollTimer, targetApp;
 let previewState = null, previewDirty = false, previewOpening = false, activeShare;
 let hotkeys, monitor, imageProcessor, imageDraft, imageText, capabilities = {}, processingClosing = false, processingStopped = false;
-let searchService, mediaService, exportDialogOpen = false;
+let searchService, mediaService, importService, exportDialogOpen = false, importDialogOpen = false;
 let quitting = false, quitAfterPreview = false, copyQueue = Promise.resolve(), settingsQueue = Promise.resolve();
 let copyRequest = 0;
 let sourceCache = null, lastSourceAt = 0, suppressBlur = false;
@@ -420,6 +421,7 @@ function registerIPC() {
     'stack:add': (_event, id) => { if (!store.get(id)) throw new Error('Invalid item'); if (!stack.includes(id)) stack.push(id); emit(); return stack; },
     'stack:next': async () => { const id = stack[0]; if (!id) return { ok: false, error: 'Stack 为空' }; const result = await copy(id, { paste: true }); if (result.ok) stack.shift(); emit(); return result; },
     'library:export': async () => {
+      if (importDialogOpen || importService.state().phase !== 'idle') throw new Error('请先完成或取消备份恢复。');
       if (exportDialogOpen || store.exportService.state().running) throw new Error('已有备份正在选择位置或导出，请等待或取消。');
       exportDialogOpen = true;
       try {
@@ -431,7 +433,25 @@ function registerIPC() {
       } finally { exportDialogOpen = false; }
     },
     'library:exportState': () => store.exportService.state(),
-    'library:cancelExport': () => store.exportService.cancel()
+    'library:cancelExport': () => store.exportService.cancel(),
+    'library:prepareImport': async () => {
+      if (exportDialogOpen || importDialogOpen) throw new Error('请先关闭备份文件选择窗口。');
+      importService.checkAvailable(); importDialogOpen = true;
+      try {
+        const owner = settingsWindow && !settingsWindow.isDestroyed() ? settingsWindow : mainWindow;
+        const { canceled, filePaths } = await dialog.showOpenDialog(owner, { properties: ['openFile'], filters: [{ name: 'JSON', extensions: ['json'] }] });
+        if (canceled) return false;
+        try { return await importService.prepare(filePaths[0]); } catch (error) { if (error.name === 'AbortError') return { canceled: true }; throw error; }
+      } finally { importDialogOpen = false; }
+    },
+    'library:applyImport': async (_event, token, options) => {
+      await settingsQueue;
+      try { return await monitor.suspend(() => importService.apply(token, options), { baseline: true }); }
+      catch (error) { if (error.name === 'AbortError') return { canceled: true }; throw error; }
+    },
+    'library:importState': () => importService.state(),
+    'library:cancelImport': () => importService.cancel(),
+    'library:revealImportBackup': () => { const file = importService.lastCheckpoint; if (!file || !fs.existsSync(file)) throw new Error('尚无恢复前备份。'); if (!TEST_MODE) shell.showItemInFolder(file); return file; }
   };
   for (const [channel, handler] of Object.entries(handlers)) ipcMain.handle(channel, (event, ...args) => {
     if (![mainWindow?.webContents, settingsWindow?.webContents, previewWindow?.webContents].includes(event.sender) || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted IPC sender');
@@ -455,6 +475,22 @@ else {
       imageText = new ImageTextIndex({ store, processor: imageProcessor, readImage: imageBytes, onChanged: emit });
       searchService = new SearchService({ directory: app.getPath('userData') });
       mediaService = new MediaService(store, nativeImage);
+      importService = new ImportService(store, {
+        validateImage: file => {
+          const buffer = fs.readFileSync(file), size = pngSize(buffer), image = nativeImage.createFromBuffer(buffer);
+          if (`${hash(buffer)}.png` !== path.basename(file) || image.isEmpty() || image.getSize().width !== size.width || image.getSize().height !== size.height) throw new Error('备份图片无法完整解码。');
+          return { size, signature: imageSignature(buffer, nativeImage), preview: thumbnail(image) };
+        },
+        beforeCommit: settings => {
+          const previous = store.data.settings;
+          if (settings.hotkey !== previous.hotkey || settings.stackHotkey !== previous.stackHotkey) { hotkeys.apply(settings); return () => hotkeys.apply(previous); }
+          return () => {};
+        },
+        afterCommit: () => {
+          applyRuntimeSettings(); if (!TEST_MODE) app.setLoginItemSettings({ openAtLogin: store.data.settings.launchAtLogin });
+          emit(); for (const item of store.data.items) queueImageText(item);
+        }
+      });
       monitor = new ClipboardMonitor({
         readVersion: async () => {
           const value = (await native('change-count')).count;
@@ -482,7 +518,8 @@ else {
       }, TEST_MODE);
       registerIPC(); applyRuntimeSettings();
       store.exportService.onChanged = state => { for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('export:changed', state); };
-      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, imageProcessor, imageText, searchService, mediaService, thumbnail };
+      importService.onChanged = state => { if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('import:changed', state); };
+      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, imageProcessor, imageText, searchService, mediaService, importService, thumbnail };
       try { hotkeys.apply(store.data.settings); } catch (error) { report(error); }
       for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(event, () => { if (mainWindow.isVisible()) placePanel(); });
       app.on('activate', () => showPanel());
@@ -500,7 +537,7 @@ app.on('before-quit', event => {
     event.preventDefault(); clearInterval(pollTimer);
     if (!processingClosing) {
       processingClosing = true;
-      Promise.allSettled([imageText?.close(), imageProcessor?.close(), searchService?.close(), store?.exportService.close()]).then(() => { processingStopped = true; app.quit(); });
+      Promise.allSettled([imageText?.close(), imageProcessor?.close(), searchService?.close(), store?.exportService.close(), importService?.close()]).then(() => { processingStopped = true; app.quit(); });
     }
   }
 });

@@ -31,6 +31,7 @@
   "license": "MIT",
   "dependencies": {
     "@jsamr/counter-style": "2.0.2",
+    "@streamparser/json": "0.0.26",
     "@tiptap/core": "3.32.0",
     "@tiptap/extension-image": "3.32.0",
     "@tiptap/extension-list": "3.32.0",
