@@ -61,7 +61,8 @@
     </section>
     <section data-section="data" hidden>
       <div class="settings-group"><div class="setting-row"><span>剪贴板项目</span><span id="itemCount"></span></div><div class="setting-row"><span>Pinboard</span><span id="boardCount"></span></div></div>
-      <div class="data-actions"><button id="exportData" class="standard-button"><i data-lucide="download"></i>导出备份…</button><button id="clearHistory" class="standard-button danger"><i data-lucide="trash-2"></i>删除历史…</button></div>
+      <div class="data-actions"><button id="exportData" class="standard-button"><i data-lucide="download"></i>导出备份…</button><button id="clearHistory" class="standard-button danger"><i data-lucide="trash-2"></i>删除历史…</button><button id="cancelExport" class="icon-button" aria-label="取消导出" title="取消导出" hidden><i data-lucide="x"></i></button></div>
+      <p id="exportProgress" role="status" aria-live="polite" hidden></p>
     </section>
     <section data-section="about" hidden><div class="about"><h2>Paste Easy</h2><p>0.2.0</p><p>本地剪贴板历史</p></div></section>
     <div id="settingsStatus" role="status" hidden></div>

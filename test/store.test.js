@@ -199,7 +199,7 @@ test('pixel-signature migration preserves legacy image identities and inaccessib
   assert.deepEqual(restored.boardIds, [board.id]); assert.equal(restored.asset, asset); assert.ok(store.get(broken.id));
   assert.equal(store.add({ type: 'image', body: asset, asset, signature, signatureFormat: 'pixels-v1' }).id, image.id);
 });
-test('image backups embed both current pixels and the restorable original without local paths', t => {
+test('image backups embed both current pixels and the restorable original without local paths', async t => {
   const store = fixture(t), original = Buffer.from('original'), current = Buffer.from('current'), asset = store.putAsset(original);
   const item = store.add({ type: 'image', body: asset, asset });
   store.replaceImage(item.id, { buffer: current, original, turns: 1, size: { width: 2, height: 3 } });
@@ -209,11 +209,11 @@ test('image backups embed both current pixels and the restorable original withou
   assert.equal(backup.asset, undefined); assert.equal(backup.originalAsset, undefined);
   assert.ok(store.get(item.id).asset); assert.ok(store.get(item.id).originalAsset);
   const destination = path.join(store.directory, 'export.json'); fs.writeFileSync(destination, 'old export', { mode: 0o644 });
-  store.exportTo(destination);
+  await store.exportTo(destination);
   assert.equal(fs.statSync(destination).mode & 0o777, 0o600);
   assert.deepEqual(JSON.parse(fs.readFileSync(destination)).items[0], backup);
-  store.exportData = () => { throw new Error('missing image asset'); };
-  const before = fs.readFileSync(destination, 'utf8'); assert.throws(() => store.exportTo(destination), /missing image/);
+  fs.unlinkSync(path.join(store.directory, 'assets', store.get(item.id).asset));
+  const before = fs.readFileSync(destination, 'utf8'); await assert.rejects(store.exportTo(destination), /ENOENT/);
   assert.equal(fs.readFileSync(destination, 'utf8'), before);
 });
 test('recognized text is versioned, searchable and not allowed to overwrite newer images', t => {

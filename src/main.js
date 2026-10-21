@@ -25,7 +25,7 @@ app.setPath('userData', process.env.PASTE_DATA_DIR ? path.resolve(process.env.PA
 let mainWindow, settingsWindow, previewWindow, tray, store, transfers, pollTimer, targetApp;
 let previewState = null, previewDirty = false, previewOpening = false, activeShare;
 let hotkeys, monitor, imageProcessor, imageDraft, imageText, capabilities = {}, processingClosing = false, processingStopped = false;
-let searchService, mediaService;
+let searchService, mediaService, exportDialogOpen = false;
 let quitting = false, quitAfterPreview = false, copyQueue = Promise.resolve(), settingsQueue = Promise.resolve();
 let copyRequest = 0;
 let sourceCache = null, lastSourceAt = 0, suppressBlur = false;
@@ -420,11 +420,18 @@ function registerIPC() {
     'stack:add': (_event, id) => { if (!store.get(id)) throw new Error('Invalid item'); if (!stack.includes(id)) stack.push(id); emit(); return stack; },
     'stack:next': async () => { const id = stack[0]; if (!id) return { ok: false, error: 'Stack 为空' }; const result = await copy(id, { paste: true }); if (result.ok) stack.shift(); emit(); return result; },
     'library:export': async () => {
-      const owner = settingsWindow && !settingsWindow.isDestroyed() ? settingsWindow : mainWindow;
-      const { canceled, filePath } = await dialog.showSaveDialog(owner, { defaultPath: 'Paste-Easy-backup.json', filters: [{ name: 'JSON', extensions: ['json'] }] });
-      if (canceled) return false;
-      store.exportTo(filePath); return true;
-    }
+      if (exportDialogOpen || store.exportService.state().running) throw new Error('已有备份正在选择位置或导出，请等待或取消。');
+      exportDialogOpen = true;
+      try {
+        const owner = settingsWindow && !settingsWindow.isDestroyed() ? settingsWindow : mainWindow;
+        const { canceled, filePath } = await dialog.showSaveDialog(owner, { defaultPath: 'Paste-Easy-backup.json', filters: [{ name: 'JSON', extensions: ['json'] }] });
+        if (canceled) return false;
+        try { const result = await store.exportTo(filePath); if (result.warning) { lastError = result.warning; emit(); } return result; }
+        catch (error) { if (error.name === 'AbortError') return { canceled: true }; throw error; }
+      } finally { exportDialogOpen = false; }
+    },
+    'library:exportState': () => store.exportService.state(),
+    'library:cancelExport': () => store.exportService.cancel()
   };
   for (const [channel, handler] of Object.entries(handlers)) ipcMain.handle(channel, (event, ...args) => {
     if (![mainWindow?.webContents, settingsWindow?.webContents, previewWindow?.webContents].includes(event.sender) || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted IPC sender');
@@ -474,6 +481,7 @@ else {
         stack: () => { stackMode = true; emit(); showPanel('stack'); }
       }, TEST_MODE);
       registerIPC(); applyRuntimeSettings();
+      store.exportService.onChanged = state => { for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('export:changed', state); };
       if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, imageProcessor, imageText, searchService, mediaService, thumbnail };
       try { hotkeys.apply(store.data.settings); } catch (error) { report(error); }
       for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(event, () => { if (mainWindow.isVisible()) placePanel(); });
@@ -492,7 +500,7 @@ app.on('before-quit', event => {
     event.preventDefault(); clearInterval(pollTimer);
     if (!processingClosing) {
       processingClosing = true;
-      Promise.allSettled([imageText?.close(), imageProcessor?.close(), searchService?.close()]).then(() => { processingStopped = true; app.quit(); });
+      Promise.allSettled([imageText?.close(), imageProcessor?.close(), searchService?.close(), store?.exportService.close()]).then(() => { processingStopped = true; app.quit(); });
     }
   }
 });

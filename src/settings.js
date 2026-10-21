@@ -1,6 +1,6 @@
 /* global lucide */
 const $ = selector => document.querySelector(selector);
-let library, recording = null, timer;
+let library, recording = null, timer, exportSelecting = false, exportState = { running: false, revision: -1 };
 const retention = [1, 7, 30, 365, 0];
 function status(message) { $('#settingsStatus').textContent = message; $('#settingsStatus').hidden = false; clearTimeout(timer); timer = setTimeout(() => { $('#settingsStatus').hidden = true; }, 5000); }
 async function attempt(task) { try { return await task(); } catch (error) { status(error.message); return undefined; } }
@@ -56,11 +56,25 @@ document.addEventListener('keydown', event => {
 });
 $('#resetHotkey').onclick = () => attempt(() => save({ hotkey: 'CommandOrControl+Shift+V', stackHotkey: 'CommandOrControl+Shift+C', nextBoardHotkey: 'CommandOrControl+Right', previousBoardHotkey: 'CommandOrControl+Left', quickPasteModifier: 'CommandOrControl', plainTextModifier: 'Shift' }));
 $('#openPermission').onclick = () => attempt(() => window.paste.openPermission());
-$('#exportData').onclick = () => attempt(async () => { if (await window.paste.exportLibrary()) status('备份已导出'); });
+function renderExport(value) {
+  if (value.revision < exportState.revision) return;
+  exportState = value; $('#exportData').disabled = exportSelecting || value.running;
+  $('#cancelExport').hidden = !value.running; $('#cancelExport').disabled = value.canceling;
+  $('#exportProgress').hidden = !value.running;
+  $('#exportProgress').textContent = value.canceling ? '正在取消导出…' : `正在导出 ${value.itemsDone || 0}/${value.total || 0}`;
+}
+$('#exportData').onclick = () => attempt(async () => {
+  exportSelecting = true; renderExport(exportState);
+  try { const result = await window.paste.exportLibrary(); if (result) status(result.canceled ? '导出已取消' : result.warning || '备份已导出'); }
+  finally { exportSelecting = false; renderExport(exportState); }
+});
+$('#cancelExport').onclick = () => attempt(async () => { await window.paste.cancelExport(); renderExport(await window.paste.getExportState()); });
+window.paste.onExportChanged(renderExport);
 $('#clearHistory').onclick = () => attempt(async () => render(await window.paste.clearHistory()));
 window.paste.onChanged(render);
 attempt(async () => {
   render(await window.paste.getLibrary());
+  renderExport(await window.paste.getExportState());
   const permission = await window.paste.getPermission();
   $('#permissionState span').textContent = permission.accessibility ? '辅助功能已授权' : '自动粘贴需要辅助功能权限';
 });

@@ -3,6 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { ContentFiles, validOCR } = require('./content-files');
 const { MediaReferences } = require('./media');
+const { ExportService } = require('./export-service');
 const { COLORS, TYPES, DEFAULT_SETTINGS, prune, sanitizeSettings } = require('./model');
 
 const hash = input => crypto.createHash('sha256').update(input).digest('hex');
@@ -35,6 +36,7 @@ class ClipStore {
     this.file = path.join(directory, 'library.json');
     this.now = now;
     this.legacyDirectories = legacyDirectories;
+    this.exportService = new ExportService(directory, [directory, ...legacyDirectories]);
     this.data = { version: 3, items: [], boards: [], settings: { ...DEFAULT_SETTINGS } };
     this.contents = new ContentFiles(directory); this.media = new MediaReferences(); this.counts = new Map(); this.revision = 0;
     this.recovery = '';
@@ -320,16 +322,7 @@ class ClipStore {
     return data;
   }
 
-  exportTo(file) {
-    const contents = JSON.stringify(this.exportData());
-    const temporary = path.join(path.dirname(file), `.${path.basename(file)}.tmp-${crypto.randomUUID()}`);
-    try {
-      const descriptor = fs.openSync(temporary, 'wx', 0o600);
-      try { fs.writeFileSync(descriptor, contents); fs.fsyncSync(descriptor); }
-      finally { fs.closeSync(descriptor); }
-      fs.renameSync(temporary, file);
-    } finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
-  }
+  exportTo(file, options) { return this.exportService.export(this.data, file, options); }
 
   snapshot() {
     return { version: this.data.version, revision: this.revision, boards: this.data.boards, settings: this.data.settings, recovery: this.recovery, items: this.data.items.map(item => {
@@ -356,7 +349,7 @@ class ClipStore {
     this.searchIndex.sync(this.data.items, this.revision, item => item.contentAsset ? this.get(item.id) : item);
     return { revision: this.revision, ids: this.searchIndex.find(query) };
   }
-  close() { this.searchIndex?.close(); }
+  close() { if (!this.closed) { this.closed = true; this.searchIndex?.close(); } return this.exportService.close(); }
 }
 
 module.exports = { ClipStore, hash, textSignature, htmlPayload };

@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('paste', {
   getPermission: () => invoke('permission:get'), openPermission: () => invoke('permission:open'), hide: () => invoke('panel:hide'),
   toggleStack: () => invoke('stack:toggle'), addToStack: id => invoke('stack:add', id), nextInStack: () => invoke('stack:next'),
   exportLibrary: () => invoke('library:export'),
+  getExportState: () => invoke('library:exportState'), cancelExport: () => invoke('library:cancelExport'),
+  onExportChanged: callback => listen('export:changed', callback),
   onChanged: callback => listen('library:changed', callback), onShown: callback => listen('panel:shown', callback),
   onPreviewChanged: callback => listen('preview:changed', callback),
   onPreviewCommand: callback => listen('preview:command', callback)
