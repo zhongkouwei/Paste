@@ -82,9 +82,10 @@ body.quick-keys .quick-key { display: block; }
 .status { position: absolute; z-index: 8; bottom: 8px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 32px); padding: 8px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--menu); box-shadow: 0 4px 16px #0003; font-size: 12px; }
 .menu { position: fixed; z-index: 20; min-width: 210px; max-width: min(320px, calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow: auto; padding: 5px; background: var(--menu); border: 1px solid var(--line); border-radius: 7px; box-shadow: 0 8px 26px #0004; }
 .menu button { display: flex; align-items: center; gap: 9px; min-height: 25px; width: 100%; padding: 4px 8px; border-radius: 4px; text-align: left; }
-.menu button:hover, .menu button:focus { background: var(--selected); color: white; outline: none; }
+.menu button:focus { background: var(--selected); color: white; outline: none; }
 .menu button svg { width: 14px; height: 14px; }
-.menu button kbd { margin-left: auto; font: 11px -apple-system, sans-serif; opacity: .6; }
+.menu button span { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.menu button kbd { margin-left: auto; flex: 0 0 auto; white-space: nowrap; font: 11px -apple-system, sans-serif; opacity: .6; }
 .menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 5px; }
 .menu .menu-label { padding: 5px 9px; color: var(--muted); font-size: 11px; }
 .filter-panel { position: absolute; z-index: 12; top: 55px; left: 50%; transform: translateX(-50%); width: 290px; max-height: 265px; overflow: auto; padding: 12px; background: var(--menu); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 25px #0004; }

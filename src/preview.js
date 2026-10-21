@@ -3,6 +3,8 @@ const $ = selector => document.querySelector(selector);
 const api = window.paste;
 const labels = { text: '文本', code: '文本', link: '链接', image: '图片', color: '颜色', file: '文件' };
 let state, dirty = false, statusTimer, richEditor, imageBusy = false, ocrOpen = false, ocrBusy = false, saveBusy = false;
+let composing = false;
+let pendingCommand;
 function icons() { lucide.createIcons(); }
 function status(message) {
   $('#previewStatus').textContent = message; $('#previewStatus').hidden = false;
@@ -10,6 +12,13 @@ function status(message) {
 }
 async function attempt(action) { try { return await action(); } catch (error) { status(error.message); return undefined; } }
 function markDirty(value) { dirty = value; api.markPreviewDirty(value); }
+function previewCommand(mode) {
+  if (!['edit', 'rename'].includes(mode)) return;
+  if (!state) { pendingCommand = mode; return; }
+  if (state.mode !== 'view' || saveBusy || composing) return;
+  if (mode === 'edit') { if (!$('#editPreview').hidden && !$('#editPreview').disabled) $('#editPreview').click(); }
+  else attempt(() => api.openPreview(state.id, { mode, ids: state.ids }));
+}
 
 function sanitizeEditor(html) {
   return DOMPurify.sanitize(html, { USE_PROFILES: { html: true },
@@ -136,19 +145,27 @@ function render(value) {
   else if (editing && value.mode !== 'rename' && item.type === 'text') {
     richEditor = PasteEditor.create(content, { html: item.html, text: item.body, sanitize: sanitizeEditor,
       onUpdate: () => { markDirty(true); if (richEditor) $('#previewMeta').textContent = `${[...richEditor.content().body].length} 个字符`; }, onSelection: updateTools });
-    richEditor.focus(); updateTools();
+    updateTools();
   } else if (editing) {
     const input = document.createElement(value.mode === 'rename' ? 'input' : 'textarea');
     input.value = value.mode === 'rename' ? item.title : item.body;
     input.setAttribute('aria-label', value.mode === 'rename' ? '项目名称' : '剪贴板内容');
     if (value.mode === 'rename') { input.className = 'rename-input'; input.maxLength = 200; }
-    input.oninput = () => { markDirty(true); if (value.mode !== 'rename') $('#previewMeta').textContent = `${[...input.value].length} 个字符`; }; content.append(input); input.focus();
+    input.oninput = () => { markDirty(true); if (value.mode !== 'rename') $('#previewMeta').textContent = `${[...input.value].length} 个字符`; }; content.append(input);
   } else if (item.type === 'image' && /^data:image\/(png|jpeg|gif|webp);base64,/.test(item.body)) {
     renderImage();
   } else if (item.type === 'file') content.append(renderFiles(item));
   else if (item.html) content.append(richPreview(item.html));
   else { const text = document.createElement('pre'); text.textContent = item.body; content.append(text); }
-  renderPinboards(); renderOCR(); icons();
+  renderPinboards(); renderOCR(); icons(); $('.preview-shell').inert = saveBusy; document.body.dataset.previewReady = 'true';
+  if (!saveBusy) {
+    if (richEditor) richEditor.focus();
+    else {
+      const input = content.querySelector('input, textarea'); input?.focus();
+      if (value.mode === 'rename') input?.select();
+    }
+  }
+  if (pendingCommand) { const command = pendingCommand; pendingCommand = null; previewCommand(command); }
 }
 $('#closePreview').onclick = () => attempt(() => api.closePreview());
 $('#copyPreview').onclick = () => attempt(async () => { const result = await api.copy(state.id, { paste: false }); if (!result.ok) status(result.error); });
@@ -179,15 +196,28 @@ $('#copyOCR').onclick = () => attempt(async () => { await api.copyImageText(stat
 $('#pinPreview').onclick = () => { $('#previewPinboards').hidden = !$('#previewPinboards').hidden; };
 $('#sharePreview').onclick = () => attempt(() => api.shareItem(state.id));
 document.addEventListener('pointerdown', event => { if (!event.target.closest('#previewPinboards, #pinPreview')) $('#previewPinboards').hidden = true; });
+document.addEventListener('compositionstart', () => { composing = true; });
+document.addEventListener('compositionend', () => { composing = false; });
 document.addEventListener('keydown', event => {
   if (saveBusy) { event.preventDefault(); return; }
+  if (!state) return;
+  if (PasteModel.isComposingKey(event, composing)) return;
+  if (state?.mode === 'view' && PasteModel.shortcutMatches(event, 'CommandOrControl+E')) {
+    event.preventDefault(); if (!event.repeat) previewCommand('edit'); return;
+  }
+  if (state?.mode === 'view' && PasteModel.shortcutMatches(event, 'CommandOrControl+R')) {
+    event.preventDefault(); if (!event.repeat) previewCommand('rename'); return;
+  }
+  if (state?.mode === 'rename' && event.key === 'Enter') {
+    event.preventDefault(); if (!event.repeat) $('#savePreview').click(); return;
+  }
   if (state?.imageEdit && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
     event.preventDefault(); const button = $(`#imageTools [data-image="${event.shiftKey ? 'redo' : 'undo'}"]`); if (!button.disabled) button.click(); return;
   }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') { event.preventDefault(); if (state.mode !== 'view') $('#savePreview').click(); return; }
-  if (event.key === 'Escape' || (event.key === ' ' && state.mode === 'view')) { event.preventDefault(); attempt(() => api.closePreview()); return; }
+  if (event.key === 'Escape' || (event.key === ' ' && state.mode === 'view')) { event.preventDefault(); if (!event.repeat) attempt(() => api.closePreview()); return; }
   if (event.target.matches('input, textarea') || state.mode !== 'view') return;
   if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); attempt(() => api.navigatePreview(event.key === 'ArrowRight' ? 1 : -1)); }
 });
-api.onPreviewChanged(render); attempt(async () => render(await api.getPreview())); icons();
+api.onPreviewChanged(render); api.onPreviewCommand(previewCommand); attempt(async () => render(await api.getPreview())); icons();
 window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });

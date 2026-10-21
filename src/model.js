@@ -105,6 +105,18 @@
     return !!event[{ Command: 'metaKey', Meta: 'metaKey', Control: 'ctrlKey', Ctrl: 'ctrlKey', Alt: 'altKey', Option: 'altKey', Shift: 'shiftKey' }[modifier]];
   }
 
+  function isComposingKey(event, composing = false) {
+    return composing || !!event.isComposing || event.keyCode === 229 || event.key === 'Process';
+  }
+
+  function itemLocations(item, { board = 'history', boards = [], searching = false } = {}) {
+    if (!item) return [];
+    return [
+      ...(searching || board !== 'history' ? [{ id: 'history', name: '剪贴板' }] : []),
+      ...boards.filter(value => item.boardIds?.includes(value.id) && (searching || value.id !== board))
+    ];
+  }
+
   function shortcutMatches(event, accelerator, platform = 'darwin') {
     if (!accelerator) return false;
     const parts = accelerator.split('+'), key = parts.pop();
@@ -119,5 +131,5 @@
     return (aliases[key] || key).toLowerCase() === event.key.toLowerCase();
   }
 
-  return { TYPES, COLORS, DEFAULT_SETTINGS, classifyText, filterItems, searchText, relativeTime, imageTextMatches, prune, sanitizeSettings, modifierPressed, shortcutMatches };
+  return { TYPES, COLORS, DEFAULT_SETTINGS, classifyText, filterItems, searchText, relativeTime, imageTextMatches, prune, sanitizeSettings, modifierPressed, shortcutMatches, isComposingKey, itemLocations };
 });

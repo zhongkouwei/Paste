@@ -26,5 +26,6 @@ contextBridge.exposeInMainWorld('paste', {
   toggleStack: () => invoke('stack:toggle'), addToStack: id => invoke('stack:add', id), nextInStack: () => invoke('stack:next'),
   exportLibrary: () => invoke('library:export'),
   onChanged: callback => listen('library:changed', callback), onShown: callback => listen('panel:shown', callback),
-  onPreviewChanged: callback => listen('preview:changed', callback)
+  onPreviewChanged: callback => listen('preview:changed', callback),
+  onPreviewCommand: callback => listen('preview:command', callback)
 });

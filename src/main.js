@@ -13,6 +13,7 @@ const { ClipboardMonitor } = require('./monitor');
 const { ImageProcessor, ImageDraft } = require('./image-editor');
 const { ImageTextIndex } = require('./image-text');
 const { SearchService } = require('./search-service');
+const { applicationMenuTemplate, previewShortcut } = require('./app-menu');
 const clip = new ClipboardService({ ...electron, fileBridge: process.platform === 'darwin' ? {
   read: () => native('read-files'), write: files => nativeInput('write-files', { files })
 } : undefined });
@@ -211,6 +212,11 @@ function createWindow(file, options) {
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.on('will-attach-webview', event => event.preventDefault());
+  if (file === 'preview.html') window.webContents.on('before-input-event', (event, input) => {
+    if (previewState?.mode !== 'view') return;
+    const command = previewShortcut(input);
+    if (command) { event.preventDefault(); if (!input.isAutoRepeat) window.webContents.send('preview:command', command); }
+  });
   window.loadFile(path.join(__dirname, file));
   return window;
 }
@@ -456,6 +462,7 @@ else {
         frame: false, transparent: true, resizable: false, movable: false, minimizable: false, maximizable: false,
         fullscreenable: false, alwaysOnTop: true, skipTaskbar: true, title: 'Paste Easy', vibrancy: 'under-window' });
       mainWindow.setAlwaysOnTop(true, 'pop-up-menu');
+      Menu.setApplicationMenu(Menu.buildFromTemplate(applicationMenuTemplate(openSettings)));
       mainWindow.on('blur', () => setTimeout(() => {
         if (!TEST_MODE && !suppressBlur && !previewOpening && !previewWindow?.isVisible() && !mainWindow.webContents.isDevToolsOpened()) mainWindow.hide();
       }, 100));

@@ -15,6 +15,38 @@ async function launchApplication() {
   });
 }
 
+async function seedKeyboardItems(prefix, count = 3) {
+  return application.evaluate((_electron, { prefix, count }) => {
+    const hooks = globalThis.__pasteTest;
+    const items = Array.from({ length: count }, (_, n) => {
+      const body = `${prefix} ${n}\nSynthetic keyboard fixture`;
+      const item = hooks.store.add({ type: 'text', body, title: `${prefix} ${n}`, preview: body });
+      return { id: item.id, body: item.body, title: item.title };
+    });
+    hooks.imageText.onChanged(); return items;
+  }, { prefix, count });
+}
+
+async function closePreviewWithKey(preview, key) {
+  const closed = preview.waitForEvent('close');
+  try { await preview.keyboard.press(key); }
+  catch (error) {
+    // A successful save can destroy the page before Playwright dispatches key-up.
+    if (!preview.isClosed() || !/Target page, context or browser has been closed/.test(error.message)) throw error;
+  }
+  await closed;
+}
+
+async function nativePreviewKey(key, repeat = false) {
+  // CDP key dispatch bypasses Electron's native before-input-event hook.
+  await application.evaluate(({ BrowserWindow }, { key, repeat }) => {
+    const window = BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/preview.html'));
+    window.focus(); const modifiers = repeat ? ['meta', 'isautorepeat'] : ['meta'];
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: key, modifiers });
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: key, modifiers: ['meta'] });
+  }, { key, repeat });
+}
+
 test.beforeAll(async () => {
   directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paste-ui-'));
   const seed = path.join(directory, 'seed.json');
@@ -88,7 +120,11 @@ test('search is safe to edit: arrows and Enter do not paste or select another ca
   await expect(page.locator('.clip-card')).toHaveCount(1);
   const before = await application.evaluate(({ clipboard }) => clipboard.readText());
   await page.keyboard.press('ArrowLeft'); await page.keyboard.press('Enter');
+  await expect(page.locator('#timeline')).toBeFocused();
   expect(await application.evaluate(({ clipboard }) => clipboard.readText())).toBe(before);
+  await page.keyboard.press('Tab'); await expect(page.getByRole('searchbox', { name: '搜索剪贴板' })).toBeFocused();
+  await page.keyboard.press('Tab'); await expect(page.locator('#timeline')).toBeFocused();
+  await page.keyboard.press('Shift+Tab'); await expect(page.getByRole('searchbox', { name: '搜索剪贴板' })).toBeFocused();
   await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
   await expect(page.locator('#searchBox')).toBeHidden();
 });
@@ -608,6 +644,223 @@ test('Stack preserves explicit selection order and consumes only successful copi
   const firstBody = await page.evaluate(async id => (await window.paste.getItem(id)).body, ids[0]);
   expect(await application.evaluate(({ clipboard }) => clipboard.readText())).toBe(firstBody);
   await page.evaluate(() => window.paste.toggleStack());
+});
+test('search keyboard flow requires a fresh Return to paste and ignores repeat or empty results', async () => {
+  const items = await seedKeyboardItems('ReturnFlow');
+  await page.keyboard.press('Meta+f'); const search = page.getByRole('searchbox', { name: '搜索剪贴板' }); await search.fill('ReturnFlow');
+  await expect(page.locator('.clip-card')).toHaveCount(3);
+  const ids = await page.locator('.clip-card').evaluateAll(nodes => nodes.map(node => node.dataset.id));
+  const before = await application.evaluate(({ clipboard }) => clipboard.readText());
+  await search.press('Enter'); await expect(page.locator('#timeline')).toBeFocused();
+  expect(await application.evaluate(({ clipboard }) => clipboard.readText())).toBe(before);
+  await page.keyboard.press('ArrowRight'); await expect(page.locator('.clip-card.selected')).toHaveAttribute('data-id', ids[1]);
+  await page.keyboard.press('Enter');
+  await expect.poll(() => application.evaluate(({ clipboard }) => clipboard.readText())).toBe(items.find(item => item.id === ids[1]).body);
+  await application.evaluate(async ({ clipboard, ClipboardItem }) => clipboard.write([new ClipboardItem({ 'text/plain': 'Repeat key sentinel' })]));
+  await page.locator('#timeline').evaluate(node => node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', repeat: true, bubbles: true, cancelable: true })));
+  await page.locator('#timeline').evaluate(node => { for (const key of ['Delete', 'Backspace', ' ']) node.dispatchEvent(new KeyboardEvent('keydown', { key, repeat: true, bubbles: true, cancelable: true })); });
+  await page.evaluate(() => window.paste.getLibrary()); expect(application.windows().length).toBe(1);
+  expect((await page.evaluate(id => window.paste.getItem(id), ids[1])).body).toBe(items.find(item => item.id === ids[1]).body);
+  expect(await application.evaluate(({ clipboard }) => clipboard.readText())).toBe('Repeat key sentinel');
+  await page.keyboard.press('Meta+f'); await search.fill('ReturnFlow no-matching-result'); await expect(page.locator('.clip-card')).toHaveCount(0);
+  await search.press('Enter'); await page.keyboard.press('Enter');
+  expect(await application.evaluate(({ clipboard }) => clipboard.readText())).toBe('Repeat key sentinel');
+  await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+});
+test('Return during an in-flight search focuses results without queuing a delayed paste', async () => {
+  const items = await seedKeyboardItems('PendingReturn');
+  await application.evaluate(() => {
+    const service = globalThis.__pasteTest.searchService; globalThis.__pendingSearchOriginal = service.search;
+    service.search = async function(items, revision, query) {
+      const result = await globalThis.__pendingSearchOriginal.call(this, items, revision, query);
+      if (query === 'PendingReturn') return new Promise(resolve => { globalThis.__finishPendingSearch = () => resolve(result); });
+      return result;
+    };
+  });
+  try {
+    await page.keyboard.press('Meta+f'); const search = page.getByRole('searchbox', { name: '搜索剪贴板' }); await search.fill('PendingReturn');
+    await expect.poll(() => application.evaluate(() => !!globalThis.__finishPendingSearch)).toBe(true);
+    const before = await application.evaluate(({ clipboard }) => clipboard.readText());
+    await search.press('Enter'); await expect(page.locator('#timeline')).toBeFocused(); await page.keyboard.press('Enter');
+    expect(await application.evaluate(({ clipboard }) => clipboard.readText())).toBe(before);
+    await application.evaluate(() => globalThis.__finishPendingSearch()); await expect(page.locator('.clip-card')).toHaveCount(3);
+    expect(await application.evaluate(({ clipboard }) => clipboard.readText())).toBe(before);
+    const id = await page.locator('.clip-card.selected').getAttribute('data-id'); await page.keyboard.press('Enter');
+    await expect.poll(() => application.evaluate(({ clipboard }) => clipboard.readText())).toBe(items.find(item => item.id === id).body);
+  } finally {
+    await application.evaluate(() => { globalThis.__finishPendingSearch?.(); globalThis.__pasteTest.searchService.search = globalThis.__pendingSearchOriginal; delete globalThis.__finishPendingSearch; delete globalThis.__pendingSearchOriginal; });
+  }
+  await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+});
+test('global search finds items outside the current pinboard and Show in restores their exact list position', async () => {
+  const items = await seedKeyboardItems('GlobalLocate', 2), board = await page.evaluate(() => window.paste.saveBoard({ name: 'Navigation board', color: '#4f80ed' }));
+  await seedKeyboardItems('LocateFiller', 35);
+  await page.evaluate(({ id, board }) => window.paste.pinItems([id], board), { id: items[0].id, board: board.id });
+  await page.getByRole('button', { name: board.name, exact: true }).click(); await expect(page.locator('.clip-card')).toHaveCount(1);
+  const before = await application.evaluate(({ clipboard }) => clipboard.readText());
+  await page.keyboard.press('Meta+f'); const search = page.getByRole('searchbox', { name: '搜索剪贴板' }); await search.fill('GlobalLocate');
+  await expect(page.locator('.clip-card')).toHaveCount(2);
+  await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+  await expect(page.locator('.clip-card')).toHaveCount(1); await expect(page.getByRole('button', { name: board.name, exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Meta+f'); await search.fill('GlobalLocate'); await expect(page.locator('.clip-card')).toHaveCount(2);
+  await page.locator(`[data-id="${items[1].id}"]`).click(); await page.keyboard.press('Meta+g');
+  await expect(page.locator('#searchBox')).toBeHidden(); await expect(page.getByRole('button', { name: '剪贴板', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.clip-card.selected')).toHaveAttribute('data-id', items[1].id);
+  await expect(page.locator('.clip-card.selected')).toBeInViewport(); expect(await page.locator('#timeline').evaluate(node => node.scrollLeft)).toBeGreaterThan(1000);
+  await page.keyboard.press('Meta+f'); await search.fill('GlobalLocate'); await expect(page.locator('.clip-card')).toHaveCount(2);
+  await page.locator(`[data-id="${items[0].id}"]`).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: `在${board.name}中显示`, exact: true }).click();
+  await expect(page.locator('#searchBox')).toBeHidden(); await expect(page.locator('.clip-card')).toHaveCount(1);
+  await expect(page.getByRole('button', { name: board.name, exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.clip-card.selected')).toHaveAttribute('data-id', items[0].id);
+  await page.locator('.clip-card').click({ button: 'right' });
+  await expect(page.getByRole('menuitem', { name: '在剪贴板中显示', exact: true })).toHaveAttribute('aria-keyshortcuts', 'Meta+G');
+  await expect(page.getByRole('menuitem', { name: `在${board.name}中显示`, exact: true })).toHaveCount(0);
+  await page.getByRole('menuitem', { name: '在剪贴板中显示', exact: true }).click();
+  expect(await application.evaluate(({ clipboard }) => clipboard.readText())).toBe(before);
+  await page.keyboard.press('Meta+f'); await search.fill('GlobalLocate'); await expect(page.locator('.clip-card')).toHaveCount(2);
+  await search.press('Enter'); await page.keyboard.press('Meta+a'); await expect(page.locator('.clip-card.selected')).toHaveCount(2);
+  const windows = application.windows().length; await page.keyboard.press('Meta+g'); await page.keyboard.press('Meta+e'); await page.keyboard.press('Meta+r');
+  await page.evaluate(() => window.paste.getLibrary()); expect(application.windows().length).toBe(windows); await expect(search).toHaveValue('GlobalLocate');
+  await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+  const longName = 'L'.repeat(60); await page.evaluate(board => window.paste.saveBoard(board), { ...board, name: longName });
+  await page.keyboard.press('Meta+f'); await search.fill('GlobalLocate'); await expect(page.locator('.clip-card')).toHaveCount(2);
+  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/index.html')).setBounds({ width: 390, height: 332 }));
+  try {
+    await page.locator(`[data-id="${items[0].id}"]`).click({ button: 'right' });
+    await expect(page.getByRole('menuitem', { name: `在${longName}中显示`, exact: true })).toBeVisible();
+    expect(await page.locator('#menu').evaluate(menu => menu.scrollWidth <= menu.clientWidth && menu.getBoundingClientRect().right <= innerWidth)).toBe(true);
+    await page.screenshot({ path: 'test-results/show-in-narrow.png' });
+    await page.keyboard.press('Escape'); await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+  } finally {
+    await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/index.html')).setBounds({ width: 1280, height: 332 }));
+  }
+});
+test('Command-E and Command-R edit in place without browser reload or replacing an active draft', async () => {
+  const [item] = await seedKeyboardItems('ShortcutRecord', 1);
+  const roles = await application.evaluate(({ Menu }) => {
+    const collect = menu => menu.items.flatMap(item => [item.role || '', ...(item.submenu ? collect(item.submenu) : [])]); return collect(Menu.getApplicationMenu());
+  });
+  expect(roles.some(role => /reload|devtools/i.test(role))).toBe(false); expect(roles).toContain('editmenu');
+  await page.locator(`[data-id="${item.id}"]`).click(); await page.evaluate(() => { window.documentMarker = 'same-main-document'; });
+  let opened = application.waitForEvent('window'); await page.keyboard.press('Meta+r'); let preview = await opened;
+  const name = preview.getByRole('textbox', { name: '项目名称' }); await expect(name).toHaveValue(item.title);
+  await expect(name).toBeFocused();
+  expect(await name.evaluate(input => input.selectionEnd - input.selectionStart)).toBe(item.title.length);
+  await preview.keyboard.insertText('键盘标签'); await expect(name).toHaveValue('键盘标签'); await closePreviewWithKey(preview, 'Enter');
+  expect(await page.evaluate(() => window.documentMarker)).toBe('same-main-document');
+  expect((await page.evaluate(id => window.paste.getItem(id), item.id)).title).toBe('键盘标签');
+  await page.locator(`[data-id="${item.id}"]`).click(); opened = application.waitForEvent('window'); await page.keyboard.press('Meta+e'); preview = await opened;
+  const editor = preview.getByRole('textbox', { name: '剪贴板内容' }); await expect(editor).toBeFocused();
+  await editor.fill('Edited by Command-E'); await closePreviewWithKey(preview, 'Meta+s');
+  expect((await page.evaluate(id => window.paste.getItem(id), item.id)).body).toBe('Edited by Command-E');
+  opened = application.waitForEvent('window'); await page.keyboard.press('Space'); preview = await opened;
+  await preview.waitForFunction(() => document.body.dataset.previewReady === 'true');
+  await preview.frameLocator('iframe[title="富文本预览"]').locator('body').click();
+  expect(await preview.evaluate(() => document.activeElement.tagName)).toBe('IFRAME');
+  await nativePreviewKey('R', true); expect((await preview.evaluate(() => window.paste.getPreview())).mode).toBe('view');
+  await nativePreviewKey('R');
+  const draft = preview.getByRole('textbox', { name: '项目名称' }); await expect(draft).toBeVisible();
+  await draft.fill('未提交标签'); await preview.evaluate(() => { window.previewMarker = 'same-preview-document'; });
+  await preview.keyboard.press('Meta+r'); await preview.keyboard.press('Meta+e');
+  await expect(draft).toHaveValue('未提交标签'); expect(await preview.evaluate(() => window.previewMarker)).toBe('same-preview-document');
+  await draft.evaluate(input => { input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })); input.value = '组合输入标签'; input.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true })); });
+  await draft.press('Enter'); await expect(draft).toBeVisible();
+  expect((await page.evaluate(id => window.paste.getItem(id), item.id)).title).toBe('键盘标签');
+  await draft.evaluate(input => input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })));
+  await closePreviewWithKey(preview, 'Enter');
+  expect((await page.evaluate(id => window.paste.getItem(id), item.id)).title).toBe('组合输入标签');
+  const signature = (await page.evaluate(id => window.paste.getItem(id), item.id)).signature;
+  opened = application.waitForEvent('window'); await page.keyboard.press('Space'); preview = await opened;
+  await preview.frameLocator('iframe[title="富文本预览"]').locator('body').click();
+  expect(await preview.evaluate(() => document.activeElement.tagName)).toBe('IFRAME'); await nativePreviewKey('E');
+  await expect(preview.getByRole('textbox', { name: '剪贴板内容' })).toHaveText('Edited by Command-E');
+  await closePreviewWithKey(preview, 'Meta+s'); expect((await page.evaluate(id => window.paste.getItem(id), item.id)).signature).toBe(signature);
+  const fileId = await application.evaluate(() => {
+    const hooks = globalThis.__pasteTest, file = hooks.store.add({ type: 'file', body: 'file:///missing-keyboard-fixture', title: 'File keyboard fixture' }); hooks.imageText.onChanged(); return file.id;
+  });
+  await page.locator(`[data-id="${fileId}"]`).click(); await page.keyboard.press('Meta+e'); await page.evaluate(() => window.paste.getLibrary());
+  expect(application.windows().length).toBe(1);
+  opened = application.waitForEvent('window'); await page.keyboard.press('Meta+r'); preview = await opened;
+  await expect(preview.getByRole('textbox', { name: '项目名称' })).toHaveValue('File keyboard fixture');
+  await closePreviewWithKey(preview, 'Escape');
+});
+test('IME composition and process/dead keys never submit search, dismiss it or paste a candidate', async () => {
+  await seedKeyboardItems('输入法键盘', 2); await page.locator('#timeline').focus();
+  const before = await application.evaluate(({ clipboard }) => clipboard.readText());
+  await page.locator('#timeline').evaluate(node => node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Process', keyCode: 229, bubbles: true, cancelable: true })));
+  const search = page.getByRole('searchbox', { name: '搜索剪贴板' }); await expect(search).toBeFocused();
+  await search.evaluate(input => { input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })); input.value = '输入法键盘'; input.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true })); });
+  await search.press('Enter'); await expect(search).toBeFocused(); await search.press('Escape'); await expect(search).toBeVisible();
+  expect(await application.evaluate(({ clipboard }) => clipboard.readText())).toBe(before);
+  await search.evaluate(input => { input.value = '输入法键盘'; input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })); });
+  await expect(page.locator('.clip-card')).toHaveCount(2); await search.press('Enter'); await expect(page.locator('#timeline')).toBeFocused();
+  await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+  await page.locator('#timeline').evaluate(node => node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Dead', altKey: true, bubbles: true, cancelable: true })));
+  await expect(search).toBeFocused(); await search.fill('dead-key-unmatched'); await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+});
+test('range navigation keeps a separate active item and stable anchor through asynchronous results and reordering', async () => {
+  await seedKeyboardItems('RangeSelection', 5); await page.keyboard.press('Meta+f');
+  const search = page.getByRole('searchbox', { name: '搜索剪贴板' }); await search.fill('RangeSelection'); await expect(page.locator('.clip-card')).toHaveCount(5);
+  await search.press('Enter'); await page.keyboard.press('End'); await page.keyboard.press('Shift+ArrowLeft'); await page.keyboard.press('Shift+ArrowLeft');
+  await expect(page.locator('.clip-card.selected')).toHaveCount(3); await page.keyboard.press('Shift+ArrowRight'); await expect(page.locator('.clip-card.selected')).toHaveCount(2);
+  await page.keyboard.press('Shift+Home'); await expect(page.locator('.clip-card.selected')).toHaveCount(5);
+  await page.keyboard.press('ArrowRight'); await expect(page.locator('.clip-card.selected')).toHaveCount(1);
+  const selected = await page.locator('.clip-card.selected').getAttribute('data-id');
+  let active = await page.locator('#timeline').getAttribute('aria-activedescendant');
+  await expect(page.locator(`[id="${active}"]`)).toHaveAttribute('data-id', selected);
+  await expect(page.locator(`[id="${active}"]`)).toHaveAttribute('aria-posinset', '2'); await expect(page.locator(`[id="${active}"]`)).toHaveAttribute('aria-setsize', '5');
+  await application.evaluate(() => {
+    const hooks = globalThis.__pasteTest; hooks.store.add({ type: 'text', body: 'RangeSelection new arrival', title: 'RangeSelection new arrival' }); hooks.imageText.onChanged();
+  });
+  await expect(page.locator('.clip-card')).toHaveCount(6); await expect(page.locator('.clip-card.selected')).toHaveAttribute('data-id', selected);
+  await page.keyboard.press('Shift+ArrowLeft'); await expect(page.locator('.clip-card.selected')).toHaveCount(2);
+  await page.keyboard.press('ArrowRight'); await expect(page.locator('.clip-card.selected')).toHaveAttribute('data-id', selected);
+  await page.keyboard.press('Shift+F10'); await expect(page.getByRole('menu')).toBeVisible();
+  await page.getByRole('menuitem', { name: '重命名', exact: true }).hover(); await expect(page.getByRole('menuitem', { name: '重命名', exact: true })).toBeFocused();
+  await page.keyboard.press('ArrowDown'); await expect(page.getByRole('menuitem', { name: '在剪贴板中显示', exact: true })).toBeFocused();
+  expect(await page.locator('#menu button').evaluateAll(buttons => buttons.filter(button => getComputedStyle(button).backgroundColor === 'rgb(66, 122, 243)').length)).toBe(1);
+  await page.screenshot({ path: 'test-results/search-location-menu.png' });
+  await page.keyboard.press('Escape'); await expect(search).toHaveValue('RangeSelection');
+  await page.screenshot({ path: 'test-results/keyboard-search-results.png' });
+  await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+});
+test('menu commands retain their original item ownership when background changes move the selection', async () => {
+  for (const activation of ['mouse', 'Backspace', 'Delete', 'Enter']) {
+    const items = await seedKeyboardItems(`MenuOwnership-${activation}`, 2);
+    await page.keyboard.press('Meta+f'); const search = page.getByRole('searchbox', { name: '搜索剪贴板' }); await search.fill(`MenuOwnership-${activation}`);
+    await expect(page.locator('.clip-card')).toHaveCount(2);
+    await page.locator(`[data-id="${items[0].id}"]`).click({ button: 'right' });
+    if (activation === 'Enter') await page.getByRole('menuitem', { name: '删除', exact: true }).hover();
+    await application.evaluate((_electron, id) => { const hooks = globalThis.__pasteTest; hooks.store.delete([id]); hooks.imageText.onChanged(); }, items[0].id);
+    await expect(page.locator('.clip-card.selected')).toHaveAttribute('data-id', items[1].id);
+    await page.keyboard.press('ArrowLeft'); await page.keyboard.press('Meta+a');
+    await expect(page.locator('.clip-card.selected')).toHaveAttribute('data-id', items[1].id);
+    await expect(page.getByRole('menu')).toBeVisible();
+    const count = (await page.evaluate(() => window.paste.getLibrary())).items.length;
+    if (activation === 'mouse') await page.getByRole('menuitem', { name: '删除', exact: true }).click();
+    else await page.keyboard.press(activation);
+    const library = await page.evaluate(() => window.paste.getLibrary());
+    expect(library.items.some(item => item.id === items[1].id)).toBe(true); expect(library.items.length).toBe(count);
+    await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+  }
+  const board = await page.evaluate(() => window.paste.saveBoard({ name: 'Menu ownership board', color: '#4f80ed' }));
+  const items = await seedKeyboardItems('MenuOwnership-pin', 2);
+  await page.keyboard.press('Meta+f'); await page.getByRole('searchbox', { name: '搜索剪贴板' }).fill('MenuOwnership-pin');
+  await expect(page.locator('.clip-card')).toHaveCount(2); await page.locator(`[data-id="${items[0].id}"]`).click({ button: 'right' });
+  await application.evaluate((_electron, id) => { const hooks = globalThis.__pasteTest; hooks.store.delete([id]); hooks.imageText.onChanged(); }, items[0].id);
+  await expect(page.locator('.clip-card.selected')).toHaveAttribute('data-id', items[1].id);
+  await page.getByRole('menuitem', { name: board.name, exact: true }).click();
+  await expect(page.locator('#status')).toHaveText(/Invalid clipboard selection/);
+  expect((await page.evaluate(id => window.paste.getItem(id), items[1].id)).boardIds).not.toContain(board.id);
+  for (const remove of [false, true]) {
+    await page.locator(`[data-id="${items[1].id}"]`).click({ button: 'right' });
+    // The displayed add/remove intent must not invert if another action changes membership.
+    await page.evaluate(({ id, board, remove }) => window.paste.pinItems([id], board, remove), { id: items[1].id, board: board.id, remove });
+    await page.getByRole('menuitem', { name: `${remove ? '✓ ' : ''}${board.name}`, exact: true }).click();
+    expect((await page.evaluate(id => window.paste.getItem(id), items[1].id)).boardIds.includes(board.id)).toBe(!remove);
+  }
+  await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
 });
 test('large originals remain searchable, copyable, draggable and restorable without flooding catalog IPC', async () => {
   const body = 'Synthetic long clipboard text 🧪\n'.repeat(7000) + 'unique-tail-482709';

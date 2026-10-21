@@ -1,13 +1,14 @@
 /* global lucide, PasteModel */
 const $ = selector => document.querySelector(selector);
 const api = window.paste;
-const { filterItems, relativeTime, imageTextMatches, COLORS, modifierPressed, shortcutMatches } = PasteModel;
+const { filterItems, relativeTime, imageTextMatches, COLORS, modifierPressed, shortcutMatches, isComposingKey, itemLocations } = PasteModel;
 const state = { items: [], boards: [], settings: {}, status: {}, board: 'history', query: '', type: 'all', source: '', after: '',
-  selected: new Set(), anchor: 0, searching: false, target: '', editingBoard: null, detail: null };
+  selected: new Set(), anchor: null, active: null, searching: false, target: '', editingBoard: null, detail: null };
 const labels = { text: '文本', code: '文本', link: '链接', image: '图片', color: '颜色', file: '文件' };
 const icons = { text: 'text', code: 'code', link: 'link', image: 'image', color: 'palette', file: 'file' };
 let toastTimer, renderFrame, dragging = null;
 let searchRequest = 0, searchPending = false, queryMatches = new Set(), searchSelection;
+let composing = false;
 const imageTextCache = new Map(), imageTextPending = new Set();
 
 function icon(name) { return `<i data-lucide="${name}"></i>`; }
@@ -15,7 +16,8 @@ function escape(value) { return String(value ?? '').replace(/[&<>"']/g, ch => ({
 function safeColor(value) { return /^#[a-f0-9]{6}$/i.test(value) ? value : '#77808a'; }
 function safeImage(value) { return /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(value || '') ? value : ''; }
 function refreshIcons() { lucide.createIcons({ attrs: { 'aria-hidden': 'true' } }); }
-function visibleItems() { return filterItems(state.query.trim() ? state.items.filter(item => queryMatches.has(item.id)) : state.items, { ...state, query: '' }); }
+function visibleItems() { return filterItems(state.query.trim() ? state.items.filter(item => queryMatches.has(item.id)) : state.items,
+  { ...state, board: state.searching ? 'history' : state.board, query: '' }); }
 function toast(message) { $('#status').textContent = message; $('#status').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('#status').hidden = true; }, 6000); }
 async function attempt(task) { try { return await task(); } catch (error) { toast(error.message); return undefined; } }
 
@@ -32,7 +34,7 @@ function accept(library) {
 async function requestSearch(preserveSelection = false) {
   const request = ++searchRequest, query = state.query, revision = state.revision;
   if (!preserveSelection) searchSelection = null;
-  else if (state.selected.size || searchSelection?.query !== query) searchSelection = { query, ids: [...state.selected] };
+  else if (state.selected.size || searchSelection?.query !== query) searchSelection = { query, ids: [...state.selected], anchor: state.anchor, active: state.active };
   if (!query.trim()) { searchPending = false; $('#timeline').setAttribute('aria-busy', 'false'); render(); return; }
   searchPending = true; queryMatches = new Set(); $('#timeline').setAttribute('aria-busy', 'true'); render();
   try {
@@ -42,7 +44,8 @@ async function requestSearch(preserveSelection = false) {
     queryMatches = new Set(result.ids);
     if (searchSelection?.query === query) {
       state.selected = new Set(searchSelection.ids.filter(id => queryMatches.has(id)));
-      state.anchor = Math.max(0, visibleItems().findIndex(item => item.id === [...state.selected][0]));
+      state.active = queryMatches.has(searchSelection.active) ? searchSelection.active : [...state.selected][0];
+      state.anchor = queryMatches.has(searchSelection.anchor) ? searchSelection.anchor : state.active;
     }
   } catch (error) { if (request === searchRequest) toast(error.message); }
   finally {
@@ -53,8 +56,8 @@ async function requestSearch(preserveSelection = false) {
 function renderBoards() {
   const previousEditor = $('#boards .board-edit');
   const restoreEditorFocus = !!previousEditor?.contains(document.activeElement);
-  $('#boards').innerHTML = `<button class="board ${state.board === 'history' ? 'active' : ''}" data-board="history" aria-pressed="${state.board === 'history'}" title="剪贴板">${icon('history')}<span>剪贴板</span></button>`
-    + state.boards.map(board => `<button class="board ${state.board === board.id ? 'active' : ''}" data-board="${escape(board.id)}" draggable="true" aria-pressed="${state.board === board.id}" title="${escape(board.name)}"><b class="board-dot" style="--board-color:${safeColor(board.color)}"></b><span>${escape(board.name)}</span></button>`).join('');
+  $('#boards').innerHTML = `<button class="board ${state.board === 'history' && !state.searching ? 'active' : ''}" data-board="history" aria-pressed="${state.board === 'history' && !state.searching}" title="剪贴板">${icon('history')}<span>剪贴板</span></button>`
+    + state.boards.map(board => `<button class="board ${state.board === board.id && !state.searching ? 'active' : ''}" data-board="${escape(board.id)}" draggable="true" aria-pressed="${state.board === board.id && !state.searching}" title="${escape(board.name)}"><b class="board-dot" style="--board-color:${safeColor(board.color)}"></b><span>${escape(board.name)}</span></button>`).join('');
   if (state.editingBoard) {
     const board = state.editingBoard;
     const button = [...$('#boards').querySelectorAll('[data-board]')].find(node => node.dataset.board === board.id);
@@ -92,7 +95,8 @@ function renderBoards() {
   $('#stackCount').textContent = state.status.stackCount || '';
 }
 
-function card(item, index) {
+function optionID(id) { return `clip-${id.split('').map(character => character.charCodeAt(0).toString(16)).join('-')}`; }
+function card(item, index, total) {
   const selected = state.selected.has(item.id);
   const image = safeImage(item.preview), sourceIcon = safeImage(item.source?.icon);
   let body = `<pre>${escape(item.preview || item.body)}</pre>`;
@@ -101,7 +105,7 @@ function card(item, index) {
   if (item.type === 'color' && /^#[\da-f]{3,8}$/i.test(item.body)) { body = `<span>${escape(item.body)}</span>`; kind = 'color-preview'; }
   const caption = item.type === 'image' ? `${item.size?.width || '?'} × ${item.size?.height || '?'}`
     : item.type === 'file' ? '文件' : `${item.characterCount ?? [...(item.body || '')].length} 个字符`;
-  return `<article class="clip-card ${selected ? 'selected' : ''}" role="option" draggable="true" aria-selected="${selected}" aria-label="${escape(item.title)}" data-id="${escape(item.id)}" data-index="${index}" data-type="${escape(item.type)}" style="left:${24 + index * 264}px;--source-color:${safeColor(item.source?.color)}">
+  return `<article id="${optionID(item.id)}" class="clip-card ${selected ? 'selected' : ''}" role="option" draggable="true" aria-selected="${selected}" aria-posinset="${index + 1}" aria-setsize="${total}" aria-label="${escape(item.title)}" data-id="${escape(item.id)}" data-index="${index}" data-type="${escape(item.type)}" style="left:${24 + index * 264}px;--source-color:${safeColor(item.source?.color)}">
     <header class="clip-header"><span class="clip-type">${labels[item.type] || '文本'}</span><time class="clip-time">${relativeTime(item.createdAt)}</time>${sourceIcon ? `<img class="source-icon" src="${sourceIcon}" alt="${escape(item.source?.name)}" draggable="false">` : `<span class="source-fallback" title="${escape(item.source?.name || '')}">${icon(icons[item.type] || 'text')}</span>`}</header>
     <div class="clip-body ${kind}" ${kind === 'color-preview' ? `style="background:${escape(item.body)};color:#111"` : ''}>${body}</div>
     <footer class="clip-footer">${item.renamed ? escape(item.title) : caption}</footer>${item.boardIds?.length ? `<span class="clip-pin">${icon('pin')}</span>` : ''}
@@ -115,7 +119,9 @@ function renderCards() {
   const first = Math.max(0, Math.floor($('#timeline').scrollLeft / 264) - 3);
   const end = Math.min(items.length, first + Math.ceil(width / 264) + 8);
   $('#track').style.width = `${Math.max(width, items.length * 264 + 24)}px`;
-  $('#track').innerHTML = items.slice(first, end).map((item, offset) => card(item, first + offset)).join('');
+  $('#track').innerHTML = items.slice(first, end).map((item, offset) => card(item, first + offset, items.length)).join('');
+  const active = state.active && document.getElementById(optionID(state.active));
+  if (active) $('#timeline').setAttribute('aria-activedescendant', active.id); else $('#timeline').removeAttribute('aria-activedescendant');
   $('#emptyState').hidden = items.length > 0;
   $('#emptyTitle').textContent = searchPending ? '正在搜索…' : state.query || state.type !== 'all' || state.source || state.after ? '无结果'
     : state.board === 'history' ? '剪贴板为空' : 'Pinboard 为空';
@@ -153,7 +159,9 @@ function paintImageMatches() {
 function render() {
   const items = visibleItems();
   state.selected = new Set([...state.selected].filter(id => items.some(item => item.id === id)));
-  if (!state.selected.size && items.length) { state.anchor = 0; state.selected.add(items[0].id); }
+  if (!state.selected.size && items.length) { state.anchor = items[0].id; state.selected.add(items[0].id); }
+  if (!items.some(item => item.id === state.active)) state.active = [...state.selected][0] || null;
+  if (!items.some(item => item.id === state.anchor)) state.anchor = state.active;
   renderBoards(); renderCards();
 }
 function scrollToIndex(index) {
@@ -167,20 +175,35 @@ function select(index, { extend = false, toggle = false } = {}) {
   index = Math.min(items.length - 1, Math.max(0, index));
   if (!items[index]) return;
   if (extend) {
-    state.selected = new Set(items.slice(Math.min(index, state.anchor), Math.max(index, state.anchor) + 1).map(item => item.id));
+    const anchor = Math.max(0, items.findIndex(item => item.id === state.anchor));
+    state.selected = new Set(items.slice(Math.min(index, anchor), Math.max(index, anchor) + 1).map(item => item.id));
   } else if (toggle) {
     if (state.selected.has(items[index].id)) state.selected.delete(items[index].id); else state.selected.add(items[index].id);
-    state.anchor = index;
-  } else { state.anchor = index; state.selected = new Set([items[index].id]); }
+    state.anchor = items[index].id;
+  } else { state.anchor = items[index].id; state.selected = new Set([items[index].id]); }
+  state.active = items[index].id;
   scrollToIndex(index); renderCards();
 }
-function resetFilter() { state.selected.clear(); state.anchor = 0; $('#timeline').scrollLeft = 0; requestSearch(); }
-function setBoard(id) { state.board = id; closeMenu(); resetFilter(); }
+function resetFilter() { state.selected.clear(); state.anchor = state.active = null; $('#timeline').scrollLeft = 0; requestSearch(); }
+function clearSearch() {
+  state.searching = false; document.body.classList.remove('searching');
+  $('#searchBox').hidden = true; $('#searchToggle').hidden = false;
+  state.query = ''; $('#searchInput').value = ''; state.type = 'all'; state.source = ''; state.after = '';
+  $('#sourceFilter').value = ''; $('#dateFilter').value = ''; $('#filters').hidden = true;
+}
+function setBoard(id) { clearSearch(); state.board = id; closeMenu(); resetFilter(); }
 function toggleSearch(open) {
-  state.searching = open; document.body.classList.toggle('searching', open);
-  $('#searchBox').hidden = !open; $('#searchToggle').hidden = open;
-  if (open) $('#searchInput').focus();
-  else { state.query = ''; $('#searchInput').value = ''; state.type = 'all'; state.source = ''; state.after = ''; $('#filters').hidden = true; resetFilter(); }
+  if (open) {
+    const wasOpen = state.searching; state.searching = true; document.body.classList.add('searching');
+    $('#searchBox').hidden = false; $('#searchToggle').hidden = true;
+    if (!wasOpen) resetFilter(); $('#searchInput').focus();
+  } else { clearSearch(); resetFilter(); $('#timeline').focus(); }
+}
+function showIn(id, destination) {
+  const item = state.items.find(value => value.id === id);
+  if (!item || (destination !== 'history' && !item.boardIds?.includes(destination))) return;
+  clearSearch(); state.board = destination; state.selected = new Set([id]); state.anchor = state.active = id; closeMenu(); requestSearch(true);
+  scrollToIndex(visibleItems().findIndex(value => value.id === id)); renderCards(); $('#timeline').focus();
 }
 
 function closeMenu() { $('#menu').hidden = true; }
@@ -191,8 +214,10 @@ function menu(entries, x, y) {
     if (!entry) { element.append(document.createElement('hr')); return; }
     if (entry.heading) { const text = document.createElement('div'); text.className = 'menu-label'; text.textContent = entry.heading; element.append(text); return; }
     const button = document.createElement('button'); button.type = 'button'; button.role = 'menuitem';
-    button.innerHTML = `${entry.icon ? icon(entry.icon) : ''}<span>${escape(entry.label)}</span>${entry.key ? `<kbd>${escape(entry.key)}</kbd>` : ''}`;
+    button.innerHTML = `${entry.icon ? icon(entry.icon) : ''}<span>${escape(entry.label)}</span>${entry.key ? `<kbd aria-hidden="true">${escape(entry.key)}</kbd>` : ''}`;
+    if (entry.shortcut) button.setAttribute('aria-keyshortcuts', entry.shortcut);
     button.disabled = !!entry.disabled;
+    button.onpointermove = () => { if (!button.disabled && document.activeElement !== button) button.focus({ preventScroll: true }); };
     button.addEventListener('click', () => { closeMenu(); attempt(entry.action); }); element.append(button);
   });
   element.hidden = false; refreshIcons();
@@ -208,26 +233,27 @@ async function activate(id = [...state.selected][0], paste = true, plain = false
   if (!result.ok) toast(result.error); else if (!paste) toast('已复制');
 }
 function itemMenu(item, x, y) {
+  const ids = state.selected.has(item.id) ? [...state.selected] : [item.id];
   menu([
-    { label: state.target ? `粘贴到 ${state.target}` : '粘贴到当前应用', icon: 'clipboard-paste', key: '↵', action: () => activate(item.id) },
+    { label: state.target ? `粘贴到 ${state.target}` : '粘贴到当前应用', icon: 'clipboard-paste', key: '↵', shortcut: 'Enter', action: () => activate(item.id) },
     { label: '以纯文本粘贴', action: () => activate(item.id, true, true), disabled: ['image', 'file'].includes(item.type) },
-    { label: '复制', icon: 'copy', key: '⌘C', action: () => activate(item.id, false) }, null,
-    { label: '编辑', icon: 'pencil', action: () => openDetail(item.id, true), disabled: item.type === 'file' },
+    { label: '复制', icon: 'copy', key: '⌘C', shortcut: 'Meta+C', action: () => activate(item.id, false) }, null,
+    { label: '编辑', icon: 'pencil', key: '⌘E', shortcut: 'Meta+E', action: () => openDetail(item.id, true), disabled: ids.length !== 1 || item.type === 'file' },
     ...(item.type === 'image' && state.capabilities?.textRecognition ? [{ label: '复制图片中的文字', icon: 'scan-text', action: async () => { await api.copyImageText(item.id); toast('已复制文字'); } }] : []),
-    { label: '重命名', action: () => openDetail(item.id, 'rename') },
+    { label: '重命名', key: '⌘R', shortcut: 'Meta+R', action: () => openDetail(item.id, 'rename'), disabled: ids.length !== 1 },
+    ...itemLocations(item, state).map((location, index) => ({ label: `在${location.name}中显示`, key: index ? '' : '⌘G',
+      shortcut: index ? '' : 'Meta+G', disabled: ids.length !== 1, action: () => showIn(item.id, location.id) })),
     ...(item.type === 'file' ? [{ label: '在 Finder 中显示', icon: 'folder-search', action: () => api.revealItem(item.id) }] : []),
-    { label: state.selected.size > 1 ? `删除 ${state.selected.size} 个项目` : '删除', icon: 'trash-2', key: '⌫', action: async () => accept(await api.deleteItems([...state.selected])) }, null,
+    { label: ids.length > 1 ? `删除 ${ids.length} 个项目` : '删除', icon: 'trash-2', key: '⌫', shortcut: 'Backspace', action: async () => accept(await api.deleteItems(ids)) }, null,
     { heading: '固定到 Pinboard' },
-    ...state.boards.map(board => ({ label: `${item.boardIds?.includes(board.id) ? '✓ ' : ''}${board.name}`, action: () => pin(board.id) })),
+    ...state.boards.map(board => {
+      const remove = ids.every(id => state.items.find(value => value.id === id)?.boardIds.includes(board.id));
+      return { label: `${remove ? '✓ ' : ''}${board.name}`, action: async () => accept(await api.pinItems(ids, board.id, remove)) };
+    }),
     { label: '创建 Pinboard…', icon: 'plus', action: () => boardDialog() }, null,
-    { label: '预览', icon: 'scan', key: 'Space', action: () => openDetail(item.id) },
+    { label: '预览', icon: 'scan', key: 'Space', shortcut: 'Space', action: () => openDetail(item.id) },
     { label: '分享', icon: 'share', action: () => api.shareItem(item.id) }
   ], x, y);
-}
-async function pin(boardId) {
-  const ids = [...state.selected];
-  const shouldRemove = ids.every(id => state.items.find(item => item.id === id)?.boardIds.includes(boardId));
-  accept(await api.pinItems(ids, boardId, shouldRemove));
 }
 async function boardDialog(board) {
   if (!board) {
@@ -296,11 +322,11 @@ $('#timeline').addEventListener('dragstart', event => {
   event.dataTransfer.effectAllowed = 'copyMove';
 });
 $('#timeline').addEventListener('dragover', event => {
-  if (state.board !== 'history' && event.target.closest('[data-id]')) { event.preventDefault(); event.target.closest('[data-id]').classList.add('drop-target'); }
+  if (!state.searching && state.board !== 'history' && event.target.closest('[data-id]')) { event.preventDefault(); event.target.closest('[data-id]').classList.add('drop-target'); }
 });
 $('#timeline').addEventListener('drop', event => {
   event.preventDefault(); const target = event.target.closest('[data-id]'), data = payload(event); clearDrag();
-  if (!target || state.board === 'history' || data?.type !== 'items') return;
+  if (!target || state.searching || state.board === 'history' || data?.type !== 'items') return;
   attempt(async () => {
     const members = filterItems(state.items, { board: state.board, boards: state.boards }).map(item => item.id);
     if (!Array.isArray(data.value) || data.value.some(id => !members.includes(id))) return;
@@ -314,7 +340,11 @@ document.addEventListener('dragend', clearDrag);
 
 $('#searchToggle').onclick = () => toggleSearch(true);
 $('#searchClear').onclick = () => { $('#searchInput').value = ''; state.query = ''; resetFilter(); $('#searchInput').focus(); };
-$('#searchInput').oninput = event => { state.query = event.target.value; resetFilter(); };
+$('#searchInput').oninput = event => { state.query = event.target.value; if (!composing && !event.isComposing) resetFilter(); };
+document.addEventListener('compositionstart', () => { composing = true; });
+document.addEventListener('compositionend', event => {
+  composing = false; if (event.target === $('#searchInput')) { state.query = event.target.value; resetFilter(); }
+});
 $('#boards').onclick = event => { const button = event.target.closest('[data-board]'); if (button) setBoard(button.dataset.board); };
 $('#boards').oncontextmenu = event => {
   event.preventDefault(); const button = event.target.closest('[data-board]');
@@ -350,13 +380,13 @@ $('#timeline').oncontextmenu = event => {
   itemMenu(item, event.clientX, event.clientY);
 };
 $('#moreButton').onclick = () => menu([
-  { label: '设置…', icon: 'settings', key: '⌘,', action: () => api.openSettings() },
+  { label: '设置…', icon: 'settings', key: '⌘,', shortcut: 'Meta+,', action: () => api.openSettings() },
   { label: state.settings.paused ? '继续记录' : '暂停记录', icon: state.settings.paused ? 'play' : 'pause', action: async () => accept(await api.saveSettings({ paused: !state.settings.paused })) },
   { label: state.status.stackMode ? '退出 Paste Stack' : 'Paste Stack', icon: 'layers', action: () => api.toggleStack() },
   { label: '粘贴 Stack 下一项', icon: 'clipboard-paste', disabled: !state.status.stackCount, action: () => api.nextInStack() }, null,
   { label: '导出备份…', icon: 'download', action: () => api.exportLibrary() },
   { label: '删除历史…', icon: 'trash-2', action: async () => accept(await api.clearHistory()) }, null,
-  { label: '关闭', icon: 'x', key: 'Esc', action: () => api.hide() }
+  { label: '关闭', icon: 'x', key: 'Esc', shortcut: 'Escape', action: () => api.hide() }
 ], innerWidth - 230, 48);
 $('#stackButton').onclick = () => attempt(() => state.status.stackCount ? api.nextInStack() : api.toggleStack());
 document.addEventListener('pointerdown', event => {
@@ -365,14 +395,27 @@ document.addEventListener('pointerdown', event => {
   if (!event.target.closest('#filters, #filterToggle')) $('#filters').hidden = true;
 });
 document.addEventListener('keydown', event => {
+  const typing = event.target.matches('input, textarea, select') || event.target.isContentEditable;
+  if (isComposingKey(event, composing) || event.key === 'Dead') {
+    if (!typing && !composing && (event.key === 'Process' || event.key === 'Dead' || event.keyCode === 229) && $('#menu').hidden) toggleSearch(true);
+    return;
+  }
   const modifier = event.metaKey || event.ctrlKey;
   document.body.classList.toggle('quick-keys', modifierPressed(event, state.settings.quickPasteModifier));
   if ($('#menu').hidden === false) {
     const buttons = [...$('#menu').querySelectorAll('button:not(:disabled)')];
     const index = buttons.indexOf(document.activeElement);
     if (['ArrowUp', 'ArrowDown'].includes(event.key)) { event.preventDefault(); buttons[(index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length]?.focus(); return; }
+    if (['Home', 'End'].includes(event.key)) { event.preventDefault(); buttons[event.key === 'Home' ? 0 : buttons.length - 1]?.focus(); return; }
     if (event.key === 'Escape') { event.preventDefault(); closeMenu(); $('#timeline').focus(); return; }
-    if (event.key === 'Enter') return;
+    if (event.key === 'Tab') { closeMenu(); return; }
+    if (event.key === 'Enter') { event.preventDefault(); if (!event.repeat) buttons[index]?.click(); return; }
+    const command = buttons.find(button => {
+      const shortcut = button.getAttribute('aria-keyshortcuts');
+      return shortcutMatches(event, event.key === 'Delete' && shortcut === 'Backspace' ? 'Delete' : shortcut);
+    });
+    if (command) { event.preventDefault(); if (!event.repeat) command.click(); }
+    return;
   }
   if (event.key === 'Escape') {
     event.preventDefault();
@@ -385,7 +428,28 @@ document.addEventListener('keydown', event => {
   if (modifier && event.key.toLowerCase() === 'f') { event.preventDefault(); toggleSearch(true); return; }
   if (modifier && event.key === ',') { event.preventDefault(); api.openSettings(); return; }
   if (modifier && event.shiftKey && event.key.toLowerCase() === 'n') { event.preventDefault(); attempt(() => boardDialog()); return; }
-  if (event.target.matches('input, textarea, select') || event.target.isContentEditable) return;
+  if (state.searching && !modifier && !event.altKey && event.key === 'Tab'
+      && (event.target === $('#timeline') || (event.target === $('#searchInput') && !event.shiftKey))) {
+    event.preventDefault(); (event.target === $('#timeline') ? $('#searchInput') : $('#timeline')).focus(); return;
+  }
+  if (event.target === $('#searchInput') && event.key === 'Enter') {
+    event.preventDefault(); if (!event.repeat) $('#timeline').focus(); return;
+  }
+  if (typing) return;
+  if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey && !modifier && !event.altKey)) {
+    event.preventDefault(); const item = state.items.find(value => value.id === state.active);
+    const node = item && document.getElementById(optionID(item.id));
+    if (item && node) { const rect = node.getBoundingClientRect(); itemMenu(item, rect.left + 20, rect.top + 20); } return;
+  }
+  for (const [key, mode] of [['E', 'edit'], ['R', 'rename'], ['G', 'locate']]) {
+    if (!shortcutMatches(event, `CommandOrControl+${key}`)) continue;
+    event.preventDefault(); if (event.repeat || state.selected.size !== 1 || searchPending) return;
+    const id = [...state.selected][0], item = state.items.find(value => value.id === id);
+    if (!item) return;
+    if (mode === 'locate') { const location = itemLocations(item, state)[0]; if (location) showIn(id, location.id); }
+    else if (mode !== 'edit' || item.type !== 'file') { closeMenu(); attempt(() => openDetail(id, mode)); }
+    return;
+  }
   const nextBoard = shortcutMatches(event, state.settings.nextBoardHotkey), previousBoard = shortcutMatches(event, state.settings.previousBoardHotkey);
   if (nextBoard || previousBoard) {
     event.preventDefault(); const ids = ['history', ...state.boards.map(b => b.id)]; const next = (ids.indexOf(state.board) + (nextBoard ? 1 : -1) + ids.length) % ids.length; setBoard(ids[next]); return;
@@ -395,13 +459,13 @@ document.addEventListener('keydown', event => {
   if (modifier && event.key.toLowerCase() === 'a') { event.preventDefault(); state.selected = new Set(visibleItems().map(i => i.id)); renderCards(); return; }
   if (modifier && event.key.toLowerCase() === 'c') { event.preventDefault(); attempt(() => activate(undefined, false)); return; }
   if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
-    event.preventDefault(); const items = visibleItems(); const current = items.findIndex(i => i.id === [...state.selected].at(-1));
+    event.preventDefault(); const items = visibleItems(); const current = items.findIndex(i => i.id === state.active);
     select(event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : current + (event.key === 'ArrowRight' ? 1 : -1), { extend: event.shiftKey }); return;
   }
-  if (event.key === 'Enter') { event.preventDefault(); attempt(() => activate(undefined, !event.altKey || state.settings.plainTextModifier === 'Alt', modifierPressed(event, state.settings.plainTextModifier))); return; }
-  if (event.key === ' ') { event.preventDefault(); const id = [...state.selected][0]; if (id) attempt(() => openDetail(id)); return; }
-  if (event.key === 'Backspace' || event.key === 'Delete') { event.preventDefault(); attempt(async () => accept(await api.deleteItems([...state.selected]))); return; }
-  if (!modifier && !event.altKey && event.key.length === 1) { toggleSearch(true); $('#searchInput').value = event.key; state.query = event.key; resetFilter(); event.preventDefault(); }
+  if (event.key === 'Enter') { event.preventDefault(); if (!event.repeat && !searchPending) attempt(() => activate(undefined, !event.altKey || state.settings.plainTextModifier === 'Alt', modifierPressed(event, state.settings.plainTextModifier))); return; }
+  if (event.key === ' ') { event.preventDefault(); const id = [...state.selected][0]; if (!event.repeat && !searchPending && id) attempt(() => openDetail(id)); return; }
+  if (event.key === 'Backspace' || event.key === 'Delete') { event.preventDefault(); if (!event.repeat && !searchPending) attempt(async () => accept(await api.deleteItems([...state.selected]))); return; }
+  if (!modifier && [...event.key].length === 1) { toggleSearch(true); $('#searchInput').value = event.key; state.query = event.key; resetFilter(); event.preventDefault(); }
 });
 document.addEventListener('keyup', event => document.body.classList.toggle('quick-keys', modifierPressed(event, state.settings.quickPasteModifier)));
 window.addEventListener('blur', () => document.body.classList.remove('quick-keys'));
