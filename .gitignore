@@ -9,3 +9,4 @@ native/bin/
 test-results/
 playwright-report/
 .test-data/
+src/vendor/

@@ -7,14 +7,18 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
+    "prestart": "npm run build:renderer",
+    "predev": "npm run build:renderer",
     "test": "node --test test/*.test.js",
     "check": "node scripts/check.js",
     "test:ui": "playwright test",
     "test:packaged": "PASTE_TEST_PACKAGED=1 playwright test",
     "build:native": "node scripts/build-native.js",
-    "build": "npm run check && npm run test && npm run build:native && node scripts/build-app.js",
+    "build:renderer": "node scripts/build-renderer.js",
+    "pretest:ui": "npm run build:native && npm run build:renderer",
+    "build": "npm run check && npm run test && npm run build:renderer && npm run build:native && node scripts/build-app.js",
     "build:zip": "npm run build && ditto -c -k --sequesterRsrc --keepParent \"release/mac-arm64/Paste Easy.app\" \"release/Paste-Easy-dev-arm64.zip\"",
-    "build:release": "npm run check && npm run test && npm run test:ui && npm run build:native && node scripts/build-app.js --release && npm run release:verify",
+    "build:release": "npm run check && npm run test && npm run test:ui && node scripts/build-app.js --release && npm run test:packaged && npm run release:verify",
     "release:verify": "node scripts/verify-release.js"
   },
   "keywords": [
@@ -25,13 +29,17 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@tiptap/core": "3.32.0",
+    "@tiptap/starter-kit": "3.32.0",
+    "@tiptap/extension-text-style": "3.32.0",
     "dompurify": "3.4.17",
     "lucide": "0.468.0"
   },
   "devDependencies": {
     "@playwright/test": "1.64.1",
     "electron": "45.0.0",
-    "electron-builder": "26.15.3"
+    "electron-builder": "26.15.3",
+    "esbuild": "0.28.2"
   },
   "build": {
     "appId": "com.zhongkouwei.pastelike",

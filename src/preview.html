@@ -15,11 +15,28 @@
         <button id="savePreview" class="icon-button" title="保存" aria-label="保存" hidden><i data-lucide="check"></i></button>
       </div>
     </header>
+    <nav id="editTools" class="edit-tools" aria-label="文字格式" hidden>
+      <button class="icon-button" data-command="bold" title="粗体" aria-label="粗体" aria-pressed="false"><i data-lucide="bold"></i></button>
+      <button class="icon-button" data-command="italic" title="斜体" aria-label="斜体" aria-pressed="false"><i data-lucide="italic"></i></button>
+      <button class="icon-button" data-command="underline" title="下划线" aria-label="下划线" aria-pressed="false"><i data-lucide="underline"></i></button>
+      <button class="icon-button" data-command="strike" title="删除线" aria-label="删除线" aria-pressed="false"><i data-lucide="strikethrough"></i></button>
+      <span class="tool-divider"></span>
+      <button class="icon-button" data-command="undo" title="撤销" aria-label="撤销"><i data-lucide="undo-2"></i></button>
+      <button class="icon-button" data-command="redo" title="重做" aria-label="重做"><i data-lucide="redo-2"></i></button>
+    </nav>
+    <nav id="imageTools" class="edit-tools" aria-label="图片编辑" hidden>
+      <button class="icon-button" data-image="left" title="向左旋转" aria-label="向左旋转"><i data-lucide="rotate-ccw"></i></button>
+      <button class="icon-button" data-image="right" title="向右旋转" aria-label="向右旋转"><i data-lucide="rotate-cw"></i></button>
+      <span class="tool-divider"></span>
+      <button class="icon-button" data-image="undo" title="撤销" aria-label="撤销"><i data-lucide="undo-2"></i></button>
+      <button class="icon-button" data-image="redo" title="重做" aria-label="重做"><i data-lucide="redo-2"></i></button>
+      <button class="icon-button" data-image="restore" title="恢复原图" aria-label="恢复原图"><i data-lucide="image-up"></i></button>
+    </nav>
     <section id="previewContent" class="preview-content" aria-label="项目预览"></section>
     <footer class="preview-footer"><span id="previewMeta"></span><button id="copyPreview" class="icon-button" title="复制" aria-label="复制"><i data-lucide="copy"></i></button></footer>
     <div id="previewPinboards" class="preview-pinboards" hidden></div>
     <p id="previewStatus" class="preview-status" role="status" hidden></p>
   </main>
   <script src="../node_modules/lucide/dist/umd/lucide.js"></script><script src="../node_modules/dompurify/dist/purify.min.js"></script>
-  <script src="model.js"></script><script src="preview.js"></script>
+  <script src="model.js"></script><script src="vendor/editor.js"></script><script src="preview.js"></script>
 </body></html>

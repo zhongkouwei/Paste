@@ -1,5 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import <ApplicationServices/ApplicationServices.h>
+#import <CoreImage/CoreImage.h>
+#import <ImageIO/ImageIO.h>
 
 static void output(NSDictionary *value) {
     NSData *data = [NSJSONSerialization dataWithJSONObject:value options:NSJSONWritingSortedKeys error:nil];
@@ -32,11 +34,54 @@ static void frontmost(void) {
     output(result);
 }
 
+static int rotateImage(void) {
+    NSData *input = [NSFileHandle.fileHandleWithStandardInput readDataToEndOfFile];
+    NSDictionary *request = input.length < 65536 ? [NSJSONSerialization JSONObjectWithData:input options:0 error:nil] : nil;
+    if (![request isKindOfClass:NSDictionary.class] || ![request[@"input"] isKindOfClass:NSString.class]
+        || ![request[@"output"] isKindOfClass:NSString.class] || ![request[@"turns"] isKindOfClass:NSNumber.class]) {
+        output(@{ @"error": @"invalid-image-request" }); return 1;
+    }
+    int turns = [request[@"turns"] intValue];
+    if (turns < 1 || turns > 3) { output(@{ @"error": @"invalid-rotation" }); return 1; }
+    NSURL *sourceURL = [NSURL fileURLWithPath:request[@"input"]], *destinationURL = [NSURL fileURLWithPath:request[@"output"]];
+    NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:sourceURL.path error:nil];
+    if (!attributes || [attributes fileSize] > 64 * 1024 * 1024) { output(@{ @"error": @"image-too-large" }); return 1; }
+    CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)sourceURL, NULL);
+    if (!source) { output(@{ @"error": @"invalid-image" }); return 1; }
+    NSDictionary *properties = CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(source, 0, NULL));
+    double width = [properties[(__bridge NSString *)kCGImagePropertyPixelWidth] doubleValue];
+    double height = [properties[(__bridge NSString *)kCGImagePropertyPixelHeight] doubleValue];
+    if (width < 1 || height < 1 || width * height > 64000000) {
+        CFRelease(source); output(@{ @"error": @"image-dimensions-too-large" }); return 1;
+    }
+    CGImageRef original = CGImageSourceCreateImageAtIndex(source, 0, NULL); CFRelease(source);
+    if (!original) { output(@{ @"error": @"image-decode-failed" }); return 1; }
+    CIImage *image = [CIImage imageWithCGImage:original];
+    int orientations[] = { 1, kCGImagePropertyOrientationRight, kCGImagePropertyOrientationDown, kCGImagePropertyOrientationLeft };
+    CIImage *rotated = [image imageByApplyingOrientation:orientations[turns]];
+    CIContext *context = [CIContext contextWithOptions:@{ kCIContextWorkingColorSpace: NSNull.null, kCIContextUseSoftwareRenderer: @YES }];
+    CGColorSpaceRef originalColor = CGImageGetColorSpace(original);
+    CGColorSpaceRef color = originalColor && CGColorSpaceGetModel(originalColor) == kCGColorSpaceModelRGB
+        ? CGColorSpaceRetain(originalColor) : CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CIFormat format = CGImageGetBitsPerComponent(original) > 8 ? kCIFormatRGBA16 : kCIFormatRGBA8;
+    CGImageRef result = [context createCGImage:rotated fromRect:rotated.extent format:format colorSpace:color];
+    CGColorSpaceRelease(color); CGImageRelease(original);
+    if (!result) { output(@{ @"error": @"image-transform-failed" }); return 1; }
+    CGImageDestinationRef destination = CGImageDestinationCreateWithURL((__bridge CFURLRef)destinationURL, CFSTR("public.png"), 1, NULL);
+    if (!destination) { CGImageRelease(result); output(@{ @"error": @"image-write-failed" }); return 1; }
+    CGImageDestinationAddImage(destination, result, NULL);
+    BOOL success = CGImageDestinationFinalize(destination);
+    NSDictionary *response = @{ @"ok": @(success), @"width": @(CGImageGetWidth(result)), @"height": @(CGImageGetHeight(result)) };
+    CFRelease(destination); CGImageRelease(result); output(response); return success ? 0 : 1;
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSString *command = argc > 1 ? @(argv[1]) : @"";
         if ([command isEqualToString:@"frontmost"]) { frontmost(); return 0; }
+        if ([command isEqualToString:@"image-rotate"]) return rotateImage();
         if ([command isEqualToString:@"permission"]) { output(@{ @"accessibility": @(AXIsProcessTrusted()) }); return 0; }
+        if ([command isEqualToString:@"change-count"]) { output(@{ @"count": @(NSPasteboard.generalPasteboard.changeCount) }); return 0; }
         if ([command isEqualToString:@"read-files"]) {
             NSArray<NSURL *> *urls = [NSPasteboard.generalPasteboard readObjectsForClasses:@[NSURL.class] options:@{ NSPasteboardURLReadingFileURLsOnlyKey: @YES }];
             NSMutableArray *files = [NSMutableArray array];

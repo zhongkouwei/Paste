@@ -159,7 +159,7 @@ function itemMenu(item, x, y) {
     { label: state.target ? `粘贴到 ${state.target}` : '粘贴到当前应用', icon: 'clipboard-paste', key: '↵', action: () => activate(item.id) },
     { label: '以纯文本粘贴', action: () => activate(item.id, true, true), disabled: ['image', 'file'].includes(item.type) },
     { label: '复制', icon: 'copy', key: '⌘C', action: () => activate(item.id, false) }, null,
-    { label: '编辑', icon: 'pencil', action: () => openDetail(item.id, true), disabled: ['image', 'file'].includes(item.type) },
+    { label: '编辑', icon: 'pencil', action: () => openDetail(item.id, true), disabled: item.type === 'file' },
     { label: '重命名', action: () => openDetail(item.id, 'rename') },
     ...(item.type === 'file' ? [{ label: '在 Finder 中显示', icon: 'folder-search', action: () => api.revealItem(item.id) }] : []),
     { label: state.selected.size > 1 ? `删除 ${state.selected.size} 个项目` : '删除', icon: 'trash-2', key: '⌫', action: async () => accept(await api.deleteItems([...state.selected])) }, null,
@@ -352,6 +352,6 @@ document.addEventListener('keyup', event => document.body.classList.toggle('quic
 window.addEventListener('blur', () => document.body.classList.remove('quick-keys'));
 window.addEventListener('resize', renderCards);
 api.onChanged(accept);
-api.onShown(({ target }) => { state.target = target; closeMenu(); render(); if (state.editingBoard) $('.board-name-edit')?.focus(); else $('#timeline').focus(); });
+api.onShown(({ target }) => { document.body.dataset.panelReady = 'true'; state.target = target; closeMenu(); render(); if (state.editingBoard) $('.board-name-edit')?.focus(); else $('#timeline').focus(); });
 attempt(async () => accept(await api.getLibrary()));
 refreshIcons();

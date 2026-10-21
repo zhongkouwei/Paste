@@ -5,8 +5,8 @@ const path = require('node:path');
 function check(dir) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const file = path.join(dir, entry.name);
-    if (entry.isDirectory()) check(file);
-    else if (file.endsWith('.js')) execFileSync(process.execPath, ['--check', file], { stdio: 'inherit' });
+    if (entry.isDirectory() && entry.name !== 'vendor') check(file);
+    else if (/\.(?:js|mjs)$/.test(file)) execFileSync(process.execPath, ['--check', file], { stdio: 'inherit' });
   }
 }
 for (const dir of ['src', 'scripts', 'test']) if (fs.existsSync(dir)) check(dir);

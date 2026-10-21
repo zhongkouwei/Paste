@@ -1,4 +1,13 @@
-const { hash, textSignature } = require('./store');
+const { hash, textSignature, htmlPayload } = require('./store');
+const crypto = require('node:crypto');
+
+function imageSignature(buffer, nativeImage) {
+  const image = nativeImage.createFromBuffer(buffer);
+  if (image.isEmpty()) throw new Error('图片无法解码');
+  const { width, height } = image.getSize();
+  // PNG encoders and NSPasteboard can change metadata without changing pixels.
+  return crypto.createHash('sha256').update(`image:${width}x${height}:`).update(image.toBitmap()).digest('hex');
+}
 
 // Electron 45 uses asynchronous ClipboardItem objects. Read every format from
 // the same item so text and rich formats cannot come from different copies.
@@ -30,31 +39,34 @@ class ClipboardService {
     let image = null;
     if (first.types.includes('image/png') && !files.length) image = Buffer.from(await (await first.getType('image/png')).arrayBuffer());
     const value = { formats, text: plain, html, rtf, image, files };
-    value.signature = image ? hash(image) : files.length ? hash(`file:${files.join('\n')}`) : textSignature(plain, html, rtf);
+    value.signature = image ? imageSignature(image, this.nativeImage) : files.length ? hash(`file:${files.join('\n')}`) : textSignature(plain, html, rtf);
     return value;
   }
 
   async write(item, { plain = false, image } = {}) {
-    let contents;
+    let contents, signature;
     if (item.type === 'image') {
       const buffer = image || this.nativeImage.createFromDataURL(item.body).toPNG();
       contents = { 'image/png': new Blob([buffer], { type: 'image/png' }) };
+      signature = imageSignature(buffer, this.nativeImage);
     } else if (item.type === 'file') {
       const files = item.body.split('\n').filter(file => file.startsWith('file://'));
       if (!files.length) throw new Error('Invalid file clipboard item');
       if (this.fileBridge) {
         const result = await this.fileBridge.write(files);
         if (!result.ok) throw new Error('无法写入系统文件剪贴板，请检查原生辅助程序。');
-        return;
+        return hash(`file:${files.join('\n')}`);
       }
       await this.clipboard.write(files.map(file => new this.ClipboardItem({ 'text/uri-list': file,
         'electron application/osclipboard;format="public.file-url"': new Blob([file]) })));
-      return;
+      return hash(`file:${files.join('\n')}`);
     } else {
       contents = { 'text/plain': item.body };
-      if (!plain) { if (item.html) contents['text/html'] = item.html; if (item.rtf) contents['text/rtf'] = item.rtf; }
+      if (!plain) { if (item.html) contents['text/html'] = htmlPayload(item.html); if (item.rtf) contents['text/rtf'] = item.rtf; }
+      signature = textSignature(item.body, plain ? '' : item.html, plain ? '' : item.rtf);
     }
     await this.clipboard.write([new this.ClipboardItem(contents)]);
+    return signature;
   }
 }
-module.exports = { ClipboardService };
+module.exports = { ClipboardService, imageSignature };

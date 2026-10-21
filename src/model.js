@@ -49,11 +49,11 @@
     return new Intl.RelativeTimeFormat(locale, { numeric: 'always', style: 'long' }).format(-Math.floor(seconds / divisor), unit);
   }
 
-  function prune(items, settings, now = Date.now()) {
+  function prune(items, settings, now = Date.now(), protectedId = null) {
     const cutoff = settings.retentionDays ? now - settings.retentionDays * 86400000 : 0;
     let count = 0;
     return items.filter(item => {
-      if (item.isFavorite || item.boardIds?.length) return true;
+      if (item.id === protectedId || item.isFavorite || item.boardIds?.length) return true;
       if (new Date(item.createdAt).getTime() < cutoff) return false;
       count += 1;
       return count <= settings.maxItems;

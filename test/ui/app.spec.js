@@ -5,6 +5,16 @@ const fs = require('node:fs');
 let application, page, directory, originalClipboard, originalFiles = [], canRestoreClipboard = false;
 test.describe.configure({ mode: 'serial' });
 
+async function launchApplication() {
+  const packaged = process.env.PASTE_TEST_PACKAGED === '1';
+  return electron.launch({
+    colorScheme: null,
+    executablePath: packaged ? path.resolve(__dirname, '../../release/mac-arm64/Paste Easy.app/Contents/MacOS/Paste Easy') : undefined,
+    args: [...(packaged ? [] : [path.resolve(__dirname, '../..')]), '--test-mode', '--show'],
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '', PASTE_DATA_DIR: directory, PASTE_TEST_SEED: path.join(directory, 'seed.json') }
+  });
+}
+
 test.beforeAll(async () => {
   directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paste-ui-'));
   const seed = path.join(directory, 'seed.json');
@@ -16,15 +26,11 @@ test.beforeAll(async () => {
     { type: 'color', body: '#ef6259', preview: '#ef6259', title: '#ef6259', source: source('Design', 'com.design', '#af78d3') },
     { type: 'text', body: '项目计划\n\n让每一次复制都有迹可循。\n文本、链接、图片，随时取用。', preview: '项目计划\n\n让每一次复制都有迹可循。\n文本、链接、图片，随时取用。', title: '项目计划', source: source('Terminal', 'com.apple.Terminal', '#0b252d') }
   ]));
-  const packaged = process.env.PASTE_TEST_PACKAGED === '1';
-  application = await electron.launch({
-    executablePath: packaged ? path.resolve(__dirname, '../../release/mac-arm64/Paste Easy.app/Contents/MacOS/Paste Easy') : undefined,
-    args: [...(packaged ? [] : [path.resolve(__dirname, '../..')]), '--test-mode', '--show'],
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '', PASTE_DATA_DIR: directory, PASTE_TEST_SEED: seed }
-  });
+  application = await launchApplication();
   page = await application.firstWindow();
   await page.waitForSelector('.clip-card');
-  await page.evaluate(() => window.paste.saveSettings({ theme: 'dark' }));
+  await page.waitForFunction(() => document.body.dataset.panelReady === 'true');
+  await page.evaluate(() => window.paste.saveSettings({ theme: 'light' }));
   originalClipboard = await application.evaluate(async ({ clipboard }) => {
     const entries = await clipboard.read();
     return Promise.all(entries.map(async entry => {
@@ -50,6 +56,10 @@ test.afterAll(async () => {
       await clipboard.write(saved.map(entry => new ClipboardItem(Object.fromEntries(Object.entries(entry).map(([type, data]) => [type,
         data.base64 !== undefined ? new Blob([Buffer.from(data.base64, 'base64')]) : data.value])))));
     }, originalClipboard);
+    // Failed editor tests must not leave a native unsaved-draft dialog blocking teardown.
+    await application.evaluate(({ BrowserWindow }) => {
+      for (const window of BrowserWindow.getAllWindows()) if (window.webContents.getURL().endsWith('/preview.html')) window.destroy();
+    });
     await application.close();
   }
   if (directory) fs.rmSync(directory, { recursive: true, force: true });
@@ -69,6 +79,8 @@ test('measured desktop geometry, multiple viewports, no broken image or overflow
     await page.screenshot({ path: `test-results/panel-${width}.png` });
   }
   await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setBounds({ x: 0, y: 0, width: 1280, height: 332 }));
+  await page.evaluate(() => window.paste.saveSettings({ theme: 'dark' }));
+  await expect(page.locator('.panel')).toHaveCSS('background-color', 'rgba(49, 49, 49, 0.98)');
 });
 test('search is safe to edit: arrows and Enter do not paste or select another card', async () => {
   await page.keyboard.press('Meta+f');
@@ -111,10 +123,11 @@ test('preview, edit, copy and text escaping are real IPC operations', async () =
   const id = await page.locator('.clip-card').first().getAttribute('data-id');
   const switchAccepted = await page.evaluate(id => window.paste.openPreview(id, { mode: 'rename' }), id);
   expect(switchAccepted).toBe(false);
-  await expect(preview.getByRole('textbox', { name: '剪贴板内容' })).toHaveValue('<img src=x onerror="window.evil=true">\n保留原文');
+  await expect(preview.getByRole('textbox', { name: '剪贴板内容' })).toHaveText('<img src=x onerror="window.evil=true">\n保留原文', { useInnerText: true });
   const closed = preview.waitForEvent('close');
   await preview.getByRole('button', { name: '保存', exact: true }).click(); await closed;
   await expect(page.locator('.clip-card').first()).toContainText('<img src=x');
+  expect((await page.evaluate(id => window.paste.getItem(id), id)).body).toBe('<img src=x onerror="window.evil=true">\n保留原文');
   expect(await page.evaluate(() => window.evil)).toBeUndefined();
   await page.locator('.clip-card').first().click(); await page.keyboard.press('Meta+c');
   expect(await application.evaluate(({ clipboard }) => clipboard.readText())).toContain('保留原文');
@@ -190,6 +203,186 @@ test('rich text and plain text mode preserve exactly the selected representation
   await page.locator('#timeline').focus(); await page.keyboard.press('Meta+Shift+Digit1');
   expect(await application.evaluate(async ({ clipboard }) => (await clipboard.read())[0].types)).not.toContain('text/html');
 });
+test('rich editing preserves styled selections, undo/redo, pins and clipboard round trip', async () => {
+  await application.evaluate(async ({ clipboard, ClipboardItem }) => {
+    await clipboard.write([new ClipboardItem({ 'text/plain': 'Styled clipboard',
+      'text/html': '<p><span style="font-size:18px;color:rgb(200, 40, 60);font-family:Georgia"><b>Styled</b> clipboard</span></p>' })]);
+    await globalThis.__pasteTest.poll();
+  });
+  await expect(page.locator('.clip-card').first()).toContainText('Styled clipboard');
+  const id = await page.locator('.clip-card').first().getAttribute('data-id');
+  const board = (await page.evaluate(() => window.paste.getLibrary())).boards[0] || await page.evaluate(() => window.paste.saveBoard({ name: 'Rich test', color: '#ef6259' }));
+  await page.evaluate(({ id, board }) => window.paste.pinItems([id], board), { id, board: board.id });
+  const opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id, { mode: 'edit' }), id);
+  const preview = await opened, editor = preview.getByRole('textbox', { name: '剪贴板内容' });
+  await expect(editor).toHaveText('Styled clipboard');
+  await editor.press('Meta+a');
+  const editorNode = await editor.elementHandle();
+  await preview.getByRole('button', { name: '固定', exact: true }).click();
+  await preview.getByRole('checkbox', { name: board.name, exact: true }).uncheck();
+  await expect.poll(async () => (await page.evaluate(id => window.paste.getItem(id), id)).boardIds.includes(board.id)).toBe(false);
+  await preview.getByRole('checkbox', { name: board.name, exact: true }).check();
+  await expect.poll(async () => (await page.evaluate(id => window.paste.getItem(id), id)).boardIds.includes(board.id)).toBe(true);
+  expect(await editorNode.evaluate(element => element.isConnected)).toBe(true);
+  await preview.getByRole('button', { name: '粗体', exact: true }).click();
+  await expect(editor.locator('strong')).toHaveText('Styled clipboard');
+  await preview.getByRole('button', { name: '撤销', exact: true }).click();
+  await expect(editor.locator('strong')).toHaveText('Styled');
+  await preview.getByRole('button', { name: '重做', exact: true }).click();
+  await expect(editor.locator('strong')).toHaveText('Styled clipboard');
+  for (const name of ['斜体', '下划线', '删除线']) {
+    await preview.getByRole('button', { name, exact: true }).click();
+    await expect(preview.getByRole('button', { name, exact: true })).toHaveAttribute('aria-pressed', 'true');
+  }
+  await expect(editor.locator('em')).toHaveText('Styled clipboard');
+  await expect(editor.locator('u')).toHaveText('Styled clipboard');
+  await expect(editor.locator('s')).toHaveText('Styled clipboard');
+  await expect(editor.locator('[style]').first()).toHaveCSS('color', 'rgb(200, 40, 60)');
+  await preview.screenshot({ path: 'test-results/preview-rich-edit.png' });
+  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/preview.html')).setBounds({ width: 320, height: 300 }));
+  expect(await preview.evaluate(() => {
+    const tools = document.querySelector('#editTools').getBoundingClientRect(), content = document.querySelector('#previewContent').getBoundingClientRect(), footer = document.querySelector('.preview-footer').getBoundingClientRect();
+    return document.documentElement.scrollWidth <= innerWidth && tools.bottom <= content.top && content.bottom <= footer.top;
+  })).toBe(true);
+  await preview.screenshot({ path: 'test-results/preview-rich-edit-narrow.png' });
+  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/preview.html')).setBounds({ width: 720, height: 500 }));
+  const closed = preview.waitForEvent('close'); await preview.getByRole('button', { name: '保存', exact: true }).click(); await closed;
+  const saved = await page.evaluate(id => window.paste.getItem(id), id);
+  expect(saved.body).toBe('Styled clipboard'); expect(saved.html).toContain('<strong>'); expect(saved.html).toContain('<u>');
+  expect(saved.html).toContain('font-family: Georgia'); expect(saved.boardIds).toContain(board.id);
+  await page.evaluate(id => window.paste.copy(id, { paste: false }), id);
+  expect(await application.evaluate(async () => (await globalThis.__pasteTest.clip.read()).html)).toContain('<strong>');
+  expect(await application.evaluate(async () => (await globalThis.__pasteTest.clip.read()).signature)).toBe(saved.signature);
+  await application.evaluate(async ({ clipboard, ClipboardItem }, saved) => {
+    await clipboard.write([new ClipboardItem({ 'text/plain': 'Rich edit interlude' })]); await globalThis.__pasteTest.poll();
+    await globalThis.__pasteTest.clip.write(saved); await globalThis.__pasteTest.poll();
+  }, saved);
+  const matching = (await page.evaluate(() => window.paste.getLibrary())).items.filter(item => item.body === 'Styled clipboard');
+  expect(matching).toHaveLength(1); expect(matching[0].id).toBe(id);
+});
+test('opening an editor without changes never normalizes the original HTML or RTF', async () => {
+  await application.evaluate(async ({ clipboard, ClipboardItem }) => {
+    await clipboard.write([new ClipboardItem({ 'text/plain': 'No change', 'text/html': '<div><b>No change</b></div>', 'text/rtf': '{\\rtf1\\ansi No change}' })]);
+    await globalThis.__pasteTest.poll();
+  });
+  await expect(page.locator('.clip-card').first()).toContainText('No change');
+  const id = await page.locator('.clip-card').first().getAttribute('data-id'), before = await page.evaluate(id => window.paste.getItem(id), id);
+  const opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id, { mode: 'edit' }), id);
+  const preview = await opened; await expect(preview.getByRole('textbox', { name: '剪贴板内容' })).toHaveText('No change');
+  const closed = preview.waitForEvent('close'); await preview.getByRole('button', { name: '保存', exact: true }).click(); await closed;
+  const after = await page.evaluate(id => window.paste.getItem(id), id);
+  expect(after.html).toBe(before.html); expect(after.rtf).toBe(before.rtf); expect(after.signature).toBe(before.signature);
+});
+test('rich paste is sanitized and unsupported embedded documents cannot be silently flattened', async () => {
+  await application.evaluate(async ({ clipboard, ClipboardItem }) => {
+    await clipboard.write([new ClipboardItem({ 'text/plain': 'Safe editor fixture' })]); await globalThis.__pasteTest.poll();
+  });
+  await expect(page.locator('.clip-card').first()).toContainText('Safe editor fixture');
+  let id = await page.locator('.clip-card').first().getAttribute('data-id');
+  let opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id, { mode: 'edit' }), id);
+  let preview = await opened, editor = preview.getByRole('textbox', { name: '剪贴板内容' });
+  await editor.press('Meta+a');
+  await application.evaluate(async ({ clipboard, ClipboardItem }) => {
+    await clipboard.write([new ClipboardItem({ 'text/plain': 'Safe paste',
+      'text/html': '<p><b>Safe paste</b><script>window.evil=true</script><img src="https://example.invalid/track" onerror="window.evil=true"><iframe src="https://example.invalid"></iframe></p><form><input value="secret"></form>' })]);
+  });
+  await editor.press('Meta+v');
+  await expect(editor).toHaveText('Safe paste');
+  await expect(preview.locator('#previewMeta')).toHaveText('10 个字符');
+  await expect(editor.locator('script,iframe,img,form,input,[onerror],[src]')).toHaveCount(0);
+  expect(await preview.evaluate(() => window.evil)).toBeUndefined();
+  let closed = preview.waitForEvent('close'); await preview.getByRole('button', { name: '保存', exact: true }).click(); await closed;
+  await application.evaluate(async ({ clipboard, ClipboardItem }) => {
+    await clipboard.write([new ClipboardItem({ 'text/plain': 'Table cell', 'text/html': '<table><tr><td>Table cell</td></tr></table>' })]); await globalThis.__pasteTest.poll();
+  });
+  await expect(page.locator('.clip-card').first()).toContainText('Table cell'); id = await page.locator('.clip-card').first().getAttribute('data-id');
+  const before = await page.evaluate(id => window.paste.getItem(id), id);
+  opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id, { mode: 'edit' }), id);
+  preview = await opened;
+  await expect(preview.getByRole('button', { name: '保存', exact: true })).toBeHidden();
+  await expect(preview.frameLocator('iframe').locator('td')).toHaveText('Table cell');
+  closed = preview.waitForEvent('close'); await preview.getByRole('button', { name: '关闭预览' }).click(); await closed;
+  expect((await page.evaluate(id => window.paste.getItem(id), id)).html).toBe(before.html);
+});
+test('native image editing preserves pixels, originals, pins, failures and restart migration', async () => {
+  const original = await application.evaluate(async ({ clipboard, ClipboardItem, nativeImage }) => {
+    const bitmap = Buffer.from([0, 0, 255, 255, 0, 255, 0, 255, 128, 0, 0, 128, 0, 255, 255, 255, 255, 0, 255, 255, 0, 0, 0, 0]);
+    const png = nativeImage.createFromBitmap(bitmap, { width: 3, height: 2, scaleFactor: 1 }).toPNG();
+    await clipboard.write([new ClipboardItem({ 'image/png': new Blob([png]) })]); await globalThis.__pasteTest.poll();
+    const item = globalThis.__pasteTest.store.data.items[0];
+    return { id: item.id, asset: item.asset, signature: item.signature, png: globalThis.__pasteTest.hash(globalThis.__pasteTest.store.readAsset(item.asset)), bitmap: [...bitmap] };
+  });
+  const board = (await page.evaluate(() => window.paste.getLibrary())).boards[0] || await page.evaluate(() => window.paste.saveBoard({ name: 'Image test', color: '#ef6259' }));
+  await page.evaluate(({ id, board }) => window.paste.pinItems([id], board), { id: original.id, board: board.id });
+  const open = async () => {
+    const opened = application.waitForEvent('window'); await page.evaluate(async id => {
+      const ids = (await window.paste.getLibrary()).items.map(item => item.id);
+      return window.paste.openPreview(id, { mode: 'edit', ids: [id, ...ids.filter(value => value !== id)] });
+    }, original.id);
+    const preview = await opened; await expect(preview.locator('#imageTools')).toBeVisible(); return preview;
+  };
+  const pixels = async preview => application.evaluate(({ nativeImage }, body) => [...nativeImage.createFromDataURL(body).toBitmap()], (await preview.evaluate(() => window.paste.getPreview())).item.body);
+  const preview = await open();
+  expect(await preview.evaluate(() => window.paste.navigatePreview(1))).toBe(false);
+  await expect(page.evaluate(id => window.paste.deleteItems([id]), original.id)).rejects.toThrow(/正在编辑/);
+  await preview.getByRole('button', { name: '向右旋转' }).click();
+  await expect(preview.locator('#previewMeta')).toHaveText('2 × 3');
+  expect(await pixels(preview)).toEqual([3, 0, 4, 1, 5, 2].flatMap(index => original.bitmap.slice(index * 4, index * 4 + 4)));
+  await preview.keyboard.press('Meta+z'); await expect(preview.locator('#previewMeta')).toHaveText('3 × 2');
+  expect(await pixels(preview)).toEqual(original.bitmap);
+  await preview.keyboard.press('Meta+Shift+z'); await expect(preview.locator('#previewMeta')).toHaveText('2 × 3');
+  for (let index = 0; index < 3; index++) await preview.getByRole('button', { name: '向右旋转' }).click();
+  await expect.poll(() => preview.evaluate(() => window.paste.getPreview().then(value => value.imageEdit.turns))).toBe(0);
+  expect(await pixels(preview)).toEqual(original.bitmap);
+  await preview.getByRole('button', { name: '向右旋转' }).click();
+  await preview.screenshot({ path: 'test-results/preview-image-edit.png' });
+  await application.evaluate(() => { const store = globalThis.__pasteTest.store; globalThis.__savedPersist = store.persist; store.persist = () => { throw new Error('disk full fixture'); }; });
+  try {
+    await preview.getByRole('button', { name: '保存', exact: true }).click();
+    await expect(preview.getByRole('status')).toContainText('disk full fixture');
+    expect((await page.evaluate(id => window.paste.getItem(id), original.id)).asset).toBe(original.asset);
+    await expect(preview.locator('#previewMeta')).toHaveText('2 × 3');
+  } finally {
+    await application.evaluate(() => { globalThis.__pasteTest.store.persist = globalThis.__savedPersist; delete globalThis.__savedPersist; });
+  }
+  let closed = preview.waitForEvent('close'); await preview.getByRole('button', { name: '保存', exact: true }).click(); await closed;
+  const saved = await page.evaluate(id => window.paste.getItem(id), original.id);
+  expect(saved.size).toEqual({ width: 2, height: 3 }); expect(saved.originalAsset).toBe(original.asset); expect(saved.boardIds).toContain(board.id);
+  expect(saved.preview.startsWith('data:image/png;base64,')).toBe(true);
+  await page.evaluate(id => window.paste.copy(id, { paste: false }), original.id);
+  await application.evaluate(async () => globalThis.__pasteTest.poll());
+  expect((await page.evaluate(() => window.paste.getLibrary())).items.filter(item => item.signature === saved.signature)).toHaveLength(1);
+  expect(await application.evaluate(async () => (await globalThis.__pasteTest.clip.read()).signature)).toBe(saved.signature);
+  expect(await application.evaluate(async ({ clipboard, nativeImage }) => {
+    const entry = (await clipboard.read())[0]; return nativeImage.createFromBuffer(Buffer.from(await (await entry.getType('image/png')).arrayBuffer())).getSize();
+  })).toEqual({ width: 2, height: 3 });
+  const restored = await open(); await restored.getByRole('button', { name: '恢复原图' }).click();
+  await expect(restored.locator('#previewMeta')).toHaveText('3 × 2');
+  const restoredHash = await application.evaluate((_electron, body) => globalThis.__pasteTest.hash(Buffer.from(body.split(',')[1], 'base64')), (await restored.evaluate(() => window.paste.getPreview())).item.body);
+  expect(restoredHash).toBe(original.png);
+  await application.evaluate(({ dialog }) => { globalThis.__savedDialog = dialog.showMessageBoxSync; dialog.showMessageBoxSync = () => 1; });
+  try { closed = restored.waitForEvent('close'); await restored.getByRole('button', { name: '关闭预览' }).click(); await closed; }
+  finally { await application.evaluate(({ dialog }) => { dialog.showMessageBoxSync = globalThis.__savedDialog; delete globalThis.__savedDialog; }); }
+  expect((await page.evaluate(id => window.paste.getItem(id), original.id)).asset).toBe(saved.asset);
+  expect(await application.evaluate((_electron, asset) => globalThis.__pasteTest.hash(globalThis.__pasteTest.store.readAsset(asset)), original.asset)).toBe(original.png);
+  const reverted = await open(); await reverted.getByRole('button', { name: '恢复原图' }).click();
+  await expect(reverted.locator('#previewMeta')).toHaveText('3 × 2');
+  closed = reverted.waitForEvent('close'); await reverted.getByRole('button', { name: '保存', exact: true }).click(); await closed;
+  const committedOriginal = await page.evaluate(id => window.paste.getItem(id), original.id);
+  expect(committedOriginal.asset).toBe(original.asset); expect(committedOriginal.imageTurns).toBe(0);
+  expect(committedOriginal.signature).toBe(original.signature); expect(committedOriginal.boardIds).toContain(board.id);
+  await application.evaluate((_electron, id) => {
+    const { store, hash } = globalThis.__pasteTest, item = store.get(id);
+    item.signature = hash(store.readAsset(item.asset)); delete item.signatureFormat; store.persist();
+  }, original.id);
+  await application.close();
+  application = await launchApplication(); page = await application.firstWindow();
+  await page.waitForFunction(() => document.body.dataset.panelReady === 'true');
+  const migrated = await page.evaluate(id => window.paste.getItem(id), original.id);
+  expect(migrated.signature).toBe(original.signature); expect(migrated.signatureFormat).toBe('pixels-v1');
+  expect(migrated.boardIds).toContain(board.id); expect(migrated.originalAsset).toBe(original.asset);
+  expect(await application.evaluate((_electron, asset) => globalThis.__pasteTest.hash(globalThis.__pasteTest.store.readAsset(asset)), original.asset)).toBe(original.png);
+});
 test('file clipboard entries remain file URLs rather than degraded text', async () => {
   const files = ['example.txt', 'other file.txt'].map(name => path.join(directory, name));
   files.forEach(file => fs.writeFileSync(file, 'Test file'));
@@ -238,6 +431,29 @@ test('confidential and transient clipboard markers are not captured', async () =
     }, marker);
     expect(difference).toBe(0);
   }
+});
+test('native change counts avoid payload rereads and paused copies are not replayed', async () => {
+  const result = await application.evaluate(async ({ clipboard, ClipboardItem }) => {
+    const hooks = globalThis.__pasteTest, read = hooks.clip.read;
+    let reads = 0;
+    hooks.clip.read = async function () { reads += 1; return read.call(this); };
+    try {
+      await clipboard.write([new ClipboardItem({ 'text/plain': 'Counter integration sample' })]); await hooks.poll();
+      for (let index = 0; index < 25; index++) await hooks.poll();
+      return { reads, count: hooks.store.data.items.filter(item => item.body === 'Counter integration sample').length };
+    } finally { hooks.clip.read = read; }
+  });
+  expect(result).toEqual({ reads: 1, count: 1 });
+  const theme = (await page.evaluate(() => window.paste.getLibrary())).settings.theme;
+  await page.evaluate(() => Promise.all([window.paste.saveSettings({ paused: true }), window.paste.saveSettings({ theme: 'light' })]));
+  expect((await page.evaluate(() => window.paste.getLibrary())).settings.paused).toBe(true);
+  await application.evaluate(async ({ clipboard, ClipboardItem }) => {
+    await clipboard.write([new ClipboardItem({ 'text/plain': 'Private while paused integration sample' })]); await globalThis.__pasteTest.poll();
+  });
+  await page.evaluate(() => window.paste.saveSettings({ paused: false }));
+  await application.evaluate(async () => globalThis.__pasteTest.poll());
+  expect((await page.evaluate(() => window.paste.getLibrary())).items.some(item => item.body === 'Private while paused integration sample')).toBe(false);
+  await page.evaluate(theme => window.paste.saveSettings({ theme }), theme);
 });
 test('Stack preserves explicit selection order and consumes only successful copies', async () => {
   const ids = await page.locator('.clip-card[data-type=text], .clip-card[data-type=code], .clip-card[data-type=link]').evaluateAll(nodes => nodes.slice(0, 2).map(node => node.dataset.id));

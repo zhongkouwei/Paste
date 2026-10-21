@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('paste', {
   openPreview: (id, options) => invoke('preview:open', id, options), getPreview: () => invoke('preview:get'),
   closePreview: () => invoke('preview:close'), markPreviewDirty: value => invoke('preview:dirty', value),
   savePreview: changes => invoke('preview:save', changes), navigatePreview: delta => invoke('preview:navigate', delta),
+  editImage: action => invoke('preview:image', action),
   startDrag: ids => invoke('item:drag', ids), shareItem: id => invoke('item:share', id), revealItem: (id, index = 0) => invoke('item:reveal', id, index),
   saveSettings: changes => invoke('settings:save', changes), openSettings: () => invoke('settings:open'),
   getPermission: () => invoke('permission:get'), openPermission: () => invoke('permission:open'), hide: () => invoke('panel:hide'),

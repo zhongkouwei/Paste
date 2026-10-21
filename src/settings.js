@@ -4,7 +4,10 @@ let library, recording = null, timer;
 const retention = [1, 7, 30, 365, 0];
 function status(message) { $('#settingsStatus').textContent = message; $('#settingsStatus').hidden = false; clearTimeout(timer); timer = setTimeout(() => { $('#settingsStatus').hidden = true; }, 5000); }
 async function attempt(task) { try { return await task(); } catch (error) { status(error.message); return undefined; } }
-async function save(changes) { const value = await window.paste.saveSettings(changes); render(value); }
+async function save(changes) {
+  try { render(await window.paste.saveSettings(changes)); }
+  catch (error) { render(library); throw error; }
+}
 function render(value) {
   library = value;
   document.querySelectorAll('[data-setting]').forEach(input => {

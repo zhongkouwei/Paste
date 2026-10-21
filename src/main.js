@@ -6,9 +6,11 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { ClipStore, hash } = require('./store');
 const { classifyText, sanitizeSettings } = require('./model');
-const { ClipboardService } = require('./clipboard');
+const { ClipboardService, imageSignature } = require('./clipboard');
 const { Transfers, fileDetails } = require('./transfers');
 const { GlobalHotkeys } = require('./hotkeys');
+const { ClipboardMonitor } = require('./monitor');
+const { ImageProcessor, ImageDraft } = require('./image-editor');
 const clip = new ClipboardService({ ...electron, fileBridge: process.platform === 'darwin' ? {
   read: () => native('read-files'), write: files => nativeInput('write-files', { files })
 } : undefined });
@@ -18,8 +20,8 @@ const TEST_MODE = process.argv.includes('--test-mode');
 app.setPath('userData', process.env.PASTE_DATA_DIR ? path.resolve(process.env.PASTE_DATA_DIR) : path.join(app.getPath('appData'), 'Paste Easy'));
 let mainWindow, settingsWindow, previewWindow, tray, store, transfers, pollTimer, targetApp;
 let previewState = null, previewDirty = false, previewOpening = false, activeShare;
-let hotkeys, quitting = false, quitAfterPreview = false;
-let lastSignature = '', sourceCache = null, lastSourceAt = 0, polling = false, suppressBlur = false;
+let hotkeys, monitor, imageProcessor, imageDraft, quitting = false, quitAfterPreview = false, copyQueue = Promise.resolve(), settingsQueue = Promise.resolve();
+let sourceCache = null, lastSourceAt = 0, suppressBlur = false;
 let lastError = '', stack = [], stackMode = false;
 const PANEL_HEIGHT = 332;
 const helper = path.join(app.getAppPath().replace(/app\.asar$/, 'app.asar.unpacked'), 'native/bin/paste-bridge');
@@ -29,9 +31,9 @@ async function native(command, ...args) {
   const { stdout } = await execute(helper, [command, ...args.map(String)], { timeout: 4000, maxBuffer: 2 * 1024 * 1024 });
   return JSON.parse(stdout);
 }
-async function nativeInput(command, data) {
+async function nativeInput(command, data, timeout = 4000) {
   if (!fs.existsSync(helper)) throw new Error('缺少原生辅助程序，请先构建应用。');
-  const operation = execute(helper, [command], { timeout: 4000, maxBuffer: 2 * 1024 * 1024 });
+  const operation = execute(helper, [command], { timeout, maxBuffer: 2 * 1024 * 1024 });
   operation.child.stdin.end(JSON.stringify(data));
   const { stdout } = await operation;
   return JSON.parse(stdout);
@@ -81,11 +83,7 @@ async function clipboardSnapshot() {
   if (isIgnored(formats, source)) return null;
   const metadata = { source: source ? { name: source.name, bundleId: source.bundleId, icon: source.icon, color: sourceColor(source) } : null };
   if (value.image) {
-    const original = value.image, image = nativeImage.createFromBuffer(original);
-    if (signature === lastSignature) return null;
-    const size = image.getSize(), asset = store.putAsset(original);
-    return { ...metadata, type: 'image', title: '图片', body: asset, asset, signature, size,
-      preview: image.resize({ width: Math.min(480, size.width) }).toDataURL() };
+    return { ...metadata, type: 'image', title: '图片', body: '', imageBuffer: value.image, signature, signatureFormat: 'pixels-v1' };
   }
   if (files.length) return { ...metadata, type: 'file', body: files.join('\n'),
     title: decodeURIComponent(files[0].split('/').pop()), preview: files.join('\n'), signature };
@@ -94,15 +92,17 @@ async function clipboardSnapshot() {
     body: text, html, rtf, preview: text.slice(0, 16000), signature };
 }
 
-async function poll() {
-  if (polling || store.data.settings.paused) return;
-  polling = true;
-  try {
-    const item = await clipboardSnapshot();
-    if (item && item.signature !== lastSignature) { store.add(item); lastSignature = item.signature; lastError = ''; if (store.data.settings.sound && !TEST_MODE) shell.beep(); emit(); }
-  } catch (error) { report(error); }
-  finally { polling = false; }
+function capture(item) {
+  if (item.imageBuffer) {
+    const image = nativeImage.createFromBuffer(item.imageBuffer), size = image.getSize();
+    if (image.isEmpty()) throw new Error('剪贴板图片不可用');
+    const asset = store.putAsset(item.imageBuffer);
+    item = { ...item, body: asset, asset, size, preview: image.resize({ width: Math.min(480, size.width) }).toDataURL() };
+    delete item.imageBuffer;
+  }
+  store.add(item); lastError = ''; if (store.data.settings.sound && !TEST_MODE) shell.beep(); emit();
 }
+async function poll() { return monitor.tick(); }
 
 function placePanel() {
   const display = screen.getDisplayNearestPoint(targetApp?.windowPoint || screen.getCursorScreenPoint());
@@ -125,7 +125,9 @@ function itemDetail(id) {
 }
 function getPreviewState() {
   if (!previewState) return null;
-  return { ...previewState, item: itemDetail(previewState.id), boards: store.data.boards };
+  const item = itemDetail(previewState.id);
+  if (imageDraft) { item.body = `data:image/png;base64,${imageDraft.image.buffer.toString('base64')}`; item.size = imageDraft.image.size; }
+  return { ...previewState, item, imageEdit: imageDraft?.state(), boards: store.data.boards };
 }
 function closePreview() {
   if (previewWindow && !previewWindow.isDestroyed()) previewWindow.close();
@@ -133,8 +135,19 @@ function closePreview() {
 function showPreview(id, { mode = 'view', anchor, ids = [] } = {}) {
   if (!store.get(id)) throw new Error('项目已被删除');
   if (!['view', 'edit', 'rename'].includes(mode)) throw new Error('Invalid preview mode');
+  if (mode === 'edit' && store.get(id).type === 'file') throw new Error('文件项目不支持内容编辑');
   if (previewWindow && !previewWindow.isDestroyed() && (previewDirty || previewState?.mode !== 'view')) { previewWindow.focus(); return false; }
+  imageDraft?.dispose(); imageDraft = null;
+  const item = store.get(id);
+  if (mode === 'edit' && item.type === 'image') {
+    const current = item.asset ? store.readAsset(item.asset) : nativeImage.createFromDataURL(item.body).toPNG();
+    const original = item.originalAsset ? store.readAsset(item.originalAsset) : item.originalBody?.startsWith('data:image/png;base64,')
+      ? Buffer.from(item.originalBody.slice('data:image/png;base64,'.length), 'base64') : current;
+    imageDraft = new ImageDraft({ original, current, turns: item.imageTurns || 0,
+      transform: (buffer, turns) => imageProcessor.rotate(buffer, turns) });
+  }
   previewState = { id, mode, ids: Array.isArray(ids) ? ids.filter(value => !!store.get(value)).slice(0, 100000) : [] };
+  store.protectedItemId = mode !== 'view' ? id : null;
   previewDirty = false;
   if (previewWindow && !previewWindow.isDestroyed()) {
     previewWindow.webContents.send('preview:changed', getPreviewState()); previewWindow.show(); previewWindow.focus(); return true;
@@ -154,6 +167,8 @@ function showPreview(id, { mode = 'view', anchor, ids = [] } = {}) {
     else { quitAfterPreview = false; quitting = false; }
   });
   previewWindow.on('closed', () => {
+    imageDraft?.dispose(); imageDraft = null;
+    store.protectedItemId = null;
     previewWindow = null; previewState = null; previewDirty = false;
     if (quitAfterPreview) { quitAfterPreview = false; app.quit(); }
     else if (mainWindow.isVisible()) mainWindow.focus();
@@ -203,7 +218,7 @@ function createTray() {
   tray.on('click', () => showPanel());
   tray.on('right-click', () => tray.popUpContextMenu(Menu.buildFromTemplate([
     { label: '显示剪贴板', click: () => showPanel() },
-    { label: '暂停记录', type: 'checkbox', checked: store.data.settings.paused, click: item => { store.settings({ paused: item.checked }); emit(); } },
+    { label: '暂停记录', type: 'checkbox', checked: store.data.settings.paused, click: item => { saveSettings({ paused: item.checked }).catch(report); } },
     { type: 'separator' }, { label: '设置…', click: openSettings }, { label: '退出 Paste Easy', role: 'quit' }
   ])));
 }
@@ -214,12 +229,35 @@ function applyRuntimeSettings() {
   }
 }
 
-async function copy(id, { paste = false, plain = false } = {}) {
+function saveSettings(changes) {
+  const operation = settingsQueue.then(() => performSaveSettings(changes));
+  settingsQueue = operation.catch(() => {}); return operation;
+}
+async function performSaveSettings(changes) {
+  const settings = sanitizeSettings(changes || {}, store.data.settings), previous = store.data.settings;
+  const shortcutsChanged = settings.hotkey !== previous.hotkey || settings.stackHotkey !== previous.stackHotkey;
+  if (shortcutsChanged) hotkeys.apply(settings);
+  try {
+    if (settings.paused !== previous.paused) await monitor.suspend(() => store.settings(settings), { baseline: true });
+    else store.settings(settings);
+  } catch (error) { if (shortcutsChanged) hotkeys.apply(previous); throw error; }
+  applyRuntimeSettings();
+  if (!TEST_MODE) app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin });
+  emit(); return snapshot();
+}
+
+function copy(id, options) {
+  const operation = copyQueue.then(() => performCopy(id, options));
+  copyQueue = operation.catch(() => {}); return operation;
+}
+async function performCopy(id, { paste = false, plain = false } = {}) {
   const item = store.get(id);
   if (!item) throw new Error('此项目已被删除。');
   if (item.type === 'file' && fileDetails(item).some(file => !file.exists)) throw new Error('原始文件已移动或删除，无法粘贴。');
-  await clip.write(item, { plain: plain || store.data.settings.plainText, image: item.asset ? store.readAsset(item.asset) : undefined });
-  lastSignature = (await clip.read()).signature;
+  await monitor.suspend(async () => {
+    const signature = await clip.write(item, { plain: plain || store.data.settings.plainText, image: item.asset ? store.readAsset(item.asset) : undefined });
+    monitor.remember(signature);
+  });
   if (paste && store.data.settings.pasteTarget === 'application') {
     if (TEST_MODE) return { ok: true, copied: true };
     const permission = await native('permission');
@@ -245,7 +283,7 @@ function registerIPC() {
       suppressBlur = true;
       try {
         const { response } = await dialog.showMessageBox(mainWindow, { type: 'warning', message: '删除剪贴板历史？',
-          detail: 'Pinboard 中固定的项目会保留。此操作无法撤销。', buttons: ['取消', '删除历史'], defaultId: 0, cancelId: 0 });
+          detail: 'Pinboard 中固定的项目和正在编辑的项目会保留。此操作无法撤销。', buttons: ['取消', '删除历史'], defaultId: 0, cancelId: 0 });
         if (response === 1) { store.clear(); emit(); } return snapshot();
       } finally { suppressBlur = false; }
     },
@@ -258,12 +296,33 @@ function registerIPC() {
     'preview:get': () => getPreviewState(),
     'preview:close': closePreview,
     'preview:dirty': (event, value) => { if (event.sender === previewWindow?.webContents) previewDirty = !!value; },
-    'preview:save': (_event, changes) => {
+    'preview:image': async (event, action) => {
+      if (event.sender !== previewWindow?.webContents || !imageDraft) throw new Error('图片编辑已关闭');
+      const draft = imageDraft;
+      previewDirty = true;
+      try { await draft.apply(action); }
+      catch (error) { if (draft === imageDraft) previewDirty = draft.state().changed; throw error; }
+      if (draft !== imageDraft) throw new Error('图片编辑已关闭');
+      previewDirty = draft.state().changed;
+      return getPreviewState();
+    },
+    'preview:save': (event, changes) => {
       if (!previewState) throw new Error('Preview closed');
-      store.update(previewState.id, changes || {}); previewDirty = false; emit(); return snapshot();
+      if (event.sender !== previewWindow?.webContents) throw new Error('Untrusted preview editor');
+      if (imageDraft) {
+        if (imageDraft.busy) throw new Error('图片正在处理中');
+        if (imageDraft.state().changed) {
+          const { buffer, size } = imageDraft.image, image = nativeImage.createFromBuffer(buffer);
+          if (image.isEmpty()) throw new Error('图片旋转结果不可用');
+          store.replaceImage(previewState.id, { buffer, size, original: imageDraft.original, turns: imageDraft.turns,
+            signature: imageSignature(buffer, nativeImage),
+            preview: image.resize({ width: Math.min(480, size.width) }).toDataURL() });
+        }
+      } else store.update(previewState.id, changes || {});
+      previewDirty = false; emit(); return snapshot();
     },
     'preview:navigate': (_event, direction) => {
-      if (!previewState || previewDirty || ![-1, 1].includes(direction)) return false;
+      if (!previewState || previewState.mode !== 'view' || previewDirty || ![-1, 1].includes(direction)) return false;
       const ids = previewState.ids.filter(id => !!store.get(id)), index = ids.indexOf(previewState.id), next = ids[index + direction];
       if (!next) return false;
       previewState = { ...previewState, id: next, ids, mode: 'view' }; previewWindow.webContents.send('preview:changed', getPreviewState()); return true;
@@ -285,17 +344,7 @@ function registerIPC() {
       if (!Number.isInteger(index) || !files[index]?.exists) throw new Error('原始文件已移动或删除');
       if (!TEST_MODE) shell.showItemInFolder(files[index].path); return files[index].path;
     },
-    'settings:save': (_event, changes) => {
-      const settings = sanitizeSettings(changes || {}, store.data.settings);
-      const previous = store.data.settings;
-      const shortcutsChanged = settings.hotkey !== previous.hotkey || settings.stackHotkey !== previous.stackHotkey;
-      if (shortcutsChanged) hotkeys.apply(settings);
-      try { store.settings(settings); }
-      catch (error) { if (shortcutsChanged) hotkeys.apply(previous); throw error; }
-      applyRuntimeSettings();
-      if (!TEST_MODE) app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin });
-      emit(); return snapshot();
-    },
+    'settings:save': (_event, changes) => saveSettings(changes),
     'settings:open': openSettings, 'permission:get': () => native('permission'),
     'permission:open': () => shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'),
     'panel:hide': () => { closePreview(); mainWindow.hide(); },
@@ -306,9 +355,7 @@ function registerIPC() {
       const owner = settingsWindow && !settingsWindow.isDestroyed() ? settingsWindow : mainWindow;
       const { canceled, filePath } = await dialog.showSaveDialog(owner, { defaultPath: 'Paste-Easy-backup.json', filters: [{ name: 'JSON', extensions: ['json'] }] });
       if (canceled) return false;
-      const data = structuredClone(store.data);
-      for (const item of data.items) if (item.asset) { item.body = `data:image/png;base64,${store.readAsset(item.asset).toString('base64')}`; delete item.asset; }
-      fs.writeFileSync(filePath, JSON.stringify(data), { mode: 0o600 }); return true;
+      store.exportTo(filePath); return true;
     }
   };
   for (const [channel, handler] of Object.entries(handlers)) ipcMain.handle(channel, (event, ...args) => {
@@ -324,8 +371,20 @@ else {
     try {
       store = new ClipStore(app.getPath('userData'), { legacyDirectories: TEST_MODE || process.env.PASTE_DATA_DIR ? []
         : ['paste-like', 'Paste Like'].map(name => path.join(app.getPath('appData'), name)) });
+      const unavailableImages = store.migrateImageSignatures(item => imageSignature(item.asset ? store.readAsset(item.asset) : nativeImage.createFromDataURL(item.body).toPNG(), nativeImage));
+      if (unavailableImages.length) store.recovery = [store.recovery, `${unavailableImages.length} 个历史图片无法读取，原记录已保留。`].filter(Boolean).join(' ');
       nativeTheme.themeSource = store.data.settings.theme;
       transfers = new Transfers(store);
+      imageProcessor = new ImageProcessor(app.getPath('userData'), (command, data) => nativeInput(command, data, 20000));
+      monitor = new ClipboardMonitor({
+        readVersion: async () => {
+          const value = (await native('change-count')).count;
+          if (process.platform === 'darwin' && !Number.isInteger(value)) throw new Error('无法读取剪贴板变化，请重新构建原生辅助程序。');
+          return value;
+        },
+        readSnapshot: clipboardSnapshot, onSnapshot: capture, onError: report,
+        isPaused: () => store.data.settings.paused, isKnown: signature => store.data.items.some(item => item.signature === signature)
+      });
       if (TEST_MODE && process.env.PASTE_TEST_SEED && !store.data.items.length) {
         const seed = JSON.parse(fs.readFileSync(process.env.PASTE_TEST_SEED, 'utf8'));
         for (const item of seed) store.add(item);
@@ -342,7 +401,7 @@ else {
         stack: () => { stackMode = true; emit(); showPanel('stack'); }
       }, TEST_MODE);
       registerIPC(); applyRuntimeSettings();
-      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash };
+      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor };
       try { hotkeys.apply(store.data.settings); } catch (error) { report(error); }
       for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(event, () => { if (mainWindow.isVisible()) placePanel(); });
       app.on('activate', () => showPanel());

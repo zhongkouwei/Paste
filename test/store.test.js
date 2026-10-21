@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { ClipStore, hash } = require('../src/store');
+const { ClipStore, hash, textSignature, htmlPayload } = require('../src/store');
 const { filterItems, prune, DEFAULT_SETTINGS, sanitizeSettings, classifyText } = require('../src/model');
 
 function fixture(t) {
@@ -109,6 +109,16 @@ test('changing retention immediately expires history while preserving pinned ite
   store.settings({ retentionDays: 1 });
   assert.equal(store.get(old.id), undefined); assert.ok(store.get(pinned.id));
 });
+test('an active editor is protected from deletion, capacity pruning, expiry and history clearing', t => {
+  const store = fixture(t), editing = store.add(clip('Editing'));
+  store.protectedItemId = editing.id; store.get(editing.id).createdAt = '2020-01-01';
+  store.settings({ retentionDays: 1 }); store.add(clip('New copy')); assert.ok(store.get(editing.id));
+  assert.throws(() => store.delete([editing.id]), /正在编辑/);
+  store.clear(); assert.deepEqual(store.data.items.map(item => item.id), [editing.id]);
+  assert.deepEqual(prune([{ id: editing.id, createdAt: '2026-10-21' }, { id: 'new', createdAt: '2026-10-21' }],
+    { retentionDays: 0, maxItems: 1 }, Date.parse('2026-10-21'), editing.id).map(item => item.id), [editing.id, 'new']);
+  store.protectedItemId = null; store.clear(); assert.equal(store.data.items.length, 0);
+});
 test('classifies colors, URLs, code and plain text without modifying text', () => {
   assert.equal(classifyText('#af12c0'), 'color'); assert.equal(classifyText('https://example.com'), 'link');
   assert.equal(classifyText('const x = 2'), 'code'); assert.equal(classifyText('  hello\r\nworld  '), 'text');
@@ -139,4 +149,69 @@ test('editing and migration use the same signatures as real clipboard capture', 
   store.update(item.id, { body: 'after' });
   const reopened = new ClipStore(store.directory), repeated = reopened.add(clip('after'));
   assert.equal(repeated.id, item.id); assert.deepEqual(repeated.boardIds, [board.id]); assert.equal(reopened.data.items.length, 1);
+});
+test('rich edits retain HTML and pinned identity through reload and recopy', t => {
+  const store = fixture(t), board = store.saveBoard({ name: 'Keep', color: '#ef6259' });
+  const item = store.add({ ...clip('Before'), html: '<b>Before</b>', rtf: 'old-rtf' });
+  store.pinItems([item.id], board.id);
+  const html = '<p><strong><em>After</em></strong></p>';
+  store.update(item.id, { body: 'After', html });
+  const reopened = new ClipStore(store.directory), saved = reopened.get(item.id);
+  assert.equal(saved.html, html); assert.equal(saved.rtf, '');
+  assert.equal(reopened.add({ ...clip('After'), html }).id, item.id);
+  assert.deepEqual(reopened.get(item.id).boardIds, [board.id]);
+  assert.throws(() => reopened.update(item.id, { body: 'Bad', html: 'x'.repeat(16 * 1024 * 1024 + 1) }), /HTML exceeds/);
+  assert.equal(reopened.get(item.id).body, 'After');
+});
+test('Electron HTML transport framing never changes content identity or accumulates on writes', () => {
+  const prefix = "<meta charset='utf-8'>", html = '<p><b>Clipboard</b></p>';
+  assert.equal(textSignature('Clipboard', prefix + html), textSignature('Clipboard', html));
+  assert.equal(htmlPayload(prefix + prefix + html), html);
+  assert.equal(htmlPayload('<meta name="author" content="Keep">' + html), '<meta name="author" content="Keep">' + html);
+  assert.notEqual(textSignature('Clipboard', html), textSignature('Clipboard', '<p>Clipboard</p>'));
+});
+test('non-destructive image replacement preserves identity and rolls back failed metadata writes', t => {
+  const store = fixture(t), original = Buffer.from('original'), rotated = Buffer.from('rotated');
+  const asset = store.putAsset(original), board = store.saveBoard({ name: 'Keep', color: '#ef6259' });
+  const item = store.add({ type: 'image', body: asset, asset, signature: hash(original), size: { width: 3, height: 2 } });
+  store.update(item.id, { title: 'Saved picture', boardIds: [board.id] });
+  store.replaceImage(item.id, { buffer: rotated, original, size: { width: 2, height: 3 }, turns: 1, preview: 'thumbnail' });
+  const reopened = new ClipStore(store.directory), saved = reopened.get(item.id);
+  assert.equal(saved.id, item.id); assert.equal(saved.title, 'Saved picture'); assert.deepEqual(saved.boardIds, [board.id]);
+  assert.deepEqual(reopened.readAsset(saved.originalAsset), original); assert.deepEqual(reopened.readAsset(saved.asset), rotated);
+  const savedAsset = saved.asset;
+  reopened.persist = () => { throw new Error('disk full'); };
+  assert.throws(() => reopened.replaceImage(item.id, { buffer: original, original, size: { width: 3, height: 2 }, turns: 0 }), /disk full/);
+  assert.equal(reopened.get(item.id).asset, savedAsset); assert.deepEqual(store.readAsset(asset), original);
+  assert.equal(new ClipStore(store.directory).get(item.id).asset, savedAsset);
+});
+test('pixel-signature migration preserves legacy image identities and inaccessible original records', t => {
+  const store = fixture(t), asset = store.putAsset(Buffer.from('legacy PNG bytes'));
+  const board = store.saveBoard({ name: 'Keep', color: '#ef6259' });
+  const image = store.add({ type: 'image', body: asset, asset, signature: hash('legacy') });
+  store.pinItems([image.id], board.id);
+  const broken = store.add({ type: 'image', body: 'missing', signature: hash('missing') });
+  const signature = hash('normalized pixels');
+  assert.deepEqual(store.migrateImageSignatures(item => { if (item.id === broken.id) throw new Error('missing'); return signature; }), [broken.id]);
+  const restored = new ClipStore(store.directory).get(image.id);
+  assert.equal(restored.signature, signature); assert.equal(restored.signatureFormat, 'pixels-v1');
+  assert.deepEqual(restored.boardIds, [board.id]); assert.equal(restored.asset, asset); assert.ok(store.get(broken.id));
+  assert.equal(store.add({ type: 'image', body: asset, asset, signature, signatureFormat: 'pixels-v1' }).id, image.id);
+});
+test('image backups embed both current pixels and the restorable original without local paths', t => {
+  const store = fixture(t), original = Buffer.from('original'), current = Buffer.from('current'), asset = store.putAsset(original);
+  const item = store.add({ type: 'image', body: asset, asset });
+  store.replaceImage(item.id, { buffer: current, original, turns: 1, size: { width: 2, height: 3 } });
+  const backup = store.exportData().items[0];
+  assert.equal(backup.body, `data:image/png;base64,${current.toString('base64')}`);
+  assert.equal(backup.originalBody, `data:image/png;base64,${original.toString('base64')}`);
+  assert.equal(backup.asset, undefined); assert.equal(backup.originalAsset, undefined);
+  assert.ok(store.get(item.id).asset); assert.ok(store.get(item.id).originalAsset);
+  const destination = path.join(store.directory, 'export.json'); fs.writeFileSync(destination, 'old export', { mode: 0o644 });
+  store.exportTo(destination);
+  assert.equal(fs.statSync(destination).mode & 0o777, 0o600);
+  assert.deepEqual(JSON.parse(fs.readFileSync(destination)).items[0], backup);
+  store.exportData = () => { throw new Error('missing image asset'); };
+  const before = fs.readFileSync(destination, 'utf8'); assert.throws(() => store.exportTo(destination), /missing image/);
+  assert.equal(fs.readFileSync(destination, 'utf8'), before);
 });

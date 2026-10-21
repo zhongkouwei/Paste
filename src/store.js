@@ -4,7 +4,15 @@ const crypto = require('node:crypto');
 const { COLORS, TYPES, DEFAULT_SETTINGS, prune, sanitizeSettings } = require('./model');
 
 const hash = input => crypto.createHash('sha256').update(input).digest('hex');
-const textSignature = (body, html = '', rtf = '') => hash(`text:${body}\nhtml:${html}\nrtf:${rtf}`);
+function htmlPayload(value = '') {
+  const html = typeof value === 'string' ? value : '', prefix = "<meta charset='utf-8'>";
+  // Electron's macOS clipboard adds this exact transport prefix on every read.
+  // Remove only that framing, not arbitrary document metadata or HTML content.
+  let offset = 0;
+  while (html.startsWith(prefix, offset)) offset += prefix.length;
+  return html.slice(offset);
+}
+const textSignature = (body, html = '', rtf = '') => hash(`text:${body}\nhtml:${htmlPayload(html)}\nrtf:${rtf}`);
 
 class ClipStore {
   constructor(directory, { now = () => new Date().toISOString(), legacyDirectories = [] } = {}) {
@@ -98,12 +106,27 @@ class ClipStore {
         title: existing?.renamed ? existing.title : snapshot.title || snapshot.body.slice(0, 80),
         createdAt: this.now(), firstCopiedAt: existing?.firstCopiedAt || this.now(),
         boardIds: existing?.boardIds || [], isFavorite: existing?.isFavorite || false };
-      this.data.items = prune([item, ...this.data.items.filter(entry => entry.id !== item.id)], this.data.settings, Date.parse(this.now()));
+      this.data.items = prune([item, ...this.data.items.filter(entry => entry.id !== item.id)], this.data.settings, Date.parse(this.now()), this.protectedItemId);
       return item;
     });
   }
 
   get(id) { return this.data.items.find(item => item.id === id); }
+
+  migrateImageSignatures(signatureFor) {
+    const updates = [], failed = [];
+    for (const item of this.data.items.filter(value => value.type === 'image' && value.signatureFormat !== 'pixels-v1')) {
+      try {
+        const signature = signatureFor(item);
+        if (!/^[a-f0-9]{64}$/.test(signature)) throw new Error('Invalid image signature');
+        updates.push({ id: item.id, signature });
+      } catch { failed.push(item.id); }
+    }
+    if (updates.length) this.mutate(() => {
+      for (const update of updates) Object.assign(this.get(update.id), { signature: update.signature, signatureFormat: 'pixels-v1' });
+    });
+    return failed;
+  }
 
   update(id, changes) {
     if (!this.get(id)) throw new Error('Clipboard item no longer exists');
@@ -113,7 +136,9 @@ class ClipStore {
       if (typeof changes.body === 'string' && ['text', 'code', 'link', 'color'].includes(item.type)) {
         if (Buffer.byteLength(changes.body) > 16 * 1024 * 1024) throw new Error('Text exceeds 16 MB limit');
         item.body = changes.body; item.preview = changes.body.slice(0, 16000);
-        item.html = ''; item.rtf = ''; item.signature = textSignature(item.body);
+        const html = typeof changes.html === 'string' ? changes.html : '';
+        if (Buffer.byteLength(html) > 16 * 1024 * 1024) throw new Error('HTML exceeds 16 MB limit');
+        item.html = html; item.rtf = ''; item.signature = textSignature(item.body, item.html);
       }
       if (Array.isArray(changes.boardIds)) item.boardIds = [...new Set(changes.boardIds.filter(b => this.data.boards.some(board => board.id === b)))];
       item.isFavorite = item.boardIds.length > 0;
@@ -123,11 +148,20 @@ class ClipStore {
 
   delete(ids) {
     const selected = new Set(ids);
+    if (this.protectedItemId && selected.has(this.protectedItemId)) throw new Error('请先保存或关闭正在编辑的项目');
     return this.mutate(() => { this.data.items = this.data.items.filter(item => !selected.has(item.id)); });
   }
 
+  replaceImage(id, { buffer, size, original, turns, preview, signature }) {
+    const item = this.get(id);
+    if (!item || item.type !== 'image' || ![0, 1, 2, 3].includes(turns)) throw new Error('Invalid image edit');
+    const asset = this.putAsset(buffer), originalAsset = this.putAsset(original);
+    return this.mutate(() => Object.assign(this.get(id), { asset, originalAsset, body: asset, size, imageTurns: turns,
+      signature: signature || hash(buffer), signatureFormat: signature ? 'pixels-v1' : 'png-v0', preview: typeof preview === 'string' ? preview : '' }));
+  }
+
   clear() {
-    return this.mutate(() => { this.data.items = this.data.items.filter(item => item.isFavorite || item.boardIds.length); });
+    return this.mutate(() => { this.data.items = this.data.items.filter(item => item.id === this.protectedItemId || item.isFavorite || item.boardIds.length); });
   }
 
   saveBoard(input) {
@@ -188,7 +222,7 @@ class ClipStore {
   settings(changes) {
     return this.mutate(() => {
       this.data.settings = sanitizeSettings(changes, this.data.settings);
-      this.data.items = prune(this.data.items, this.data.settings, Date.parse(this.now()));
+      this.data.items = prune(this.data.items, this.data.settings, Date.parse(this.now()), this.protectedItemId);
       return this.data.settings;
     });
   }
@@ -206,6 +240,26 @@ class ClipStore {
     return fs.readFileSync(path.join(this.directory, 'assets', name));
   }
 
+  exportData() {
+    const data = structuredClone(this.data);
+    for (const item of data.items) {
+      if (item.asset) { item.body = `data:image/png;base64,${this.readAsset(item.asset).toString('base64')}`; delete item.asset; }
+      if (item.originalAsset) { item.originalBody = `data:image/png;base64,${this.readAsset(item.originalAsset).toString('base64')}`; delete item.originalAsset; }
+    }
+    return data;
+  }
+
+  exportTo(file) {
+    const contents = JSON.stringify(this.exportData());
+    const temporary = path.join(path.dirname(file), `.${path.basename(file)}.tmp-${crypto.randomUUID()}`);
+    try {
+      const descriptor = fs.openSync(temporary, 'wx', 0o600);
+      try { fs.writeFileSync(descriptor, contents); fs.fsyncSync(descriptor); }
+      finally { fs.closeSync(descriptor); }
+      fs.renameSync(temporary, file);
+    } finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
+  }
+
   snapshot() {
     return { ...this.data, recovery: this.recovery, items: this.data.items.map(item => {
       const { html, rtf, ...metadata } = item;
@@ -214,4 +268,4 @@ class ClipStore {
   }
 }
 
-module.exports = { ClipStore, hash, textSignature };
+module.exports = { ClipStore, hash, textSignature, htmlPayload };
