@@ -1,6 +1,6 @@
 /* global lucide */
 const $ = selector => document.querySelector(selector);
-let library, recording = false, timer;
+let library, recording = null, timer;
 const retention = [1, 7, 30, 365, 0];
 function status(message) { $('#settingsStatus').textContent = message; $('#settingsStatus').hidden = false; clearTimeout(timer); timer = setTimeout(() => { $('#settingsStatus').hidden = true; }, 5000); }
 async function attempt(task) { try { return await task(); } catch (error) { status(error.message); return undefined; } }
@@ -13,7 +13,10 @@ function render(value) {
   });
   document.querySelectorAll('[name=pasteTarget]').forEach(input => { input.checked = input.value === value.settings.pasteTarget; });
   $('#retention').value = retention.indexOf(value.settings.retentionDays);
-  $('#hotkey').textContent = value.settings.hotkey.replace(/CommandOrControl/g, '⌘').replace(/Shift/g, '⇧').replace(/Alt/g, '⌥').replace(/Control/g, '⌃').replace(/\+/g, '');
+  document.querySelectorAll('[data-shortcut]').forEach(button => {
+    if (recording?.button === button) return;
+    button.textContent = value.settings[button.dataset.shortcut].replace(/CommandOrControl/g, '⌘').replace(/Shift/g, '⇧').replace(/Alt/g, '⌥').replace(/Control/g, '⌃').replace(/Right/g, '→').replace(/Left/g, '←').replace(/\+/g, '') || '未设置';
+  });
   $('#excludedApps').replaceChildren();
   for (const id of value.settings.excludedApps) {
     const li = document.createElement('li'), text = document.createElement('span'), remove = document.createElement('button');
@@ -33,17 +36,22 @@ document.querySelectorAll('[data-setting]').forEach(input => { input.onchange = 
 document.querySelectorAll('[name=pasteTarget]').forEach(input => { input.onchange = () => attempt(() => save({ pasteTarget: input.value })); });
 $('#retention').onchange = event => attempt(() => save({ retentionDays: retention[Number(event.target.value)] }));
 $('#excludeForm').onsubmit = event => { event.preventDefault(); attempt(async () => { await save({ excludedApps: [...library.settings.excludedApps, $('#excludeId').value.trim()] }); $('#excludeId').value = ''; }); };
-$('#hotkey').onclick = () => { recording = true; $('#hotkey').textContent = '按下快捷键'; $('#hotkey').classList.add('recording'); };
+document.querySelectorAll('[data-shortcut]').forEach(button => { button.onclick = () => {
+  if (recording) { recording.button.classList.remove('recording'); recording = null; render(library); }
+  recording = { key: button.dataset.shortcut, button }; button.textContent = '按下快捷键'; button.classList.add('recording');
+}; });
+document.querySelectorAll('[data-clear-shortcut]').forEach(button => { button.onclick = () => attempt(() => save({ [button.dataset.clearShortcut]: '' })); });
 document.addEventListener('keydown', event => {
   if (!recording) return;
   event.preventDefault();
   if (['Meta', 'Control', 'Shift', 'Alt'].includes(event.key)) return;
-  if (event.key === 'Escape') { recording = false; $('#hotkey').classList.remove('recording'); render(library); return; }
+  if (event.key === 'Escape') { recording.button.classList.remove('recording'); recording = null; render(library); return; }
   if (!event.metaKey && !event.ctrlKey && !event.altKey) return;
-  const accelerator = [event.metaKey ? 'CommandOrControl' : event.ctrlKey ? 'Control' : '', event.altKey ? 'Alt' : '', event.shiftKey ? 'Shift' : '', event.key.length === 1 ? event.key.toUpperCase() : event.key].filter(Boolean).join('+');
-  recording = false; $('#hotkey').classList.remove('recording'); attempt(() => save({ hotkey: accelerator }));
+  const key = /^Digit[0-9]$/.test(event.code) ? event.code.slice(-1) : /^Key[A-Z]$/.test(event.code) ? event.code.slice(-1) : event.key;
+  const accelerator = [event.metaKey ? 'CommandOrControl' : event.ctrlKey ? 'Control' : '', event.altKey ? 'Alt' : '', event.shiftKey ? 'Shift' : '', key.length === 1 ? key.toUpperCase() : key.replace('Arrow', '')].filter(Boolean).join('+');
+  const setting = recording.key; recording.button.classList.remove('recording'); recording = null; attempt(() => save({ [setting]: accelerator }));
 });
-$('#resetHotkey').onclick = () => attempt(() => save({ hotkey: 'CommandOrControl+Shift+V' }));
+$('#resetHotkey').onclick = () => attempt(() => save({ hotkey: 'CommandOrControl+Shift+V', stackHotkey: 'CommandOrControl+Shift+C', nextBoardHotkey: 'CommandOrControl+Right', previousBoardHotkey: 'CommandOrControl+Left', quickPasteModifier: 'CommandOrControl', plainTextModifier: 'Shift' }));
 $('#openPermission').onclick = () => attempt(() => window.paste.openPermission());
 $('#exportData').onclick = () => attempt(async () => { if (await window.paste.exportLibrary()) status('备份已导出'); });
 $('#clearHistory').onclick = () => attempt(async () => render(await window.paste.clearHistory()));

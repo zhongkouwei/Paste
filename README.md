@@ -14,6 +14,8 @@ npm start -- --show
 
 默认快捷键 `Command+Shift+V`。与原版 Paste 同时运行时可能被占用，可在设置中更换。自动粘贴通过原生辅助程序激活之前的目标进程并发送 Command+V，需要辅助功能权限；未授权时会复制内容并明确提示，不报告粘贴成功。
 
+`Command+Shift+C` 启动 Stack；两个全局快捷键、Pinboard 导航、快速粘贴及纯文本修饰键均可在设置中调整。支持把卡片拖入 Pinboard、拖动排序；图片/文件卡片悬停时的拖动图标使用原始文件。Space 打开独立预览，原图、富文本与多文件分别显示；未保存编辑会阻止直接关闭或覆盖草稿。
+
 ```bash
 npm run check
 npm test
@@ -49,7 +51,9 @@ npm run release:verify
 
 - `src/main.js`：窗口、监听、IPC、原生粘贴与设置。
 - `src/clipboard.js`：同一次剪贴板读取中的文本、HTML、RTF、原图和文件格式。
+- `src/preview.*` / `src/transfers.js`：独立预览、受隔离的富文本显示、原始文件拖出与系统分享。
 - `src/store.js` / `src/model.js`：原子存储、迁移、Pinboard 与搜索策略。
 - `src/renderer.js` / `src/styles.css`：虚拟横向卡片、搜索、多选、预览编辑与 Stack。
 - `src/settings.*`：独立设置窗口。
 - `native/bridge.m`：前台应用、原生图标、辅助功能状态与明确目标的粘贴。
+- 文件剪贴板使用原生 NSPasteboard 多项 URL 读写；不依赖只保留最后一项的 Electron 多文件写入路径。

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN"><head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Paste Easy 预览</title><link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="preview.css">
+</head><body>
+  <main class="preview-shell">
+    <header class="preview-toolbar">
+      <button id="closePreview" class="icon-button" title="关闭预览" aria-label="关闭预览"><i data-lucide="circle-x"></i></button>
+      <h1 id="previewTitle">预览</h1>
+      <div class="preview-actions">
+        <button id="pinPreview" class="icon-button" title="固定" aria-label="固定"><i data-lucide="pin"></i></button>
+        <button id="sharePreview" class="icon-button" title="分享" aria-label="分享"><i data-lucide="share"></i></button>
+        <button id="editPreview" class="icon-button" title="编辑" aria-label="编辑"><i data-lucide="pencil"></i></button>
+        <button id="savePreview" class="icon-button" title="保存" aria-label="保存" hidden><i data-lucide="check"></i></button>
+      </div>
+    </header>
+    <section id="previewContent" class="preview-content" aria-label="项目预览"></section>
+    <footer class="preview-footer"><span id="previewMeta"></span><button id="copyPreview" class="icon-button" title="复制" aria-label="复制"><i data-lucide="copy"></i></button></footer>
+    <div id="previewPinboards" class="preview-pinboards" hidden></div>
+    <p id="previewStatus" class="preview-status" role="status" hidden></p>
+  </main>
+  <script src="../node_modules/lucide/dist/umd/lucide.js"></script><script src="../node_modules/dompurify/dist/purify.min.js"></script>
+  <script src="model.js"></script><script src="preview.js"></script>
+</body></html>

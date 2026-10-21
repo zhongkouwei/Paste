@@ -1,12 +1,12 @@
 /* global lucide, PasteModel */
 const $ = selector => document.querySelector(selector);
 const api = window.paste;
-const { filterItems, relativeTime, COLORS } = PasteModel;
+const { filterItems, relativeTime, COLORS, modifierPressed, shortcutMatches } = PasteModel;
 const state = { items: [], boards: [], settings: {}, status: {}, board: 'history', query: '', type: 'all', source: '', after: '',
   selected: new Set(), anchor: 0, searching: false, target: '', editingBoard: null, detail: null };
 const labels = { text: '文本', code: '文本', link: '链接', image: '图片', color: '颜色', file: '文件' };
 const icons = { text: 'text', code: 'code', link: 'link', image: 'image', color: 'palette', file: 'file' };
-let toastTimer, renderFrame;
+let toastTimer, renderFrame, dragging = null;
 
 function icon(name) { return `<i data-lucide="${name}"></i>`; }
 function escape(value) { return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]); }
@@ -27,13 +27,21 @@ function accept(library) {
 }
 
 function renderBoards() {
+  const previousEditor = $('#boards .board-edit');
+  const restoreEditorFocus = !!previousEditor?.contains(document.activeElement);
   $('#boards').innerHTML = `<button class="board ${state.board === 'history' ? 'active' : ''}" data-board="history" aria-pressed="${state.board === 'history'}" title="剪贴板">${icon('history')}<span>剪贴板</span></button>`
-    + state.boards.map(board => `<button class="board ${state.board === board.id ? 'active' : ''}" data-board="${escape(board.id)}" aria-pressed="${state.board === board.id}" title="${escape(board.name)}"><b class="board-dot" style="--board-color:${safeColor(board.color)}"></b><span>${escape(board.name)}</span></button>`).join('');
+    + state.boards.map(board => `<button class="board ${state.board === board.id ? 'active' : ''}" data-board="${escape(board.id)}" draggable="true" aria-pressed="${state.board === board.id}" title="${escape(board.name)}"><b class="board-dot" style="--board-color:${safeColor(board.color)}"></b><span>${escape(board.name)}</span></button>`).join('');
   if (state.editingBoard) {
     const board = state.editingBoard;
     const button = [...$('#boards').querySelectorAll('[data-board]')].find(node => node.dataset.board === board.id);
     if (button) {
+      if (previousEditor?.dataset.editBoard === board.id) {
+        button.replaceWith(previousEditor);
+        previousEditor.querySelector('.board-dot').style.setProperty('--board-color', board.color);
+        if (restoreEditorFocus) previousEditor.querySelector('input').focus();
+      } else {
       const editor = document.createElement('div'); editor.className = 'board board-edit';
+      editor.dataset.editBoard = board.id;
       const color = document.createElement('button'); color.className = 'board-dot'; color.type = 'button'; color.style.setProperty('--board-color', board.color); color.setAttribute('aria-label', 'Pinboard 颜色');
       const input = document.createElement('input'); input.className = 'board-name-edit'; input.value = board.name; input.maxLength = 60; input.setAttribute('aria-label', 'Pinboard 名称');
       color.onpointerdown = event => event.preventDefault();
@@ -48,11 +56,11 @@ function renderBoards() {
       };
       input.oninput = () => { if (state.editingBoard) state.editingBoard.name = input.value; };
       input.onkeydown = event => {
-        if (event.key === 'Enter' || event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); attempt(commitBoard); }
+        if (['Enter', 'Escape', 'Tab'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); attempt(commitBoard); }
         else event.stopPropagation();
       };
-      input.onblur = () => { if ($('#menu').hidden) attempt(commitBoard); };
       editor.append(color, input); button.replaceWith(editor);
+      }
     }
   }
   $('#stackButton').classList.toggle('active', !!state.status.stackMode);
@@ -69,11 +77,12 @@ function card(item, index) {
   if (item.type === 'color' && /^#[\da-f]{3,8}$/i.test(item.body)) { body = `<span>${escape(item.body)}</span>`; kind = 'color-preview'; }
   const caption = item.type === 'image' ? `${item.size?.width || '?'} × ${item.size?.height || '?'}`
     : item.type === 'file' ? '文件' : `${item.characterCount ?? [...(item.body || '')].length} 个字符`;
-  return `<article class="clip-card ${selected ? 'selected' : ''}" role="option" aria-selected="${selected}" aria-label="${escape(item.title)}" data-id="${escape(item.id)}" data-index="${index}" data-type="${escape(item.type)}" style="left:${24 + index * 264}px;--source-color:${safeColor(item.source?.color)}">
+  return `<article class="clip-card ${selected ? 'selected' : ''}" role="option" draggable="true" aria-selected="${selected}" aria-label="${escape(item.title)}" data-id="${escape(item.id)}" data-index="${index}" data-type="${escape(item.type)}" style="left:${24 + index * 264}px;--source-color:${safeColor(item.source?.color)}">
     <header class="clip-header"><span class="clip-type">${labels[item.type] || '文本'}</span><time class="clip-time">${relativeTime(item.createdAt)}</time>${sourceIcon ? `<img class="source-icon" src="${sourceIcon}" alt="${escape(item.source?.name)}" draggable="false">` : `<span class="source-fallback" title="${escape(item.source?.name || '')}">${icon(icons[item.type] || 'text')}</span>`}</header>
     <div class="clip-body ${kind}" ${kind === 'color-preview' ? `style="background:${escape(item.body)};color:#111"` : ''}>${body}</div>
     <footer class="clip-footer">${item.renamed ? escape(item.title) : caption}</footer>${item.boardIds?.length ? `<span class="clip-pin">${icon('pin')}</span>` : ''}
-    ${index < 9 ? `<span class="quick-key">⌘${index + 1}</span>` : ''}</article>`;
+    ${['image', 'file'].includes(item.type) ? `<button class="native-drag icon-button" draggable="true" data-native-drag="${escape(item.id)}" title="拖出原始文件" aria-label="拖出原始文件">${icon('grip-vertical')}</button>` : ''}
+    ${index < 9 ? `<span class="quick-key">${{ CommandOrControl: '⌘', Control: '⌃', Alt: '⌥' }[state.settings.quickPasteModifier] || '⌘'}${index + 1}</span>` : ''}</article>`;
 }
 
 function renderCards() {
@@ -151,21 +160,20 @@ function itemMenu(item, x, y) {
     { label: '以纯文本粘贴', action: () => activate(item.id, true, true), disabled: ['image', 'file'].includes(item.type) },
     { label: '复制', icon: 'copy', key: '⌘C', action: () => activate(item.id, false) }, null,
     { label: '编辑', icon: 'pencil', action: () => openDetail(item.id, true), disabled: ['image', 'file'].includes(item.type) },
-    { label: '重命名', action: () => rename(item) },
+    { label: '重命名', action: () => openDetail(item.id, 'rename') },
+    ...(item.type === 'file' ? [{ label: '在 Finder 中显示', icon: 'folder-search', action: () => api.revealItem(item.id) }] : []),
     { label: state.selected.size > 1 ? `删除 ${state.selected.size} 个项目` : '删除', icon: 'trash-2', key: '⌫', action: async () => accept(await api.deleteItems([...state.selected])) }, null,
     { heading: '固定到 Pinboard' },
     ...state.boards.map(board => ({ label: `${item.boardIds?.includes(board.id) ? '✓ ' : ''}${board.name}`, action: () => pin(board.id) })),
     { label: '创建 Pinboard…', icon: 'plus', action: () => boardDialog() }, null,
-    { label: '预览', icon: 'scan', key: 'Space', action: () => openDetail(item.id) }
+    { label: '预览', icon: 'scan', key: 'Space', action: () => openDetail(item.id) },
+    { label: '分享', icon: 'share', action: () => api.shareItem(item.id) }
   ], x, y);
 }
 async function pin(boardId) {
   const ids = [...state.selected];
   const shouldRemove = ids.every(id => state.items.find(item => item.id === id)?.boardIds.includes(boardId));
-  for (const id of ids) {
-    const item = state.items.find(entry => entry.id === id);
-    if (item) await api.updateItem(id, { boardIds: shouldRemove ? item.boardIds.filter(b => b !== boardId) : [...item.boardIds, boardId] });
-  }
+  accept(await api.pinItems(ids, boardId, shouldRemove));
 }
 async function boardDialog(board) {
   if (!board) {
@@ -181,31 +189,73 @@ async function commitBoard() {
   state.editingBoard = null;
   await api.saveBoard(board); accept(await api.getLibrary());
 }
-function rename(item) {
-  openDetail(item.id).then(() => {
-    const input = document.createElement('input'); input.value = item.title; input.maxLength = 200; input.setAttribute('aria-label', '项目名称');
-    $('#detailBody').replaceChildren(input); $('#saveEdit').hidden = false;
-    $('#saveEdit').onclick = () => attempt(async () => { accept(await api.updateItem(item.id, { title: input.value })); $('#detailDialog').close(); });
-    input.focus(); input.select();
-  }).catch(error => toast(error.message));
+async function openDetail(id, mode = 'view') {
+  const card = [...$('#track').querySelectorAll('[data-id]')].find(element => element.dataset.id === id);
+  const rect = card?.getBoundingClientRect();
+  return api.openPreview(id, { mode: mode === true ? 'edit' : mode, anchor: rect ? { x: rect.x + rect.width / 2 } : undefined, ids: visibleItems().map(item => item.id) });
 }
-async function openDetail(id, editing = false) {
-  const item = await api.getItem(id);
-  if (!item) throw new Error('项目已被删除');
-  state.detail = item;
-  $('#detailTitle').textContent = item.renamed ? item.title : labels[item.type];
-  $('#detailMeta').textContent = `${item.source?.name || '剪贴板'} · ${relativeTime(item.createdAt)}`;
-  $('#saveEdit').hidden = !editing;
-  $('#editItem').hidden = ['image', 'file'].includes(item.type);
-  $('#detailBody').replaceChildren();
-  if (editing) {
-    const input = document.createElement('textarea'); input.value = item.body; input.setAttribute('aria-label', '剪贴板内容'); $('#detailBody').append(input);
-    $('#saveEdit').onclick = () => attempt(async () => { accept(await api.updateItem(id, { body: input.value })); $('#detailDialog').close(); });
-  } else if (item.type === 'image' && safeImage(item.body)) {
-    const image = document.createElement('img'); image.src = item.body; image.alt = item.title; $('#detailBody').append(image);
-  } else { const text = document.createElement('pre'); text.textContent = item.body; $('#detailBody').append(text); }
-  if (!$('#detailDialog').open) $('#detailDialog').showModal();
+
+function payload(event) {
+  for (const [type, key] of [['board', 'application/x-paste-easy-board'], ['items', 'application/x-paste-easy-items']]) {
+    const raw = event.dataTransfer?.getData(key);
+    if (raw) { try { return { type, value: JSON.parse(raw) }; } catch { return null; } }
+  }
+  return dragging;
 }
+function clearDrag() {
+  dragging = null;
+  document.querySelectorAll('.drop-target').forEach(element => element.classList.remove('drop-target'));
+}
+$('#boards').addEventListener('dragstart', event => {
+  const board = event.target.closest('[data-board]'); if (!board || board.dataset.board === 'history') return;
+  dragging = { type: 'board', value: board.dataset.board };
+  event.dataTransfer.setData('application/x-paste-easy-board', JSON.stringify(dragging.value)); event.dataTransfer.effectAllowed = 'move';
+});
+$('#boards').addEventListener('dragover', event => {
+  const target = event.target.closest('[data-board]'); if (!target || target.dataset.board === 'history') return;
+  event.preventDefault(); target.classList.add('drop-target');
+});
+$('#boards').addEventListener('dragleave', event => { if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.querySelectorAll('.drop-target').forEach(node => node.classList.remove('drop-target')); });
+$('#boards').addEventListener('drop', event => {
+  event.preventDefault(); const target = event.target.closest('[data-board]'), data = payload(event); clearDrag();
+  if (!target || target.dataset.board === 'history' || !data) return;
+  attempt(async () => {
+    if (data.type === 'items') { accept(await api.pinItems(data.value, target.dataset.board)); toast('已固定到 Pinboard'); }
+    else if (data.value !== target.dataset.board) {
+      const ids = state.boards.map(board => board.id).filter(id => id !== data.value), index = ids.indexOf(target.dataset.board);
+      if (index < 0 || !state.boards.some(board => board.id === data.value)) return;
+      const rect = target.getBoundingClientRect(); ids.splice(index + (event.clientX > rect.x + rect.width / 2 ? 1 : 0), 0, data.value);
+      accept(await api.reorderBoards(ids));
+    }
+  });
+});
+$('#timeline').addEventListener('dragstart', event => {
+  const native = event.target.closest('[data-native-drag]');
+  if (native) { event.preventDefault(); const ids = state.selected.has(native.dataset.nativeDrag) ? [...state.selected] : [native.dataset.nativeDrag]; attempt(() => api.startDrag(ids)); return; }
+  const card = event.target.closest('[data-id]'); if (!card) return;
+  const ids = state.selected.has(card.dataset.id) ? [...state.selected] : [card.dataset.id];
+  dragging = { type: 'items', value: ids };
+  event.dataTransfer.setData('application/x-paste-easy-items', JSON.stringify(ids));
+  const text = ids.map(id => state.items.find(item => item.id === id)).filter(item => item && !['image', 'file'].includes(item.type)).map(item => item.body).join('\n');
+  if (text) event.dataTransfer.setData('text/plain', text);
+  event.dataTransfer.effectAllowed = 'copyMove';
+});
+$('#timeline').addEventListener('dragover', event => {
+  if (state.board !== 'history' && event.target.closest('[data-id]')) { event.preventDefault(); event.target.closest('[data-id]').classList.add('drop-target'); }
+});
+$('#timeline').addEventListener('drop', event => {
+  event.preventDefault(); const target = event.target.closest('[data-id]'), data = payload(event); clearDrag();
+  if (!target || state.board === 'history' || data?.type !== 'items') return;
+  attempt(async () => {
+    const members = filterItems(state.items, { board: state.board, boards: state.boards }).map(item => item.id);
+    if (!Array.isArray(data.value) || data.value.some(id => !members.includes(id))) return;
+    const ids = members.filter(id => !data.value.includes(id)), index = ids.indexOf(target.dataset.id);
+    if (index < 0) return;
+    const rect = target.getBoundingClientRect(); ids.splice(index + (event.clientX > rect.x + rect.width / 2 ? 1 : 0), 0, ...data.value);
+    accept(await api.reorderBoardItems(state.board, ids));
+  });
+});
+document.addEventListener('dragend', clearDrag);
 
 $('#searchToggle').onclick = () => toggleSearch(true);
 $('#searchClear').onclick = () => { $('#searchInput').value = ''; state.query = ''; resetFilter(); $('#searchInput').focus(); };
@@ -237,7 +287,7 @@ $('#timeline').onclick = event => {
   const item = event.target.closest('[data-index]'); if (!item) return;
   select(Number(item.dataset.index), { extend: event.shiftKey, toggle: event.metaKey || event.ctrlKey }); $('#timeline').focus();
 };
-$('#timeline').ondblclick = event => { const item = event.target.closest('[data-id]'); if (item) attempt(() => activate(item.dataset.id, true, event.shiftKey)); };
+$('#timeline').ondblclick = event => { const item = event.target.closest('[data-id]'); if (item) attempt(() => activate(item.dataset.id, true, modifierPressed(event, state.settings.plainTextModifier))); };
 $('#timeline').oncontextmenu = event => {
   event.preventDefault(); const node = event.target.closest('[data-id]'); if (!node) return;
   const item = state.items.find(i => i.id === node.dataset.id); if (!item) return;
@@ -254,16 +304,14 @@ $('#moreButton').onclick = () => menu([
   { label: '关闭', icon: 'x', key: 'Esc', action: () => api.hide() }
 ], innerWidth - 230, 48);
 $('#stackButton').onclick = () => attempt(() => state.status.stackCount ? api.nextInStack() : api.toggleStack());
-$('#closeDetail').onclick = () => $('#detailDialog').close();
-$('#editItem').onclick = () => attempt(() => openDetail(state.detail.id, true));
-$('#copyDetail').onclick = () => attempt(() => activate(state.detail.id, false));
 document.addEventListener('pointerdown', event => {
+  if (state.editingBoard && !event.target.closest('.board-edit, #menu')) attempt(commitBoard);
   if (!event.target.closest('#menu, #moreButton')) closeMenu();
   if (!event.target.closest('#filters, #filterToggle')) $('#filters').hidden = true;
 });
 document.addEventListener('keydown', event => {
   const modifier = event.metaKey || event.ctrlKey;
-  document.body.classList.toggle('quick-keys', modifier);
+  document.body.classList.toggle('quick-keys', modifierPressed(event, state.settings.quickPasteModifier));
   if ($('#menu').hidden === false) {
     const buttons = [...$('#menu').querySelectorAll('button:not(:disabled)')];
     const index = buttons.indexOf(document.activeElement);
@@ -272,7 +320,6 @@ document.addEventListener('keydown', event => {
     if (event.key === 'Enter') return;
   }
   if (event.key === 'Escape') {
-    if ($('#detailDialog').open) return;
     event.preventDefault();
     if (!$('#filters').hidden) $('#filters').hidden = true;
     else if (state.query) { state.query = ''; $('#searchInput').value = ''; resetFilter(); }
@@ -283,26 +330,28 @@ document.addEventListener('keydown', event => {
   if (modifier && event.key.toLowerCase() === 'f') { event.preventDefault(); toggleSearch(true); return; }
   if (modifier && event.key === ',') { event.preventDefault(); api.openSettings(); return; }
   if (modifier && event.shiftKey && event.key.toLowerCase() === 'n') { event.preventDefault(); attempt(() => boardDialog()); return; }
-  if (event.target.matches('input, textarea, select') || event.target.isContentEditable || $('#detailDialog').open) return;
-  if (modifier && ['ArrowLeft', 'ArrowRight'].includes(event.key)) {
-    event.preventDefault(); const ids = ['history', ...state.boards.map(b => b.id)]; const next = (ids.indexOf(state.board) + (event.key === 'ArrowRight' ? 1 : -1) + ids.length) % ids.length; setBoard(ids[next]); return;
+  if (event.target.matches('input, textarea, select') || event.target.isContentEditable) return;
+  const nextBoard = shortcutMatches(event, state.settings.nextBoardHotkey), previousBoard = shortcutMatches(event, state.settings.previousBoardHotkey);
+  if (nextBoard || previousBoard) {
+    event.preventDefault(); const ids = ['history', ...state.boards.map(b => b.id)]; const next = (ids.indexOf(state.board) + (nextBoard ? 1 : -1) + ids.length) % ids.length; setBoard(ids[next]); return;
   }
-  if (modifier && /^[1-9]$/.test(event.key)) { event.preventDefault(); const item = visibleItems()[Number(event.key) - 1]; if (item) attempt(() => activate(item.id, true, event.shiftKey)); return; }
+  const quickDigit = /^Digit[1-9]$/.test(event.code) ? Number(event.code.slice(-1)) : /^[1-9]$/.test(event.key) ? Number(event.key) : 0;
+  if (modifierPressed(event, state.settings.quickPasteModifier) && quickDigit) { event.preventDefault(); const item = visibleItems()[quickDigit - 1]; if (item) attempt(() => activate(item.id, true, modifierPressed(event, state.settings.plainTextModifier))); return; }
   if (modifier && event.key.toLowerCase() === 'a') { event.preventDefault(); state.selected = new Set(visibleItems().map(i => i.id)); renderCards(); return; }
   if (modifier && event.key.toLowerCase() === 'c') { event.preventDefault(); attempt(() => activate(undefined, false)); return; }
   if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
     event.preventDefault(); const items = visibleItems(); const current = items.findIndex(i => i.id === [...state.selected].at(-1));
     select(event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : current + (event.key === 'ArrowRight' ? 1 : -1), { extend: event.shiftKey }); return;
   }
-  if (event.key === 'Enter') { event.preventDefault(); attempt(() => activate(undefined, !event.altKey, event.shiftKey)); return; }
+  if (event.key === 'Enter') { event.preventDefault(); attempt(() => activate(undefined, !event.altKey || state.settings.plainTextModifier === 'Alt', modifierPressed(event, state.settings.plainTextModifier))); return; }
   if (event.key === ' ') { event.preventDefault(); const id = [...state.selected][0]; if (id) attempt(() => openDetail(id)); return; }
   if (event.key === 'Backspace' || event.key === 'Delete') { event.preventDefault(); attempt(async () => accept(await api.deleteItems([...state.selected]))); return; }
   if (!modifier && !event.altKey && event.key.length === 1) { toggleSearch(true); $('#searchInput').value = event.key; state.query = event.key; resetFilter(); event.preventDefault(); }
 });
-document.addEventListener('keyup', event => document.body.classList.toggle('quick-keys', event.metaKey || event.ctrlKey));
+document.addEventListener('keyup', event => document.body.classList.toggle('quick-keys', modifierPressed(event, state.settings.quickPasteModifier)));
 window.addEventListener('blur', () => document.body.classList.remove('quick-keys'));
 window.addEventListener('resize', renderCards);
 api.onChanged(accept);
-api.onShown(({ target }) => { state.target = target; closeMenu(); $('#timeline').focus(); render(); });
+api.onShown(({ target }) => { state.target = target; closeMenu(); render(); if (state.editingBoard) $('.board-name-edit')?.focus(); else $('#timeline').focus(); });
 attempt(async () => accept(await api.getLibrary()));
 refreshIcons();

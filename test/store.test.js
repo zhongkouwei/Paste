@@ -113,3 +113,30 @@ test('classifies colors, URLs, code and plain text without modifying text', () =
   assert.equal(classifyText('#af12c0'), 'color'); assert.equal(classifyText('https://example.com'), 'link');
   assert.equal(classifyText('const x = 2'), 'code'); assert.equal(classifyText('  hello\r\nworld  '), 'text');
 });
+test('pinboards can be reordered atomically and invalid permutations are rejected', t => {
+  const store = fixture(t), first = store.saveBoard({ name: 'First', color: '#ef6259' }), second = store.saveBoard({ name: 'Second', color: '#4f80ed' });
+  store.reorderBoards([second.id, first.id]);
+  assert.deepEqual(new ClipStore(store.directory).data.boards.map(board => board.id), [second.id, first.id]);
+  assert.throws(() => store.reorderBoards([first.id, first.id]));
+  assert.throws(() => store.reorderBoards([first.id]));
+  assert.deepEqual(store.data.boards.map(board => board.id), [second.id, first.id]);
+});
+test('multi-item pinning is atomic, idempotent and preserves manual pinboard order after recopy', t => {
+  const store = fixture(t), board = store.saveBoard({ name: 'Work', color: '#ef6259' });
+  const first = store.add(clip('first')), second = store.add(clip('second'));
+  store.pinItems([first.id, second.id], board.id); store.pinItems([first.id], board.id);
+  store.reorderBoardItems(board.id, [first.id, second.id]); store.add(clip('first'));
+  const result = filterItems(store.data.items, { board: board.id, boards: store.data.boards });
+  assert.deepEqual(result.map(item => item.id), [first.id, second.id]); assert.deepEqual(store.get(first.id).boardIds, [board.id]);
+  assert.throws(() => store.pinItems([first.id, 'not-present'], board.id));
+  assert.deepEqual(store.get(first.id).boardIds, [board.id]);
+  store.pinItems([first.id], board.id, true);
+  assert.deepEqual(store.data.boards[0].itemOrder, [second.id]);
+});
+test('editing and migration use the same signatures as real clipboard capture', t => {
+  const store = fixture(t), item = store.add(clip('before'));
+  const board = store.saveBoard({ name: 'Keep', color: '#ef6259' }); store.pinItems([item.id], board.id);
+  store.update(item.id, { body: 'after' });
+  const reopened = new ClipStore(store.directory), repeated = reopened.add(clip('after'));
+  assert.equal(repeated.id, item.id); assert.deepEqual(repeated.boardIds, [board.id]); assert.equal(reopened.data.items.length, 1);
+});

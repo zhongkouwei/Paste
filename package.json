@@ -25,6 +25,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "dompurify": "3.4.17",
     "lucide": "0.468.0"
   },
   "devDependencies": {

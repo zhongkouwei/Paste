@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const { COLORS, TYPES, DEFAULT_SETTINGS, prune, sanitizeSettings } = require('./model');
 
 const hash = input => crypto.createHash('sha256').update(input).digest('hex');
+const textSignature = (body, html = '', rtf = '') => hash(`text:${body}\nhtml:${html}\nrtf:${rtf}`);
 
 class ClipStore {
   constructor(directory, { now = () => new Date().toISOString(), legacyDirectories = [] } = {}) {
@@ -28,7 +29,8 @@ class ClipStore {
     const favorites = valid.filter(item => item.isFavorite && !item.boardIds?.length);
     if (favorites.length && !boards.some(b => b.id === 'favorites')) boards.push({ id: 'favorites', name: '已固定', color: COLORS[0] });
     return { version: 2, boards, settings: sanitizeSettings(data.settings || {}), items: valid.map(item => ({
-      ...item, boardIds: Array.isArray(item.boardIds) ? item.boardIds.filter(id => boards.some(b => b.id === id)) : item.isFavorite ? ['favorites'] : [],
+      ...item, signature: ['text', 'code', 'color', 'link'].includes(item.type) ? textSignature(item.body, item.html, item.rtf) : item.signature,
+      boardIds: Array.isArray(item.boardIds) ? item.boardIds.filter(id => boards.some(b => b.id === id)) : item.isFavorite ? ['favorites'] : [],
       createdAt: Number.isFinite(Date.parse(item.createdAt)) ? item.createdAt : this.now()
     })) };
   }
@@ -90,7 +92,7 @@ class ClipStore {
   add(snapshot) {
     if (!snapshot || !TYPES.includes(snapshot.type) || typeof snapshot.body !== 'string') throw new Error('Invalid clipboard snapshot');
     return this.mutate(() => {
-      const signature = snapshot.signature || hash(`${snapshot.type}:${snapshot.body}`);
+      const signature = ['text', 'code', 'color', 'link'].includes(snapshot.type) ? textSignature(snapshot.body, snapshot.html, snapshot.rtf) : snapshot.signature || hash(`${snapshot.type}:${snapshot.body}`);
       const existing = this.data.items.find(item => item.signature === signature);
       const item = { ...existing, ...snapshot, signature, id: existing?.id || crypto.randomUUID(),
         title: existing?.renamed ? existing.title : snapshot.title || snapshot.body.slice(0, 80),
@@ -111,7 +113,7 @@ class ClipStore {
       if (typeof changes.body === 'string' && ['text', 'code', 'link', 'color'].includes(item.type)) {
         if (Buffer.byteLength(changes.body) > 16 * 1024 * 1024) throw new Error('Text exceeds 16 MB limit');
         item.body = changes.body; item.preview = changes.body.slice(0, 16000);
-        item.html = ''; item.rtf = ''; item.signature = hash(`${item.type}:${item.body}`);
+        item.html = ''; item.rtf = ''; item.signature = textSignature(item.body);
       }
       if (Array.isArray(changes.boardIds)) item.boardIds = [...new Set(changes.boardIds.filter(b => this.data.boards.some(board => board.id === b)))];
       item.isFavorite = item.boardIds.length > 0;
@@ -146,6 +148,43 @@ class ClipStore {
     });
   }
 
+  reorderBoards(ids) {
+    this.validateOrder(ids, this.data.boards.map(board => board.id));
+    return this.mutate(() => {
+      const boards = new Map(this.data.boards.map(board => [board.id, board]));
+      this.data.boards = ids.map(id => boards.get(id));
+    });
+  }
+
+  validateOrder(ids, expected) {
+    const valid = new Set(expected);
+    if (!Array.isArray(ids) || ids.length !== expected.length || new Set(ids).size !== ids.length
+      || ids.some(id => !valid.has(id))) throw new Error('Invalid ordering; reload the current library');
+  }
+
+  reorderBoardItems(boardId, ids) {
+    const board = this.data.boards.find(entry => entry.id === boardId);
+    if (!board) throw new Error('Pinboard no longer exists');
+    this.validateOrder(ids, this.data.items.filter(item => item.boardIds.includes(boardId)).map(item => item.id));
+    return this.mutate(() => { board.itemOrder = [...ids]; });
+  }
+
+  pinItems(ids, boardId, remove = false) {
+    if (!Array.isArray(ids) || !ids.length || ids.length > 10000 || ids.some(id => !this.get(id))) throw new Error('Invalid clipboard selection');
+    if (!this.data.boards.some(board => board.id === boardId)) throw new Error('Pinboard no longer exists');
+    return this.mutate(() => {
+      for (const id of new Set(ids)) {
+        const item = this.get(id);
+        item.boardIds = remove ? item.boardIds.filter(entry => entry !== boardId) : [...new Set([...item.boardIds, boardId])];
+        item.isFavorite = item.boardIds.length > 0;
+      }
+      if (remove) {
+        const board = this.data.boards.find(entry => entry.id === boardId);
+        if (board.itemOrder) board.itemOrder = board.itemOrder.filter(id => !ids.includes(id));
+      }
+    });
+  }
+
   settings(changes) {
     return this.mutate(() => {
       this.data.settings = sanitizeSettings(changes, this.data.settings);
@@ -175,4 +214,4 @@ class ClipStore {
   }
 }
 
-module.exports = { ClipStore, hash };
+module.exports = { ClipStore, hash, textSignature };

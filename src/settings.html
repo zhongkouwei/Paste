@@ -20,6 +20,9 @@
     <section data-section="general">
       <div class="settings-group">
         <label class="setting-row"><span>登录时打开</span><input type="checkbox" role="switch" data-setting="launchAtLogin"></label>
+        <label class="setting-row"><span>后台运行</span><input type="checkbox" role="switch" data-setting="background"></label>
+        <label class="setting-row"><span>显示在菜单栏上</span><input type="checkbox" role="switch" data-setting="showInMenuBar"></label>
+        <label class="setting-row"><span>音效</span><input type="checkbox" role="switch" data-setting="sound"></label>
         <label class="setting-row"><span>暂停记录</span><input type="checkbox" role="switch" data-setting="paused"></label>
         <label class="setting-row"><span>外观</span><select data-setting="theme" aria-label="外观"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
       </div>
@@ -42,11 +45,18 @@
       <div class="settings-group excluded-group"><ul id="excludedApps"></ul><form id="excludeForm"><input id="excludeId" placeholder="com.example.app" aria-label="忽略应用的 Bundle ID" pattern="[A-Za-z0-9_.-]+" required><button type="submit" class="icon-button" aria-label="添加忽略应用" title="添加"><i data-lucide="plus"></i></button></form></div>
     </section>
     <section data-section="shortcuts" hidden>
-      <div class="settings-group"><label class="setting-row"><span>启动 Paste Easy</span><button id="hotkey" class="shortcut" aria-label="启动快捷键"></button></label></div>
-      <div class="settings-group shortcut-list">
-        <div class="setting-row"><span>显示下一个 Pinboard</span><kbd>⌘→</kbd></div><div class="setting-row"><span>显示上一个 Pinboard</span><kbd>⌘←</kbd></div>
+      <div class="settings-group">
+        <div class="setting-row"><span>启动 Paste Easy</span><div class="shortcut-control"><button class="shortcut" data-shortcut="hotkey" aria-label="启动快捷键"></button><button class="icon-button" data-clear-shortcut="hotkey" title="清除快捷键" aria-label="清除启动快捷键"><i data-lucide="x"></i></button></div></div>
+        <div class="setting-row"><span>启动 Paste Stack</span><div class="shortcut-control"><button class="shortcut" data-shortcut="stackHotkey" aria-label="Stack 快捷键"></button><button class="icon-button" data-clear-shortcut="stackHotkey" title="清除快捷键" aria-label="清除 Stack 快捷键"><i data-lucide="x"></i></button></div></div>
       </div>
-      <div class="settings-group shortcut-list"><div class="setting-row"><span>快速粘贴</span><kbd>⌘ + 1…9</kbd></div><div class="setting-row"><span>纯文本模式</span><kbd>⇧ Shift</kbd></div><div class="setting-row"><span>预览</span><kbd>Space</kbd></div><div class="setting-row"><span>搜索</span><kbd>⌘F</kbd></div></div>
+      <div class="settings-group shortcut-list">
+        <div class="setting-row"><span>显示下一个 Pinboard</span><button class="shortcut" data-shortcut="nextBoardHotkey" aria-label="下一个 Pinboard 快捷键"></button></div><div class="setting-row"><span>显示上一个 Pinboard</span><button class="shortcut" data-shortcut="previousBoardHotkey" aria-label="上一个 Pinboard 快捷键"></button></div>
+      </div>
+      <div class="settings-group shortcut-list">
+        <label class="setting-row"><span>快速粘贴</span><select data-setting="quickPasteModifier" aria-label="快速粘贴修饰键"><option value="CommandOrControl">⌘ Command + 1…9</option><option value="Control">⌃ Control + 1…9</option><option value="Alt">⌥ Option + 1…9</option></select></label>
+        <label class="setting-row"><span>纯文本模式</span><select data-setting="plainTextModifier" aria-label="纯文本修饰键"><option value="Shift">⇧ Shift</option><option value="Alt">⌥ Option</option><option value="Control">⌃ Control</option></select></label>
+        <div class="setting-row"><span>预览</span><kbd>Space</kbd></div><div class="setting-row"><span>搜索</span><kbd>⌘F</kbd></div>
+      </div>
       <button id="resetHotkey" class="standard-button">重置快捷键</button>
     </section>
     <section data-section="data" hidden>

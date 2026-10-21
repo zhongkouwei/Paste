@@ -35,6 +35,10 @@ input { accent-color: var(--selected); }
 kbd { font: 13px -apple-system, sans-serif; color: var(--muted); white-space: nowrap; }
 .shortcut { min-width: 130px; padding: 4px 12px; border-radius: 5px; background: var(--hover); font-size: 14px; }
 .shortcut.recording { outline: 2px solid var(--selected); }
+.shortcut-control { display: flex; align-items: center; gap: 4px; }
+.shortcut-control .shortcut { min-width: 110px; }
+.shortcut-control .icon-button { width: 20px; height: 20px; }
+.shortcut-control .icon-button svg { width: 13px; height: 13px; }
 .standard-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--line); border-radius: 5px; padding: 5px 10px; background: var(--hover); font-size: 12px; }
 .standard-button svg { width: 14px; height: 14px; }
 #resetHotkey { margin-top: 20px; float: right; }

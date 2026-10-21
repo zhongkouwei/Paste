@@ -6,10 +6,12 @@
   const TYPES = ['text', 'link', 'code', 'image', 'color', 'file'];
   const COLORS = ['#ef6259', '#f3ad43', '#62c68d', '#4f80ed', '#af78d3', '#dc79b0', '#8e9299'];
   const DEFAULT_SETTINGS = {
-    launchAtLogin: false, pasteTarget: 'application', plainText: false,
+    launchAtLogin: false, background: true, showInMenuBar: true, pasteTarget: 'application', plainText: false,
     retentionDays: 30, maxItems: 10000, paused: false, sound: false,
     ignoreConfidential: true, ignoreTransient: true, excludedApps: ['com.apple.keychainaccess'],
-    hotkey: 'CommandOrControl+Shift+V', theme: 'system', language: 'zh-CN'
+    hotkey: 'CommandOrControl+Shift+V', stackHotkey: 'CommandOrControl+Shift+C',
+    nextBoardHotkey: 'CommandOrControl+Right', previousBoardHotkey: 'CommandOrControl+Left',
+    quickPasteModifier: 'CommandOrControl', plainTextModifier: 'Shift', theme: 'system', language: 'zh-CN'
   };
 
   function classifyText(text) {
@@ -20,9 +22,9 @@
     return 'text';
   }
 
-  function filterItems(items, { board = 'history', query = '', type = 'all', source = '', after = '' } = {}) {
+  function filterItems(items, { board = 'history', boards = [], query = '', type = 'all', source = '', after = '' } = {}) {
     const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
-    return items.filter(item => {
+    const filtered = items.filter(item => {
       if (board !== 'history' && !item.boardIds?.includes(board)) return false;
       if (type !== 'all' && item.type !== type && !(type === 'text' && item.type === 'code')) return false;
       if (source && item.source?.bundleId !== source) return false;
@@ -30,6 +32,12 @@
       const haystack = `${item.title}\n${item.body || ''}\n${item.source?.name || ''}\n${item.note || ''}`.toLocaleLowerCase();
       return terms.every(term => haystack.includes(term));
     });
+    const order = boards.find(entry => entry.id === board)?.itemOrder;
+    if (order?.length) {
+      const positions = new Map(order.map((id, index) => [id, index]));
+      filtered.sort((a, b) => (positions.get(a.id) ?? Infinity) - (positions.get(b.id) ?? Infinity));
+    }
+    return filtered;
   }
 
   function relativeTime(value, locale = 'zh-CN', now = Date.now()) {
@@ -54,7 +62,7 @@
 
   function sanitizeSettings(input, previous = DEFAULT_SETTINGS) {
     const result = { ...previous };
-    for (const key of ['launchAtLogin', 'plainText', 'sound', 'paused', 'ignoreConfidential', 'ignoreTransient']) {
+    for (const key of ['launchAtLogin', 'background', 'showInMenuBar', 'plainText', 'sound', 'paused', 'ignoreConfidential', 'ignoreTransient']) {
       if (typeof input[key] === 'boolean') result[key] = input[key];
     }
     if (['application', 'clipboard'].includes(input.pasteTarget)) result.pasteTarget = input.pasteTarget;
@@ -62,10 +70,33 @@
     if (Number.isInteger(input.maxItems) && input.maxItems >= 100 && input.maxItems <= 100000) result.maxItems = input.maxItems;
     if (['system', 'light', 'dark'].includes(input.theme)) result.theme = input.theme;
     if (['zh-CN', 'en'].includes(input.language)) result.language = input.language;
-    if (typeof input.hotkey === 'string' && input.hotkey.length < 120 && /(?:Command|Control|Alt|Shift)/.test(input.hotkey)) result.hotkey = input.hotkey;
+    for (const key of ['hotkey', 'stackHotkey', 'nextBoardHotkey', 'previousBoardHotkey']) {
+      if (input[key] === '' || (typeof input[key] === 'string' && input[key].length < 120 && /(?:Command|Control|Alt|Shift)/.test(input[key]))) result[key] = input[key];
+    }
+    if (['CommandOrControl', 'Alt', 'Control'].includes(input.quickPasteModifier)) result.quickPasteModifier = input.quickPasteModifier;
+    if (['Shift', 'Alt', 'Control'].includes(input.plainTextModifier)) result.plainTextModifier = input.plainTextModifier;
     if (Array.isArray(input.excludedApps)) result.excludedApps = [...new Set(input.excludedApps.filter(x => typeof x === 'string' && /^[\w.-]{1,200}$/.test(x)))];
     return result;
   }
 
-  return { TYPES, COLORS, DEFAULT_SETTINGS, classifyText, filterItems, relativeTime, prune, sanitizeSettings };
+  function modifierPressed(event, modifier, platform = 'darwin') {
+    if (modifier === 'CommandOrControl') return platform === 'darwin' ? event.metaKey : event.ctrlKey;
+    return !!event[{ Command: 'metaKey', Meta: 'metaKey', Control: 'ctrlKey', Ctrl: 'ctrlKey', Alt: 'altKey', Option: 'altKey', Shift: 'shiftKey' }[modifier]];
+  }
+
+  function shortcutMatches(event, accelerator, platform = 'darwin') {
+    if (!accelerator) return false;
+    const parts = accelerator.split('+'), key = parts.pop();
+    const expected = { metaKey: false, ctrlKey: false, altKey: false, shiftKey: false };
+    for (const modifier of parts) {
+      const field = { CommandOrControl: platform === 'darwin' ? 'metaKey' : 'ctrlKey', Command: 'metaKey', Meta: 'metaKey', Control: 'ctrlKey', Ctrl: 'ctrlKey', Alt: 'altKey', Option: 'altKey', Shift: 'shiftKey' }[modifier];
+      if (!field) return false;
+      expected[field] = true;
+    }
+    if (Object.entries(expected).some(([field, value]) => !!event[field] !== value)) return false;
+    const aliases = { Right: 'ArrowRight', Left: 'ArrowLeft', Up: 'ArrowUp', Down: 'ArrowDown', Return: 'Enter', Space: ' ', Plus: '+' };
+    return (aliases[key] || key).toLowerCase() === event.key.toLowerCase();
+  }
+
+  return { TYPES, COLORS, DEFAULT_SETTINGS, classifyText, filterItems, relativeTime, prune, sanitizeSettings, modifierPressed, shortcutMatches };
 });

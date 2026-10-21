@@ -1,5 +1,5 @@
 const electron = require('electron');
-const { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, Tray, screen, dialog, shell, nativeTheme } = electron;
+const { app, BrowserWindow, globalShortcut, ipcMain, Menu, ShareMenu, nativeImage, Tray, screen, dialog, shell, nativeTheme } = electron;
 const path = require('node:path');
 const fs = require('node:fs');
 const { execFile } = require('node:child_process');
@@ -7,12 +7,18 @@ const { promisify } = require('node:util');
 const { ClipStore, hash } = require('./store');
 const { classifyText, sanitizeSettings } = require('./model');
 const { ClipboardService } = require('./clipboard');
-const clip = new ClipboardService(electron);
+const { Transfers, fileDetails } = require('./transfers');
+const { GlobalHotkeys } = require('./hotkeys');
+const clip = new ClipboardService({ ...electron, fileBridge: process.platform === 'darwin' ? {
+  read: () => native('read-files'), write: files => nativeInput('write-files', { files })
+} : undefined });
 
 const execute = promisify(execFile);
 const TEST_MODE = process.argv.includes('--test-mode');
 app.setPath('userData', process.env.PASTE_DATA_DIR ? path.resolve(process.env.PASTE_DATA_DIR) : path.join(app.getPath('appData'), 'Paste Easy'));
-let mainWindow, settingsWindow, tray, store, pollTimer, targetApp;
+let mainWindow, settingsWindow, previewWindow, tray, store, transfers, pollTimer, targetApp;
+let previewState = null, previewDirty = false, previewOpening = false, activeShare;
+let hotkeys, quitting = false, quitAfterPreview = false;
 let lastSignature = '', sourceCache = null, lastSourceAt = 0, polling = false, suppressBlur = false;
 let lastError = '', stack = [], stackMode = false;
 const PANEL_HEIGHT = 332;
@@ -23,10 +29,22 @@ async function native(command, ...args) {
   const { stdout } = await execute(helper, [command, ...args.map(String)], { timeout: 4000, maxBuffer: 2 * 1024 * 1024 });
   return JSON.parse(stdout);
 }
+async function nativeInput(command, data) {
+  if (!fs.existsSync(helper)) throw new Error('缺少原生辅助程序，请先构建应用。');
+  const operation = execute(helper, [command], { timeout: 4000, maxBuffer: 2 * 1024 * 1024 });
+  operation.child.stdin.end(JSON.stringify(data));
+  const { stdout } = await operation;
+  return JSON.parse(stdout);
+}
 
 function snapshot() { return { ...store.snapshot(), status: { error: lastError, stackMode, stackCount: stack.length } }; }
 function emit() {
+  stack = stack.filter(id => !!store.get(id));
   for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('library:changed', snapshot());
+  if (previewWindow && !previewWindow.isDestroyed()) {
+    if (store.get(previewState?.id)) previewWindow.webContents.send('preview:changed', getPreviewState());
+    else closePreview();
+  }
 }
 function report(error) { lastError = error.message; console.error(error); emit(); }
 
@@ -81,7 +99,7 @@ async function poll() {
   polling = true;
   try {
     const item = await clipboardSnapshot();
-    if (item && item.signature !== lastSignature) { store.add(item); lastSignature = item.signature; lastError = ''; emit(); }
+    if (item && item.signature !== lastSignature) { store.add(item); lastSignature = item.signature; lastError = ''; if (store.data.settings.sound && !TEST_MODE) shell.beep(); emit(); }
   } catch (error) { report(error); }
   finally { polling = false; }
 }
@@ -100,6 +118,63 @@ async function showPanel(mode) {
   mainWindow.webContents.send('panel:shown', { target: targetApp?.name || '', mode: mode || 'history' });
 }
 
+function itemDetail(id) {
+  const item = store.get(id);
+  if (!item) throw new Error('项目已被删除');
+  return { ...item, files: fileDetails(item), body: item.asset ? `data:image/png;base64,${store.readAsset(item.asset).toString('base64')}` : item.body };
+}
+function getPreviewState() {
+  if (!previewState) return null;
+  return { ...previewState, item: itemDetail(previewState.id), boards: store.data.boards };
+}
+function closePreview() {
+  if (previewWindow && !previewWindow.isDestroyed()) previewWindow.close();
+}
+function showPreview(id, { mode = 'view', anchor, ids = [] } = {}) {
+  if (!store.get(id)) throw new Error('项目已被删除');
+  if (!['view', 'edit', 'rename'].includes(mode)) throw new Error('Invalid preview mode');
+  if (previewWindow && !previewWindow.isDestroyed() && (previewDirty || previewState?.mode !== 'view')) { previewWindow.focus(); return false; }
+  previewState = { id, mode, ids: Array.isArray(ids) ? ids.filter(value => !!store.get(value)).slice(0, 100000) : [] };
+  previewDirty = false;
+  if (previewWindow && !previewWindow.isDestroyed()) {
+    previewWindow.webContents.send('preview:changed', getPreviewState()); previewWindow.show(); previewWindow.focus(); return true;
+  }
+  previewOpening = true;
+  const panel = mainWindow.getBounds(), area = screen.getDisplayMatching(panel).workArea;
+  const width = Math.min(720, area.width - 24), height = Math.min(500, area.height - 40);
+  const anchorX = anchor && Number.isFinite(anchor.x) ? Math.max(0, Math.min(panel.width, anchor.x)) : panel.width / 2;
+  const x = Math.round(Math.max(area.x + 12, Math.min(area.x + area.width - width - 12, panel.x + anchorX - width / 2)));
+  const y = Math.max(area.y + 12, panel.y - height - 12);
+  previewWindow = createWindow('preview.html', { width, height, x, y, parent: mainWindow, title: 'Paste Easy 预览',
+    frame: false, transparent: true, hasShadow: true, resizable: true, minWidth: 320, minHeight: 220, show: false, alwaysOnTop: true, skipTaskbar: true });
+  previewWindow.once('ready-to-show', () => { previewWindow.show(); previewWindow.focus(); previewOpening = false; });
+  previewWindow.webContents.on('will-prevent-unload', event => {
+    const response = dialog.showMessageBoxSync(previewWindow, { type: 'question', message: '放弃未保存的修改？', buttons: ['继续编辑', '放弃修改'], defaultId: 0, cancelId: 0 });
+    if (response === 1) { previewDirty = false; event.preventDefault(); }
+    else { quitAfterPreview = false; quitting = false; }
+  });
+  previewWindow.on('closed', () => {
+    previewWindow = null; previewState = null; previewDirty = false;
+    if (quitAfterPreview) { quitAfterPreview = false; app.quit(); }
+    else if (mainWindow.isVisible()) mainWindow.focus();
+  });
+  previewWindow.on('blur', () => setTimeout(() => {
+    if (!TEST_MODE && !previewDirty && !previewWindow?.isFocused() && !mainWindow.isFocused() && !suppressBlur) { mainWindow.hide(); closePreview(); }
+  }, 100));
+  return true;
+}
+
+async function dragItem(event, ids) {
+  if (!Array.isArray(ids) || !ids.length || ids.length > 10000) throw new Error('Invalid selection');
+  const items = ids.map(id => { const item = store.get(id); if (!item) throw new Error('项目已被删除'); return item; });
+  const files = items.flatMap(item => transfers.files(item));
+  if (!files.length) throw new Error('此项目不支持文件拖出');
+  let icon = nativeImage.createFromDataURL(items[0].preview || '');
+  if (icon.isEmpty()) icon = await app.getFileIcon(files[0], { size: 'normal' });
+  if (!TEST_MODE) event.sender.startDrag({ file: files[0], files, icon: icon.resize({ width: 64 }) });
+  return { files };
+}
+
 function createWindow(file, options) {
   const window = new BrowserWindow({ ...options, webPreferences: {
     preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true
@@ -111,7 +186,9 @@ function createWindow(file, options) {
   return window;
 }
 function openSettings() {
+  if (previewState?.mode !== 'view' && previewWindow) { previewWindow.focus(); return; }
   mainWindow.hide();
+  closePreview();
   if (!settingsWindow || settingsWindow.isDestroyed()) {
     settingsWindow = createWindow('settings.html', { width: 642, height: 580, minWidth: 620, minHeight: 520,
       title: 'Paste Easy', titleBarStyle: 'hiddenInset', backgroundColor: nativeTheme.shouldUseDarkColors ? '#282828' : '#f4f4f4', show: false });
@@ -119,6 +196,8 @@ function openSettings() {
   } else { settingsWindow.show(); settingsWindow.focus(); }
 }
 function createTray() {
+  if (!store.data.settings.showInMenuBar) { if (tray && !tray.isDestroyed()) tray.destroy(); tray = null; return; }
+  if (tray && !tray.isDestroyed()) return;
   const icon = nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAQAAAC1+jfqAAAAKElEQVR42mP8z8AARLJgwiFGEGkYRgYGBkYkDQwMDDQwMDAAAMu2AheG4i39AAAAAElFTkSuQmCC');
   icon.setTemplateImage(true); tray = new Tray(icon); tray.setToolTip('Paste Easy');
   tray.on('click', () => showPanel());
@@ -128,18 +207,17 @@ function createTray() {
     { type: 'separator' }, { label: '设置…', click: openSettings }, { label: '退出 Paste Easy', role: 'quit' }
   ])));
 }
-function registerHotkey(value) {
-  if (TEST_MODE) return;
-  const previous = store.data.settings.hotkey;
-  globalShortcut.unregisterAll();
-  if (!globalShortcut.register(value, () => mainWindow.isVisible() ? mainWindow.hide() : showPanel())) {
-    globalShortcut.register(previous, () => showPanel()); throw new Error('快捷键已被其他应用占用，请在设置中更换。');
+function applyRuntimeSettings() {
+  nativeTheme.themeSource = store.data.settings.theme; createTray();
+  if (process.platform === 'darwin' && !TEST_MODE) {
+    if (store.data.settings.background) app.dock.hide(); else app.dock.show();
   }
 }
 
 async function copy(id, { paste = false, plain = false } = {}) {
   const item = store.get(id);
   if (!item) throw new Error('此项目已被删除。');
+  if (item.type === 'file' && fileDetails(item).some(file => !file.exists)) throw new Error('原始文件已移动或删除，无法粘贴。');
   await clip.write(item, { plain: plain || store.data.settings.plainText, image: item.asset ? store.readAsset(item.asset) : undefined });
   lastSignature = (await clip.read()).signature;
   if (paste && store.data.settings.pasteTarget === 'application') {
@@ -148,9 +226,10 @@ async function copy(id, { paste = false, plain = false } = {}) {
     if (!permission.accessibility || !targetApp?.pid) return { ok: false, copied: true,
       error: !permission.accessibility ? '内容已复制。自动粘贴需要在系统设置中授权辅助功能。' : '内容已复制，请切回目标应用粘贴。' };
     mainWindow.hide();
-    const result = await native('paste', targetApp.pid);
+    closePreview();
+    const result = await native('paste', targetApp.pid, targetApp.bundleId || '', targetApp.launchTime || 0);
     if (!result.ok) { await showPanel(); return { ok: false, copied: true, error: '目标应用不可用，内容已复制到剪贴板。' }; }
-  } else if (!TEST_MODE) mainWindow.hide();
+  } else if (!TEST_MODE) { mainWindow.hide(); closePreview(); }
   return { ok: true, copied: true };
 }
 
@@ -158,6 +237,7 @@ function registerIPC() {
   const handlers = {
     'library:get': () => snapshot(),
     'item:get': (_event, id) => { const item = store.get(id); return item?.asset ? { ...item, body: `data:image/png;base64,${store.readAsset(item.asset).toString('base64')}` } : item; },
+    'item:detail': (_event, id) => itemDetail(id),
     'item:copy': (_event, id, options) => copy(id, options),
     'item:update': (_event, id, changes) => { store.update(id, changes || {}); emit(); return snapshot(); },
     'item:delete': (_event, ids) => { if (!Array.isArray(ids) || ids.length > 10000) throw new Error('Invalid selection'); store.delete(ids); emit(); return snapshot(); },
@@ -171,19 +251,54 @@ function registerIPC() {
     },
     'board:save': (_event, board) => { const saved = store.saveBoard(board || {}); emit(); return saved; },
     'board:delete': (_event, id) => { store.deleteBoard(id); emit(); return snapshot(); },
+    'board:reorder': (_event, ids) => { store.reorderBoards(ids); emit(); return snapshot(); },
+    'board:reorderItems': (_event, id, ids) => { store.reorderBoardItems(id, ids); emit(); return snapshot(); },
+    'board:pin': (_event, ids, boardId, remove) => { store.pinItems(ids, boardId, !!remove); emit(); return snapshot(); },
+    'preview:open': (_event, id, options) => showPreview(id, options),
+    'preview:get': () => getPreviewState(),
+    'preview:close': closePreview,
+    'preview:dirty': (event, value) => { if (event.sender === previewWindow?.webContents) previewDirty = !!value; },
+    'preview:save': (_event, changes) => {
+      if (!previewState) throw new Error('Preview closed');
+      store.update(previewState.id, changes || {}); previewDirty = false; emit(); return snapshot();
+    },
+    'preview:navigate': (_event, direction) => {
+      if (!previewState || previewDirty || ![-1, 1].includes(direction)) return false;
+      const ids = previewState.ids.filter(id => !!store.get(id)), index = ids.indexOf(previewState.id), next = ids[index + direction];
+      if (!next) return false;
+      previewState = { ...previewState, id: next, ids, mode: 'view' }; previewWindow.webContents.send('preview:changed', getPreviewState()); return true;
+    },
+    'item:drag': dragItem,
+    'item:share': async (event, id) => {
+      const item = store.get(id); if (!item) throw new Error('项目已被删除');
+      const sharingItem = transfers.sharingItem(item);
+      if (!TEST_MODE) {
+        suppressBlur = true;
+        activeShare = new ShareMenu(sharingItem);
+        activeShare.popup({ window: BrowserWindow.fromWebContents(event.sender), callback: () => { suppressBlur = false; activeShare = null; } });
+      }
+      return sharingItem;
+    },
+    'item:reveal': (_event, id, index = 0) => {
+      const item = store.get(id); if (!item) throw new Error('项目已被删除');
+      const files = fileDetails(item);
+      if (!Number.isInteger(index) || !files[index]?.exists) throw new Error('原始文件已移动或删除');
+      if (!TEST_MODE) shell.showItemInFolder(files[index].path); return files[index].path;
+    },
     'settings:save': (_event, changes) => {
       const settings = sanitizeSettings(changes || {}, store.data.settings);
-      const previousHotkey = store.data.settings.hotkey;
-      if (settings.hotkey !== previousHotkey) registerHotkey(settings.hotkey);
+      const previous = store.data.settings;
+      const shortcutsChanged = settings.hotkey !== previous.hotkey || settings.stackHotkey !== previous.stackHotkey;
+      if (shortcutsChanged) hotkeys.apply(settings);
       try { store.settings(settings); }
-      catch (error) { if (settings.hotkey !== previousHotkey) registerHotkey(previousHotkey); throw error; }
-      nativeTheme.themeSource = settings.theme;
+      catch (error) { if (shortcutsChanged) hotkeys.apply(previous); throw error; }
+      applyRuntimeSettings();
       if (!TEST_MODE) app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin });
       emit(); return snapshot();
     },
     'settings:open': openSettings, 'permission:get': () => native('permission'),
     'permission:open': () => shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'),
-    'panel:hide': () => mainWindow.hide(),
+    'panel:hide': () => { closePreview(); mainWindow.hide(); },
     'stack:toggle': () => { stackMode = !stackMode; if (!stackMode) stack = []; emit(); return stackMode; },
     'stack:add': (_event, id) => { if (!store.get(id)) throw new Error('Invalid item'); if (!stack.includes(id)) stack.push(id); emit(); return stack; },
     'stack:next': async () => { const id = stack[0]; if (!id) return { ok: false, error: 'Stack 为空' }; const result = await copy(id, { paste: true }); if (result.ok) stack.shift(); emit(); return result; },
@@ -197,7 +312,7 @@ function registerIPC() {
     }
   };
   for (const [channel, handler] of Object.entries(handlers)) ipcMain.handle(channel, (event, ...args) => {
-    if (![mainWindow?.webContents, settingsWindow?.webContents].includes(event.sender) || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted IPC sender');
+    if (![mainWindow?.webContents, settingsWindow?.webContents, previewWindow?.webContents].includes(event.sender) || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted IPC sender');
     return handler(event, ...args);
   });
 }
@@ -210,6 +325,7 @@ else {
       store = new ClipStore(app.getPath('userData'), { legacyDirectories: TEST_MODE || process.env.PASTE_DATA_DIR ? []
         : ['paste-like', 'Paste Like'].map(name => path.join(app.getPath('appData'), name)) });
       nativeTheme.themeSource = store.data.settings.theme;
+      transfers = new Transfers(store);
       if (TEST_MODE && process.env.PASTE_TEST_SEED && !store.data.items.length) {
         const seed = JSON.parse(fs.readFileSync(process.env.PASTE_TEST_SEED, 'utf8'));
         for (const item of seed) store.add(item);
@@ -218,17 +334,27 @@ else {
         frame: false, transparent: true, resizable: false, movable: false, minimizable: false, maximizable: false,
         fullscreenable: false, alwaysOnTop: true, skipTaskbar: true, title: 'Paste Easy', vibrancy: 'under-window' });
       mainWindow.setAlwaysOnTop(true, 'pop-up-menu');
-      mainWindow.on('blur', () => { if (!TEST_MODE && !suppressBlur && !mainWindow.webContents.isDevToolsOpened()) mainWindow.hide(); });
-      registerIPC(); createTray();
+      mainWindow.on('blur', () => setTimeout(() => {
+        if (!TEST_MODE && !suppressBlur && !previewOpening && !previewWindow?.isVisible() && !mainWindow.webContents.isDevToolsOpened()) mainWindow.hide();
+      }, 100));
+      hotkeys = new GlobalHotkeys(globalShortcut, {
+        history: () => mainWindow.isVisible() ? mainWindow.hide() : showPanel(),
+        stack: () => { stackMode = true; emit(); showPanel('stack'); }
+      }, TEST_MODE);
+      registerIPC(); applyRuntimeSettings();
       if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash };
-      try { registerHotkey(store.data.settings.hotkey); } catch (error) { report(error); }
+      try { hotkeys.apply(store.data.settings); } catch (error) { report(error); }
       for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(event, () => { if (mainWindow.isVisible()) placePanel(); });
       app.on('activate', () => showPanel());
       mainWindow.webContents.once('did-finish-load', () => { if (process.argv.includes('--show') || TEST_MODE) showPanel(); });
       if (!TEST_MODE) pollTimer = setInterval(poll, 650);
-      if (process.platform === 'darwin') app.dock.hide();
+      mainWindow.on('close', event => { if (!quitting) { event.preventDefault(); if (store.data.settings.background) mainWindow.hide(); else app.quit(); } });
     } catch (error) { console.error(error); dialog.showErrorBox('Paste Easy 无法加载历史', `${error.message}\n原始数据未被覆盖。`); app.quit(); }
   });
 }
+app.on('before-quit', event => {
+  if (previewWindow && !previewWindow.isDestroyed()) { event.preventDefault(); quitAfterPreview = true; closePreview(); return; }
+  quitting = true;
+});
 app.on('will-quit', () => { globalShortcut.unregisterAll(); clearInterval(pollTimer); });
 app.on('window-all-closed', event => event.preventDefault());

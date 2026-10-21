@@ -1,9 +1,9 @@
-const { hash } = require('./store');
+const { hash, textSignature } = require('./store');
 
 // Electron 45 uses asynchronous ClipboardItem objects. Read every format from
 // the same item so text and rich formats cannot come from different copies.
 class ClipboardService {
-  constructor({ clipboard, ClipboardItem, nativeImage }) { Object.assign(this, { clipboard, ClipboardItem, nativeImage }); }
+  constructor({ clipboard, ClipboardItem, nativeImage, fileBridge }) { Object.assign(this, { clipboard, ClipboardItem, nativeImage, fileBridge }); }
 
   async read() {
     const entries = await this.clipboard.read();
@@ -11,16 +11,26 @@ class ClipboardService {
     const first = entries[0];
     if (!first) return { formats: [], text: '', html: '', rtf: '', image: null, files: [] };
     const text = async type => first.types.includes(type) ? (await first.getType(type)).text() : '';
-    const [plain, html, rtf, uri] = await Promise.all([text('text/plain'), text('text/html'), text('text/rtf'), text('text/uri-list')]);
-    let files = uri.split(/\r?\n/).filter(line => line.startsWith('file://'));
-    const nativeFile = first.types.find(type => /osclipboard.*public\.file-url/.test(type));
-    if (!files.length && nativeFile) files = [(await first.getType(nativeFile)).text()].filter(Boolean);
-    // Resolve nested promises before using the native file payload.
-    files = (await Promise.all(files)).filter(file => file.startsWith('file://'));
+    const [plain, html, rtf] = await Promise.all([text('text/plain'), text('text/html'), text('text/rtf')]);
+    const paths = await Promise.all(entries.map(async entry => {
+      if (entry.types.includes('text/uri-list')) {
+        const uri = await (await entry.getType('text/uri-list')).text();
+        const files = uri.split(/\r?\n/).filter(line => line.startsWith('file://'));
+        if (files.length) return files;
+      }
+      const nativeFile = entry.types.find(type => /osclipboard.*public\.file-url/.test(type));
+      const file = nativeFile ? await (await entry.getType(nativeFile)).text() : '';
+      return file.startsWith('file://') ? [file] : [];
+    }));
+    let files = [...new Set(paths.flat())];
+    if (this.fileBridge && (files.length || formats.some(type => /file-url|uri-list|filenames/i.test(type)))) {
+      const native = await this.fileBridge.read();
+      if (Array.isArray(native.files) && native.files.length) files = [...new Set(native.files)];
+    }
     let image = null;
     if (first.types.includes('image/png') && !files.length) image = Buffer.from(await (await first.getType('image/png')).arrayBuffer());
     const value = { formats, text: plain, html, rtf, image, files };
-    value.signature = image ? hash(image) : files.length ? hash(`file:${files.join('\n')}`) : hash(`text:${plain}\nhtml:${html}\nrtf:${rtf}`);
+    value.signature = image ? hash(image) : files.length ? hash(`file:${files.join('\n')}`) : textSignature(plain, html, rtf);
     return value;
   }
 
@@ -32,6 +42,11 @@ class ClipboardService {
     } else if (item.type === 'file') {
       const files = item.body.split('\n').filter(file => file.startsWith('file://'));
       if (!files.length) throw new Error('Invalid file clipboard item');
+      if (this.fileBridge) {
+        const result = await this.fileBridge.write(files);
+        if (!result.ok) throw new Error('无法写入系统文件剪贴板，请检查原生辅助程序。');
+        return;
+      }
       await this.clipboard.write(files.map(file => new this.ClipboardItem({ 'text/uri-list': file,
         'electron application/osclipboard;format="public.file-url"': new Blob([file]) })));
       return;
