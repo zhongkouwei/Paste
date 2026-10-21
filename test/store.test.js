@@ -9,7 +9,8 @@ const { filterItems, imageTextMatches, prune, DEFAULT_SETTINGS, sanitizeSettings
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paste-store-test-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  return new ClipStore(directory, { now: () => '2026-10-21T12:00:00Z' });
+  const store = new ClipStore(directory, { now: () => '2026-10-21T12:00:00Z' });
+  t.after(() => store.close()); return store;
 }
 const clip = body => ({ type: 'text', body, preview: body, title: body, signature: hash(body) });
 
@@ -220,7 +221,8 @@ test('recognized text is versioned, searchable and not allowed to overwrite newe
   const item = store.add({ type: 'image', body: asset, asset, signature: hash('pixels') });
   const result = { status: 'ready', text: 'Invoice 2048', lines: [{ text: 'Invoice 2048' }], engine: 'test' };
   assert.equal(store.setOCR(item.id, item.signature, result), true);
-  assert.deepEqual(filterItems(store.snapshot().items, { query: 'invoice 2048', type: 'image' }).map(value => value.id), [item.id]);
+  assert.deepEqual(store.search('invoice 2048').ids, [item.id]);
+  assert.equal(store.snapshot().items[0].ocr.text, undefined); assert.equal(store.snapshot().items[0].ocr.hasText, true);
   assert.equal(store.snapshot().items[0].ocr.lines, undefined); assert.deepEqual(new ClipStore(store.directory).get(item.id).ocr.lines, result.lines);
   const signature = item.signature;
   store.replaceImage(item.id, { buffer: Buffer.from('changed'), original: Buffer.from('image'), turns: 0, backgroundRemoved: true, foreground: Buffer.from('foreground'), size: { width: 3, height: 2 } });

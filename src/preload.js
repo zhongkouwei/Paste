@@ -7,6 +7,7 @@ const listen = (channel, callback) => {
 };
 contextBridge.exposeInMainWorld('paste', {
   getLibrary: () => invoke('library:get'), getItem: id => invoke('item:get', id),
+  search: query => invoke('library:search', query), dragText: ids => ipcRenderer.sendSync('item:dragText', ids),
   getDetail: id => invoke('item:detail', id),
   copy: (id, options) => invoke('item:copy', id, options),
   recognizeItem: (id, retry = false) => invoke('item:recognize', id, retry), copyImageText: id => invoke('item:copyText', id),

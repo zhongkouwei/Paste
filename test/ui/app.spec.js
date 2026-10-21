@@ -400,6 +400,7 @@ test('real Vision OCR is indexed automatically, selectable, copyable and searcha
   await expect.poll(async () => (await page.evaluate(id => window.paste.getItem(id), id)).ocr?.status, { timeout: 30000 }).toBe('ready');
   const item = await page.evaluate(id => window.paste.getItem(id), id);
   expect(item.ocr.text).toContain('Paste Easy 2048'); expect(item.ocr.text).toContain('剪贴板文字识别');
+  expect((await page.evaluate(asset => window.paste.search(asset), item.asset)).ids).not.toContain(id);
   expect(item.ocr.engine).toBe('apple-vision-text-3'); expect(item.ocr.lines.length).toBeGreaterThanOrEqual(2);
   expect(item.ocr.lines.every(line => line.confidence >= 0 && line.confidence <= 1 && Object.values(line.box).every(value => value >= 0 && value <= 1))).toBe(true);
   const opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id), id);
@@ -608,12 +609,103 @@ test('Stack preserves explicit selection order and consumes only successful copi
   expect(await application.evaluate(({ clipboard }) => clipboard.readText())).toBe(firstBody);
   await page.evaluate(() => window.paste.toggleStack());
 });
+test('large originals remain searchable, copyable, draggable and restorable without flooding catalog IPC', async () => {
+  const body = 'Synthetic long clipboard text 🧪\n'.repeat(7000) + 'unique-tail-482709';
+  const id = await application.evaluate(async (_electron, body) => {
+    const hooks = globalThis.__pasteTest; await hooks.clip.write({ type: 'text', body }); await hooks.poll(); return hooks.store.data.items[0].id;
+  }, body);
+  let compact = (await page.evaluate(() => window.paste.getLibrary())).items.find(item => item.id === id);
+  expect(compact.body).toBe(''); expect(compact.preview.length).toBeLessThanOrEqual(2000); expect(compact.characterCount).toBe([...body].length);
+  expect(JSON.stringify(compact)).not.toContain('unique-tail-482709');
+  await page.keyboard.press('Meta+f'); await page.getByRole('searchbox', { name: '搜索剪贴板' }).fill('unique-tail-482709');
+  await expect(page.locator('.clip-card')).toHaveCount(1); await expect(page.locator('.clip-card')).toHaveAttribute('data-id', id);
+  const drag = await page.locator('.clip-card').evaluate(node => {
+    const dataTransfer = new DataTransfer(); node.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer }));
+    document.dispatchEvent(new DragEvent('dragend', { bubbles: true })); return dataTransfer.getData('text/plain');
+  });
+  expect(drag).toBe(body);
+  await page.evaluate(id => window.paste.copy(id, { paste: false }), id);
+  expect(await application.evaluate(({ clipboard }) => clipboard.readText())).toBe(body);
+  const disk = JSON.parse(fs.readFileSync(path.join(directory, 'library.json'))).items.find(item => item.id === id);
+  expect(disk.contentAsset).toMatch(/^[a-f0-9]{64}\.json$/); expect(disk.body).toBeUndefined();
+  expect(await application.evaluate((_electron, id) => globalThis.__pasteTest.store.exportData().items.find(item => item.id === id).body, id)).toBe(body);
+  await application.close(); application = await launchApplication(); page = await application.firstWindow();
+  await page.waitForFunction(() => document.body.dataset.panelReady === 'true');
+  expect((await page.evaluate(id => window.paste.getItem(id), id)).body).toBe(body);
+  await page.keyboard.press('Meta+f'); await page.getByRole('searchbox', { name: '搜索剪贴板' }).fill('unique-tail-482709');
+  await expect(page.locator('.clip-card')).toHaveCount(1); await expect(page.locator('.clip-card')).toHaveAttribute('data-id', id);
+  await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+});
+test('out-of-order search replies cannot replace newer results or paste an obsolete selection', async () => {
+  await application.evaluate(() => {
+    const service = globalThis.__pasteTest.searchService; globalThis.__searchOriginal = service.search;
+    service.search = async function(items, revision, query) {
+      const result = await globalThis.__searchOriginal.call(this, items, revision, query);
+      if (query === 'delayed-no-results') return new Promise(resolve => { globalThis.__releaseSearch = () => resolve(result); });
+      return result;
+    };
+  });
+  try {
+    await page.keyboard.press('Meta+f'); const search = page.getByRole('searchbox', { name: '搜索剪贴板' }); await search.fill('delayed-no-results');
+    await expect.poll(() => application.evaluate(() => !!globalThis.__releaseSearch)).toBe(true);
+    await expect(page.locator('#timeline')).toHaveAttribute('aria-busy', 'true');
+    const before = await application.evaluate(({ clipboard }) => clipboard.readText());
+    await page.locator('#timeline').focus(); await page.keyboard.press('Enter');
+    expect(await application.evaluate(({ clipboard }) => clipboard.readText())).toBe(before);
+    await search.fill('unique-tail-482709'); await expect(page.locator('.clip-card')).toHaveCount(1);
+    const current = await page.locator('.clip-card').getAttribute('data-id');
+    await application.evaluate(() => globalThis.__releaseSearch());
+    await expect(page.locator('.clip-card')).toHaveCount(1); await expect(page.locator('.clip-card')).toHaveAttribute('data-id', current);
+    await expect(search).toHaveValue('unique-tail-482709');
+    await expect(page.locator('#timeline')).toHaveAttribute('aria-busy', 'false');
+  } finally {
+    await application.evaluate(() => { globalThis.__releaseSearch?.(); globalThis.__pasteTest.searchService.search = globalThis.__searchOriginal; delete globalThis.__releaseSearch; delete globalThis.__searchOriginal; });
+  }
+  await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+});
+test('background library revisions preserve the chosen search result rather than resetting to the first item', async () => {
+  await application.evaluate(() => {
+    const hooks = globalThis.__pasteTest;
+    for (const body of ['Selection marker first', 'Selection marker second']) hooks.store.add({ type: 'text', body, title: body, preview: body });
+    hooks.imageText.onChanged();
+  });
+  await page.keyboard.press('Meta+f'); await page.getByRole('searchbox', { name: '搜索剪贴板' }).fill('Selection marker');
+  await expect(page.locator('.clip-card')).toHaveCount(2); await page.locator('.clip-card').nth(1).click();
+  const selected = await page.locator('.clip-card.selected').getAttribute('data-id');
+  await page.evaluate(async () => {
+    const { settings } = await window.paste.getLibrary();
+    await Promise.all([window.paste.saveSettings({ theme: settings.theme }), window.paste.saveSettings({ theme: settings.theme })]);
+  });
+  await expect(page.locator('#timeline')).toHaveAttribute('aria-busy', 'false');
+  await expect(page.locator('.clip-card.selected')).toHaveAttribute('data-id', selected);
+  await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+});
+test('main IPC remains responsive while the worker builds a real large-text index', async () => {
+  test.setTimeout(60000);
+  await application.evaluate(async () => {
+    const hooks = globalThis.__pasteTest; if (hooks.searchService.worker) await hooks.searchService.worker.terminate();
+    const body = 'Synthetic large index content '.repeat(32000), createdAt = new Date().toISOString();
+    for (let n = 0; n < 100; n++) hooks.store.data.items.push({ id: `stress-${n}`, type: 'text', body: `${body}stress-tail-${n}`,
+      signature: hooks.hash(`${body}${n}`), title: `Stress ${n}`, createdAt, boardIds: [], preview: body.slice(0, 2000) });
+    hooks.store.persist(); hooks.imageText.onChanged();
+  });
+  try {
+    await page.keyboard.press('Meta+f'); await page.getByRole('searchbox', { name: '搜索剪贴板' }).fill('stress-tail-99');
+    const library = await page.evaluate(() => window.paste.getLibrary());
+    expect(library.items.some(item => item.id === 'stress-99')).toBe(true);
+    expect(await application.evaluate(() => globalThis.__pasteTest.searchService.pending.size)).toBeGreaterThan(0);
+    await expect(page.locator('.clip-card')).toHaveCount(1); await expect(page.locator('.clip-card')).toHaveAttribute('data-id', 'stress-99');
+  } finally {
+    await page.evaluate(() => window.paste.deleteItems(Array.from({ length: 100 }, (_, n) => `stress-${n}`)));
+    await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+  }
+});
 test('large libraries remain virtualized and can navigate to the last clip', async () => {
   await application.evaluate(({ BrowserWindow }) => {
     const store = globalThis.__pasteTest.store;
     const createdAt = new Date().toISOString();
     for (let index = 0; index < 2000; index++) store.data.items.push({ id: `large-${index}`, signature: `large-${index}`, type: 'text', body: `Row ${index}`, preview: `Row ${index}`, title: `Row ${index}`, createdAt, boardIds: [] });
-    BrowserWindow.getAllWindows()[0].webContents.send('library:changed', store.snapshot());
+    store.persist(); BrowserWindow.getAllWindows()[0].webContents.send('library:changed', store.snapshot());
   });
   await page.locator('#timeline').focus(); await page.keyboard.press('End');
   await expect(page.locator('.clip-card.selected')).toContainText('Row 1999');

@@ -12,6 +12,7 @@ const { GlobalHotkeys } = require('./hotkeys');
 const { ClipboardMonitor } = require('./monitor');
 const { ImageProcessor, ImageDraft } = require('./image-editor');
 const { ImageTextIndex } = require('./image-text');
+const { SearchService } = require('./search-service');
 const clip = new ClipboardService({ ...electron, fileBridge: process.platform === 'darwin' ? {
   read: () => native('read-files'), write: files => nativeInput('write-files', { files })
 } : undefined });
@@ -22,6 +23,7 @@ app.setPath('userData', process.env.PASTE_DATA_DIR ? path.resolve(process.env.PA
 let mainWindow, settingsWindow, previewWindow, tray, store, transfers, pollTimer, targetApp;
 let previewState = null, previewDirty = false, previewOpening = false, activeShare;
 let hotkeys, monitor, imageProcessor, imageDraft, imageText, capabilities = {}, processingClosing = false, processingStopped = false;
+let searchService;
 let quitting = false, quitAfterPreview = false, copyQueue = Promise.resolve(), settingsQueue = Promise.resolve();
 let copyRequest = 0;
 let sourceCache = null, lastSourceAt = 0, suppressBlur = false;
@@ -48,7 +50,8 @@ async function nativeInput(command, data, timeout = 4000, options = {}) {
 function snapshot() { return { ...store.snapshot(), capabilities, status: { error: lastError, stackMode, stackCount: stack.length } }; }
 function emit() {
   stack = stack.filter(id => !!store.get(id));
-  for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('library:changed', snapshot());
+  const library = snapshot();
+  for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('library:changed', library);
   if (previewWindow && !previewWindow.isDestroyed()) {
     if (store.get(previewState?.id)) previewWindow.webContents.send('preview:changed', getPreviewState());
     else closePreview();
@@ -307,8 +310,24 @@ async function performCopy(id, { paste = false, plain = false } = {}) {
 }
 
 function registerIPC() {
+  // DataTransfer must be populated during dragstart, not after an async IPC reply.
+  ipcMain.on('item:dragText', (event, ids) => {
+    try {
+      if (!Array.isArray(ids) || ids.length > 10000) throw new Error('Invalid drag selection');
+      let bytes = 0;
+      const parts = [...new Set(ids)].map(id => {
+        const item = store.get(id); if (!item) throw new Error('项目已被删除');
+        if (['image', 'file'].includes(item.type)) return '';
+        bytes += Buffer.byteLength(item.body) + 1;
+        if (bytes > 64 * 1024 * 1024) throw new Error('拖出文字超过 64 MB 限制');
+        return item.body;
+      }).filter(Boolean);
+      event.returnValue = { text: parts.join('\n') };
+    } catch (error) { event.returnValue = { error: error.message }; }
+  });
   const handlers = {
     'library:get': () => snapshot(),
+    'library:search': (_event, query) => searchService.search(store.data.items, store.revision, query),
     'item:get': (_event, id) => { const item = store.get(id); return item?.asset ? { ...item, body: `data:image/png;base64,${store.readAsset(item.asset).toString('base64')}` } : item; },
     'item:detail': (_event, id) => itemDetail(id),
     'item:copy': (_event, id, options) => copy(id, options),
@@ -419,6 +438,7 @@ else {
       imageProcessor = new ImageProcessor(app.getPath('userData'), (command, data, options) => nativeInput(command, data, 30000, options));
       capabilities = await native('image-capabilities');
       imageText = new ImageTextIndex({ store, processor: imageProcessor, readImage: imageBytes, onChanged: emit });
+      searchService = new SearchService();
       monitor = new ClipboardMonitor({
         readVersion: async () => {
           const value = (await native('change-count')).count;
@@ -444,7 +464,7 @@ else {
         stack: () => { stackMode = true; emit(); showPanel('stack'); }
       }, TEST_MODE);
       registerIPC(); applyRuntimeSettings();
-      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, imageProcessor, imageText };
+      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, imageProcessor, imageText, searchService };
       try { hotkeys.apply(store.data.settings); } catch (error) { report(error); }
       for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(event, () => { if (mainWindow.isVisible()) placePanel(); });
       app.on('activate', () => showPanel());
@@ -462,9 +482,9 @@ app.on('before-quit', event => {
     event.preventDefault(); clearInterval(pollTimer);
     if (!processingClosing) {
       processingClosing = true;
-      Promise.allSettled([imageText?.close(), imageProcessor?.close()]).then(() => { processingStopped = true; app.quit(); });
+      Promise.allSettled([imageText?.close(), imageProcessor?.close(), searchService?.close()]).then(() => { processingStopped = true; app.quit(); });
     }
   }
 });
-app.on('will-quit', () => { globalShortcut.unregisterAll(); clearInterval(pollTimer); });
+app.on('will-quit', () => { globalShortcut.unregisterAll(); clearInterval(pollTimer); store?.close(); });
 app.on('window-all-closed', event => event.preventDefault());

@@ -4,7 +4,7 @@ macOS 本地剪贴板工具。当前以本机 Paste 7.0.2 的可见行为为参�
 
 ## 开发与验证
 
-环境：macOS arm64、Node.js >= 22.12、Xcode Command Line Tools。依赖锁定在 package-lock.json；Electron 45 的剪贴板接口为异步 ClipboardItem。
+环境：macOS arm64、Node.js >= 22.13、Xcode Command Line Tools。依赖锁定在 package-lock.json；Electron 45 的剪贴板接口为异步 ClipboardItem。全文索引使用运行时内置的 node:sqlite/FTS5，无新增第三方搜索依赖。
 
 ```bash
 npm ci --registry=https://registry.npmjs.org
@@ -30,6 +30,7 @@ npm run build
 npm run test:packaged
 npm audit --omit=dev --registry=https://registry.npmjs.org
 npm run release:verify
+node scripts/benchmark-store.js 1000
 ```
 
 - `check`：所有源码、脚本与测试的 JavaScript 语法检查。
@@ -43,11 +44,15 @@ npm run release:verify
 
 正式数据位于 `~/Library/Application Support/Paste Easy/`。首次升级会合并该目录及 `paste-like`、`Paste Like` 的旧 `clipboard-history.json`，按内容去重并保留固定状态；原始文件不修改。不读取原版 Paste 的数据库。
 
-`library.json` 原子写入并保留 `.bak`，图片原始 PNG 独立存入 `assets/`；文件权限为 0600。主文件损坏时保留损坏副本并恢复有效备份；无有效备份时停止启动，不用空历史覆盖原文件。当前尚未实现静态加密和图片垃圾回收，不能将文件权限等同于加密或安全擦除。
+`library.json` 使用 version 3 元数据清单，原子写入并保留 `.bak`。大于 16 KiB 的正文/HTML/RTF/OCR 等内容以 SHA-256 命名的不可变 JSON 文件存入 `contents/`，图片原始 PNG 独立存入 `assets/`；目录权限 0700、文件权限 0600。读取内容时核对哈希；主文件或内容损坏时保留损坏副本并恢复有效备份，无有效备份则停止启动，不用空历史覆盖原文件。原子提交后的目录同步失败会明确警告并保持内存与已提交文件一致，不假报回滚。
+
+version 1/2 库在读取时保留原文件，下一次成功保存迁移；原始内联库另存为 `library-v2-<sha256>.json`，主文件和 `.bak` 都使用 version 3，防止旧构建自动恢复旧备份覆盖新历史。旧构建不支持新库，不应混用；新程序遇到未知更高版本也停止，不降级恢复。迁移副本、旧内容与原始图片均未自动回收，尚未实现静态加密或安全擦除。完整备份必须包含清单、`contents/`、`assets/` 及需要的备份引用，不能只复制清单。
 
 删除历史保留 Pinboard 中的项目；删除 Pinboard 不删除其项目。正在编辑的项目在窗口关闭前免于自动到期/容量清理和清空历史，显式删除会被拒绝。历史期限变更立即执行，固定内容豁免。`PASTE_DATA_DIR` 可指定隔离数据目录；`--test-mode` 关闭自动监听与全局快捷键，仅用于开发验收。
 
-监听按系统剪贴板变化计数读取内容；未变化时不重复读取/解码图片，读取途中变化会丢弃旧候选并重试。暂停期间不补录，设置保存和自主复制分别串行执行。HTML 签名忽略 Electron 添加的已知编码前缀；图片按尺寸与解码像素识别，旧图片记录首次升级会一次性迁移签名，保留 ID/固定状态和原始文件。全量 JSON 写入、全库 IPC 和原图存储回收仍需继续优化。
+监听按系统剪贴板变化计数读取内容；未变化时不重复读取/解码图片，读取途中变化会丢弃旧候选并重试。暂停期间不补录，设置保存和自主复制分别串行执行。HTML 签名忽略 Electron 添加的已知编码前缀；图片按尺寸与解码像素识别，旧图片记录首次升级会一次性迁移签名，保留 ID/固定状态和原始文件。
+
+主面板仅接收最多 2000 字符的展示摘要，不接收大正文/HTML/RTF/OCR 全文；复制、拖出、编辑和导出仍取完整内容。全文搜索在工作线程的内存 SQLite FTS5 trigram 索引中执行，并增量更新，结果带库版本以拒绝过期响应；支持中英文、单/双字符、字面标点与多词组合，不把输入当 SQL/FTS 语法。索引不持久化，重启后首次搜索需重建；查询限 2048 个 UTF-16 单元、32 词。首次内容拆分、内存占用、全量元数据清单/IPC、图片缩略图与资产回收仍需优化，详见 docs/PARITY.md。
 
 导出 JSON 包含当前图片、可恢复原图和已有前景图，采用 0600 临时文件原子替换；不把本机图片资产路径当作完整备份。OCR 缓存保存在同一库中，绑定当前图片签名，图片改变后重新识别；行/词定位按需读取，不在每次全库通知中传输。导入恢复流程尚未实现。项目 `.npmrc` 和锁文件使用公开 npm registry，已通过独立缓存的重新安装；审计也必须使用公开库。本机全局默认镜像的零漏洞结果不能代替公开漏洞库，构建依赖仍有 8 项 moderate。
 
@@ -68,6 +73,7 @@ npm run release:verify
 - `src/image-text.js` / `native/images.m`：版本化 OCR 队列、系统 Vision 识别/分割与 Core Image 处理。
 - `src/preview.*` / `src/transfers.js`：独立预览、受隔离的富文本显示、原始文件拖出与系统分享。
 - `src/store.js` / `src/model.js`：原子存储、迁移、Pinboard 与搜索策略。
+- `src/content-files.js` / `src/search*.js`：不可变内容文件、工作线程全文索引、增量更新和失败恢复。
 - `src/renderer.js` / `src/styles.css`：虚拟横向卡片、搜索、多选、预览编辑与 Stack。
 - `src/settings.*`：独立设置窗口。
 - `native/bridge.m`：前台应用、原生图标、辅助功能状态与明确目标的粘贴。

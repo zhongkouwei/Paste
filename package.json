@@ -4,6 +4,7 @@
   "description": "A macOS clipboard history app inspired by Paste.",
   "productName": "Paste Easy",
   "main": "src/main.js",
+  "engines": { "node": ">=22.13.0" },
   "scripts": {
     "start": "electron .",
     "dev": "electron .",

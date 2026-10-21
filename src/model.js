@@ -29,7 +29,8 @@
       if (type !== 'all' && item.type !== type && !(type === 'text' && item.type === 'code')) return false;
       if (source && item.source?.bundleId !== source) return false;
       if (after && item.createdAt < after) return false;
-      const haystack = `${item.title}\n${item.body || ''}\n${item.ocr && item.ocr.signature === item.signature ? item.ocr.text : ''}\n${item.source?.name || ''}\n${item.note || ''}`.toLocaleLowerCase();
+      if (!terms.length) return true;
+      const haystack = searchText(item);
       return terms.every(term => haystack.includes(term));
     });
     const order = boards.find(entry => entry.id === board)?.itemOrder;
@@ -38,6 +39,10 @@
       filtered.sort((a, b) => (positions.get(a.id) ?? Infinity) - (positions.get(b.id) ?? Infinity));
     }
     return filtered;
+  }
+
+  function searchText(item) {
+    return `${item.title}\n${item.type === 'image' ? '' : item.body || ''}\n${item.ocr && item.ocr.signature === item.signature ? item.ocr.text : ''}\n${item.source?.name || ''}\n${item.note || ''}`.toLocaleLowerCase();
   }
 
   function relativeTime(value, locale = 'zh-CN', now = Date.now()) {
@@ -114,5 +119,5 @@
     return (aliases[key] || key).toLowerCase() === event.key.toLowerCase();
   }
 
-  return { TYPES, COLORS, DEFAULT_SETTINGS, classifyText, filterItems, relativeTime, imageTextMatches, prune, sanitizeSettings, modifierPressed, shortcutMatches };
+  return { TYPES, COLORS, DEFAULT_SETTINGS, classifyText, filterItems, searchText, relativeTime, imageTextMatches, prune, sanitizeSettings, modifierPressed, shortcutMatches };
 });

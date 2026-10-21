@@ -7,6 +7,7 @@ const state = { items: [], boards: [], settings: {}, status: {}, board: 'history
 const labels = { text: '文本', code: '文本', link: '链接', image: '图片', color: '颜色', file: '文件' };
 const icons = { text: 'text', code: 'code', link: 'link', image: 'image', color: 'palette', file: 'file' };
 let toastTimer, renderFrame, dragging = null;
+let searchRequest = 0, searchPending = false, queryMatches = new Set(), searchSelection;
 const imageTextCache = new Map(), imageTextPending = new Set();
 
 function icon(name) { return `<i data-lucide="${name}"></i>`; }
@@ -14,17 +15,39 @@ function escape(value) { return String(value ?? '').replace(/[&<>"']/g, ch => ({
 function safeColor(value) { return /^#[a-f0-9]{6}$/i.test(value) ? value : '#77808a'; }
 function safeImage(value) { return /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(value || '') ? value : ''; }
 function refreshIcons() { lucide.createIcons({ attrs: { 'aria-hidden': 'true' } }); }
-function visibleItems() { return filterItems(state.items, state); }
+function visibleItems() { return filterItems(state.query.trim() ? state.items.filter(item => queryMatches.has(item.id)) : state.items, { ...state, query: '' }); }
 function toast(message) { $('#status').textContent = message; $('#status').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('#status').hidden = true; }, 6000); }
 async function attempt(task) { try { return await task(); } catch (error) { toast(error.message); return undefined; } }
 
 function accept(library) {
   if (!library) return;
-  Object.assign(state, { items: library.items, boards: library.boards, settings: library.settings, capabilities: library.capabilities || {}, status: library.status || {} });
+  if (Number.isInteger(state.revision) && library.revision < state.revision) return;
+  Object.assign(state, { items: library.items, boards: library.boards, settings: library.settings, revision: library.revision, capabilities: library.capabilities || {}, status: library.status || {} });
   if (state.board !== 'history' && !state.boards.some(board => board.id === state.board)) state.board = 'history';
   if (state.status.error) toast(state.status.error);
   if (library.recovery) toast(library.recovery);
-  render();
+  requestSearch(true);
+}
+
+async function requestSearch(preserveSelection = false) {
+  const request = ++searchRequest, query = state.query, revision = state.revision;
+  if (!preserveSelection) searchSelection = null;
+  else if (state.selected.size || searchSelection?.query !== query) searchSelection = { query, ids: [...state.selected] };
+  if (!query.trim()) { searchPending = false; $('#timeline').setAttribute('aria-busy', 'false'); render(); return; }
+  searchPending = true; queryMatches = new Set(); $('#timeline').setAttribute('aria-busy', 'true'); render();
+  try {
+    const result = await api.search(query);
+    if (request !== searchRequest || query !== state.query) return;
+    if (result.revision !== revision) { accept(await api.getLibrary()); return; }
+    queryMatches = new Set(result.ids);
+    if (searchSelection?.query === query) {
+      state.selected = new Set(searchSelection.ids.filter(id => queryMatches.has(id)));
+      state.anchor = Math.max(0, visibleItems().findIndex(item => item.id === [...state.selected][0]));
+    }
+  } catch (error) { if (request === searchRequest) toast(error.message); }
+  finally {
+    if (request === searchRequest) { searchPending = false; searchSelection = null; $('#timeline').setAttribute('aria-busy', 'false'); render(); }
+  }
 }
 
 function renderBoards() {
@@ -94,7 +117,7 @@ function renderCards() {
   $('#track').style.width = `${Math.max(width, items.length * 264 + 24)}px`;
   $('#track').innerHTML = items.slice(first, end).map((item, offset) => card(item, first + offset)).join('');
   $('#emptyState').hidden = items.length > 0;
-  $('#emptyTitle').textContent = state.query || state.type !== 'all' || state.source || state.after ? '无结果'
+  $('#emptyTitle').textContent = searchPending ? '正在搜索…' : state.query || state.type !== 'all' || state.source || state.after ? '无结果'
     : state.board === 'history' ? '剪贴板为空' : 'Pinboard 为空';
   refreshIcons();
   paintImageMatches();
@@ -103,7 +126,7 @@ function paintImageMatches() {
   if (!state.query.trim()) return;
   for (const node of document.querySelectorAll('.clip-card[data-type=image]')) {
     const item = state.items.find(value => value.id === node.dataset.id);
-    if (!item?.ocr?.text || item.ocr.signature !== item.signature || !item.size?.width || !item.size?.height) continue;
+    if (!item?.ocr?.hasText || item.ocr.signature !== item.signature || !item.size?.width || !item.size?.height) continue;
     const key = `${item.id}:${item.signature}:${item.ocr.completedAt || ''}`, cached = imageTextCache.get(key);
     if (!cached) {
       if (!imageTextPending.has(key)) {
@@ -151,7 +174,7 @@ function select(index, { extend = false, toggle = false } = {}) {
   } else { state.anchor = index; state.selected = new Set([items[index].id]); }
   scrollToIndex(index); renderCards();
 }
-function resetFilter() { state.selected.clear(); state.anchor = 0; $('#timeline').scrollLeft = 0; render(); }
+function resetFilter() { state.selected.clear(); state.anchor = 0; $('#timeline').scrollLeft = 0; requestSearch(); }
 function setBoard(id) { state.board = id; closeMenu(); resetFilter(); }
 function toggleSearch(open) {
   state.searching = open; document.body.classList.toggle('searching', open);
@@ -267,7 +290,8 @@ $('#timeline').addEventListener('dragstart', event => {
   const ids = state.selected.has(card.dataset.id) ? [...state.selected] : [card.dataset.id];
   dragging = { type: 'items', value: ids };
   event.dataTransfer.setData('application/x-paste-easy-items', JSON.stringify(ids));
-  const text = ids.map(id => state.items.find(item => item.id === id)).filter(item => item && !['image', 'file'].includes(item.type)).map(item => item.body).join('\n');
+  const { text, error } = api.dragText(ids);
+  if (error) { event.preventDefault(); toast(error); return; }
   if (text) event.dataTransfer.setData('text/plain', text);
   event.dataTransfer.effectAllowed = 'copyMove';
 });
