@@ -38,10 +38,19 @@ svg { width: 18px; height: 18px; stroke-width: 1.7; flex-shrink: 0; }
 #stackButton { opacity: 0; }
 .toolbar-end:hover #stackButton, #stackButton:focus-visible, #stackButton.active { opacity: 1; }
 #stackCount { position: absolute; right: -3px; top: -6px; background: var(--selected); color: white; font-size: 9px; border-radius: 8px; min-width: 15px; padding: 1px 3px; }
-.search-box { display: flex; width: 480px; max-width: 50vw; height: 32px; align-items: center; gap: 5px; padding: 2px 7px; border: 1px solid var(--line); background: var(--hover); border-radius: 7px; color: var(--muted); }
+.search-box { display: flex; width: 480px; max-width: 50vw; flex-shrink: 0; height: 32px; align-items: center; gap: 5px; padding: 2px 7px; border: 1px solid var(--line); background: var(--hover); border-radius: 7px; color: var(--muted); }
 .search-box:focus-within { outline: 3px solid color-mix(in srgb, var(--selected) 50%, transparent); }
 .search-box > svg { width: 20px; height: 20px; }
-.search-box input { width: 100%; min-width: 0; padding: 0; outline: 0; border: 0; background: transparent; font-size: 14px; }
+.search-composer { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; height: 26px; overflow: hidden; }
+.search-box input { width: 0; min-width: 80px; flex: 1; padding: 0; outline: 0; border: 0; background: transparent; color: var(--text); font-size: 14px; }
+.filter-tokens { display: flex; align-items: center; flex: 0 1 auto; min-width: 0; max-width: calc(100% - 84px); gap: 4px; overflow-x: auto; scrollbar-width: none; scroll-snap-type: x proximity; }
+.filter-token { display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto; max-width: 100%; scroll-snap-align: start; height: 23px; padding: 1px 2px 1px 6px; border-radius: 4px; background: var(--field); color: var(--text); font-size: 11px; }
+.filter-token > span { min-width: 0; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.filter-token .icon-button { width: 18px; height: 18px; padding: 2px; }
+.filter-token svg { width: 12px; height: 12px; }
+#filterCount { position: absolute; right: -3px; top: -4px; min-width: 13px; height: 13px; padding: 0 2px; border-radius: 50%; background: var(--selected); color: white; font-size: 9px; line-height: 13px; text-align: center; }
+.filter-suggestions { top: 52px; min-width: 0; max-width: calc(100vw - 16px); max-height: 235px; }
+.filter-suggestions button { font-size: 12px; }
 input[type=search]::-webkit-search-cancel-button { display: none; }
 body.searching .board span { display: none; }
 body.searching .board { padding: 0 8px; }
@@ -95,11 +104,14 @@ body.quick-keys .quick-key { display: block; }
 .filter-options button { padding: 4px 9px; border-radius: 4px; background: var(--hover); }
 .filter-options button.active { background: var(--selected); color: white; }
 .filter-panel select { width: 100%; padding: 5px; }
+.reset-filters { display: flex; align-items: center; gap: 5px; margin-top: 12px; padding: 4px 0; font-size: 12px; color: var(--muted); }
+.reset-filters svg { width: 14px; height: 14px; }
 @media (max-width: 600px) {
   .toolbar { justify-content: flex-start; padding-left: 16px; }
   .navigation { justify-content: flex-start; gap: 5px; max-width: calc(100% - 48px); }
   .toolbar-end { right: 10px; }
   #stackButton { display: none; }
-  .search-box { width: 100%; max-width: calc(100vw - 150px); }
+  .search-box { width: 100%; max-width: none; flex: 1; min-width: 0; }
+  body.searching .boards { display: none; }
   .board { font-size: 13px; padding: 0 7px; }
 }

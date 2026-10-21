@@ -1,14 +1,16 @@
-/* global lucide, PasteModel */
+/* global lucide, PasteModel, PasteFilters */
 const $ = selector => document.querySelector(selector);
 const api = window.paste;
 const { filterItems, relativeTime, imageTextMatches, COLORS, modifierPressed, shortcutMatches, isComposingKey, itemLocations } = PasteModel;
-const state = { items: [], boards: [], settings: {}, status: {}, board: 'history', query: '', type: 'all', source: '', after: '',
+const { dateRange, nextMidnight, activeFilters, suggestions, applySuggestion } = PasteFilters;
+const state = { items: [], boards: [], settings: {}, status: {}, board: 'history', query: '', type: 'all', source: '', date: '', pinboard: '', sourceName: '', pinboardName: '',
   selected: new Set(), anchor: null, active: null, searching: false, target: '', editingBoard: null, detail: null };
 const labels = { text: '文本', code: '文本', link: '链接', image: '图片', color: '颜色', file: '文件' };
 const icons = { text: 'text', code: 'code', link: 'link', image: 'image', color: 'palette', file: 'file' };
 let toastTimer, renderFrame, dragging = null;
 let searchRequest = 0, searchPending = false, queryMatches = new Set(), searchSelection;
 let composing = false;
+let calendarTimer, suggestionSignature = '', suggestionsDismissed = false;
 const imageTextCache = new Map(), imageTextPending = new Set();
 
 function icon(name) { return `<i data-lucide="${name}"></i>`; }
@@ -17,9 +19,113 @@ function safeColor(value) { return /^#[a-f0-9]{6}$/i.test(value) ? value : '#778
 function safeImage(value) { return /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(value || '') ? value : ''; }
 function refreshIcons() { lucide.createIcons({ attrs: { 'aria-hidden': 'true' } }); }
 function visibleItems() { return filterItems(state.query.trim() ? state.items.filter(item => queryMatches.has(item.id)) : state.items,
-  { ...state, board: state.searching ? 'history' : state.board, query: '' }); }
+  { ...state, ...dateRange(state.date), board: state.searching ? 'history' : state.board, pinboard: state.searching ? state.pinboard : '', query: '' }); }
 function toast(message) { $('#status').textContent = message; $('#status').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('#status').hidden = true; }, 6000); }
 async function attempt(task) { try { return await task(); } catch (error) { toast(error.message); return undefined; } }
+
+function sources() {
+  return [...new Map(state.items.filter(item => typeof item.source?.bundleId === 'string' && item.source.bundleId).map(item => [item.source.bundleId,
+    { ...item.source, name: typeof item.source.name === 'string' && item.source.name ? item.source.name : item.source.bundleId }])).values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+function closeFilters() { $('#filters').hidden = true; $('#filterToggle').setAttribute('aria-expanded', 'false'); }
+function hideSuggestions() { $('#filterSuggestions').hidden = true; }
+function syncOptions(select, entries, value) {
+  // Preserve native controls across background library snapshots.
+  const signature = JSON.stringify(entries);
+  if (select.dataset.options !== signature) {
+    const existing = new Map([...select.options].map(option => [option.value, option]));
+    entries.forEach(([id, label], index) => {
+      const option = existing.get(id) || document.createElement('option'); option.value = id; option.textContent = label;
+      if (select.options[index] !== option) select.insertBefore(option, select.options[index] || null);
+      existing.delete(id);
+    });
+    for (const option of existing.values()) option.remove();
+    select.dataset.options = signature;
+  }
+  select.value = value;
+}
+function renderFilterUI() {
+  const apps = sources(), app = apps.find(value => value.bundleId === state.source), board = state.boards.find(value => value.id === state.pinboard);
+  if (app) state.sourceName = app.name;
+  if (board) state.pinboardName = board.name;
+  const filters = activeFilters(state), tokens = $('#filterTokens');
+  for (const token of [...tokens.children]) if (!filters.some(filter => filter.kind === token.dataset.filter)) token.remove();
+  filters.forEach((filter, index) => {
+    let token = tokens.querySelector(`[data-filter="${filter.kind}"]`);
+    if (!token) {
+      token = document.createElement('span'); token.className = 'filter-token'; token.dataset.filter = filter.kind;
+      const label = document.createElement('span'), remove = document.createElement('button');
+      remove.type = 'button'; remove.className = 'icon-button'; remove.innerHTML = icon('x');
+      remove.onclick = () => setFilter(filter.kind, filter.kind === 'type' ? 'all' : '', true);
+      token.append(label, remove); tokens.insertBefore(token, tokens.children[index] || null);
+    }
+    token.title = `${filter.name}：${filter.label}`; token.firstElementChild.textContent = filter.label;
+    token.lastElementChild.setAttribute('aria-label', `移除${filter.name}筛选：${filter.label}`);
+  });
+  $('#filterCount').hidden = !filters.length; $('#filterCount').textContent = filters.length;
+  $('#resetFilters').disabled = !filters.length;
+  if (!$('#typeFilters').children.length) {
+    for (const [value, name] of Object.entries(PasteFilters.TYPES)) {
+      const button = document.createElement('button'); button.type = 'button'; button.dataset.type = value; button.textContent = name; $('#typeFilters').append(button);
+    }
+  }
+  for (const button of $('#typeFilters').children) { button.classList.toggle('active', button.dataset.type === state.type); button.setAttribute('aria-pressed', String(button.dataset.type === state.type)); }
+  const appOptions = [['', '所有应用'], ...apps.map(app => [app.bundleId, app.name])];
+  if (state.source && !app) appOptions.push([state.source, state.sourceName || state.source]);
+  syncOptions($('#sourceFilter'), appOptions, state.source);
+  const boardOptions = [['', '所有 Pinboard'], ...state.boards.map(board => [board.id, board.name])];
+  if (state.pinboard && !board) boardOptions.push([state.pinboard, state.pinboardName || state.pinboard]);
+  syncOptions($('#pinboardFilter'), boardOptions, state.pinboard); $('#dateFilter').value = state.date;
+  clearTimeout(calendarTimer);
+  if (state.searching && state.date) calendarTimer = setTimeout(render, Math.max(1, nextMidnight() - Date.now()));
+  updateSuggestions();
+}
+function updateSuggestions(force = false) {
+  if (force) suggestionsDismissed = false;
+  const popup = $('#filterSuggestions'), focused = document.activeElement === $('#searchInput') || popup.contains(document.activeElement);
+  if (!state.searching || composing || !$('#filters').hidden || !focused || (suggestionsDismissed && !force)) { hideSuggestions(); return; }
+  const candidates = suggestions(state.query, { ...state, sources: sources() }), signature = JSON.stringify(candidates);
+  if (!candidates.length) { hideSuggestions(); return; }
+  if (signature !== suggestionSignature) {
+    const previous = popup.contains(document.activeElement) ? document.activeElement.dataset.suggestion : null;
+    popup.replaceChildren(); suggestionSignature = signature;
+    for (const candidate of candidates) {
+      const button = document.createElement('button'); button.type = 'button'; button.dataset.suggestion = `${candidate.kind}:${candidate.value}`;
+      button.innerHTML = icon({ type: icons[candidate.value] || 'filter', source: 'app-window', date: 'calendar-days', pinboard: 'pin' }[candidate.kind]);
+      const text = document.createElement('span'); text.textContent = candidate.label; button.append(text);
+      button.onclick = () => {
+        if (composing) return;
+        const query = applySuggestion(state.query, candidate); if (query === null) return;
+        if (candidate.kind === 'pinboard' && !state.boards.some(board => board.id === candidate.value)) return;
+        state.query = query; $('#searchInput').value = query; suggestionsDismissed = false; $('#searchInput').focus();
+        setFilter(candidate.kind, candidate.value, true);
+      };
+      button.onpointermove = () => { button.focus({ preventScroll: true }); };
+      popup.append(button);
+    }
+    if (previous) {
+      const restore = [...popup.children].find(button => button.dataset.suggestion === previous);
+      if (restore) restore.focus({ preventScroll: true });
+      else { suggestionsDismissed = true; hideSuggestions(); $('#searchInput').focus(); return; }
+    }
+    refreshIcons();
+  }
+  const rect = $('#searchBox').getBoundingClientRect();
+  const width = Math.min(rect.width, innerWidth - 32);
+  popup.style.width = `${width}px`; popup.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - width - 8))}px`;
+  popup.style.top = `${rect.bottom + 5}px`; popup.hidden = false;
+}
+function setFilter(kind, value, focus = false) {
+  if (!['type', 'source', 'date', 'pinboard'].includes(kind)) return;
+  state[kind] = value;
+  if (kind === 'source') state.sourceName = sources().find(app => app.bundleId === value)?.name || value;
+  if (kind === 'pinboard') state.pinboardName = state.boards.find(board => board.id === value)?.name || value;
+  closeMenu(); resetFilter();
+  if (focus) {
+    $('#filterTokens').querySelector(`[data-filter="${kind}"]`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    $('#searchInput').focus(); updateSuggestions();
+  }
+}
 
 function accept(library) {
   if (!library) return;
@@ -123,7 +229,7 @@ function renderCards() {
   const active = state.active && document.getElementById(optionID(state.active));
   if (active) $('#timeline').setAttribute('aria-activedescendant', active.id); else $('#timeline').removeAttribute('aria-activedescendant');
   $('#emptyState').hidden = items.length > 0;
-  $('#emptyTitle').textContent = searchPending ? '正在搜索…' : state.query || state.type !== 'all' || state.source || state.after ? '无结果'
+  $('#emptyTitle').textContent = searchPending ? '正在搜索…' : state.query || activeFilters(state).length ? '无结果'
     : state.board === 'history' ? '剪贴板为空' : 'Pinboard 为空';
   refreshIcons();
   paintImageMatches();
@@ -162,7 +268,7 @@ function render() {
   if (!state.selected.size && items.length) { state.anchor = items[0].id; state.selected.add(items[0].id); }
   if (!items.some(item => item.id === state.active)) state.active = [...state.selected][0] || null;
   if (!items.some(item => item.id === state.anchor)) state.anchor = state.active;
-  renderBoards(); renderCards();
+  renderBoards(); renderFilterUI(); renderCards();
 }
 function scrollToIndex(index) {
   const left = 24 + index * 264;
@@ -188,15 +294,15 @@ function resetFilter() { state.selected.clear(); state.anchor = state.active = n
 function clearSearch() {
   state.searching = false; document.body.classList.remove('searching');
   $('#searchBox').hidden = true; $('#searchToggle').hidden = false;
-  state.query = ''; $('#searchInput').value = ''; state.type = 'all'; state.source = ''; state.after = '';
-  $('#sourceFilter').value = ''; $('#dateFilter').value = ''; $('#filters').hidden = true;
+  state.query = ''; $('#searchInput').value = ''; state.type = 'all'; state.source = ''; state.date = ''; state.pinboard = '';
+  closeFilters(); hideSuggestions(); suggestionsDismissed = false;
 }
 function setBoard(id) { clearSearch(); state.board = id; closeMenu(); resetFilter(); }
 function toggleSearch(open) {
   if (open) {
     const wasOpen = state.searching; state.searching = true; document.body.classList.add('searching');
     $('#searchBox').hidden = false; $('#searchToggle').hidden = true;
-    if (!wasOpen) resetFilter(); $('#searchInput').focus();
+    closeFilters(); if (!wasOpen) resetFilter(); $('#searchInput').focus();
   } else { clearSearch(); resetFilter(); $('#timeline').focus(); }
 }
 function showIn(id, destination) {
@@ -340,10 +446,16 @@ document.addEventListener('dragend', clearDrag);
 
 $('#searchToggle').onclick = () => toggleSearch(true);
 $('#searchClear').onclick = () => { $('#searchInput').value = ''; state.query = ''; resetFilter(); $('#searchInput').focus(); };
-$('#searchInput').oninput = event => { state.query = event.target.value; if (!composing && !event.isComposing) resetFilter(); };
-document.addEventListener('compositionstart', () => { composing = true; });
+$('#searchInput').onfocus = () => updateSuggestions();
+// IME draft text stays in the input until composition commits.
+$('#searchInput').oninput = event => {
+  suggestionsDismissed = false;
+  if (!composing && !event.isComposing) { state.query = event.target.value; resetFilter(); }
+  else hideSuggestions();
+};
+document.addEventListener('compositionstart', () => { composing = true; hideSuggestions(); });
 document.addEventListener('compositionend', event => {
-  composing = false; if (event.target === $('#searchInput')) { state.query = event.target.value; resetFilter(); }
+  composing = false; if (event.target === $('#searchInput')) { state.query = event.target.value; suggestionsDismissed = false; resetFilter(); }
 });
 $('#boards').onclick = event => { const button = event.target.closest('[data-board]'); if (button) setBoard(button.dataset.board); };
 $('#boards').oncontextmenu = event => {
@@ -354,16 +466,23 @@ $('#boards').oncontextmenu = event => {
 };
 $('#addBoard').onclick = () => attempt(() => boardDialog());
 $('#filterToggle').onclick = () => {
-  $('#filters').hidden = !$('#filters').hidden;
-  $('#typeFilters').innerHTML = Object.entries({ all: '全部', text: '文本', image: '图片', color: '颜色', file: '文件', link: '链接' })
-    .map(([type, label]) => `<button data-type="${type}" class="${state.type === type ? 'active' : ''}">${label}</button>`).join('');
-  const sources = [...new Map(state.items.filter(i => i.source?.bundleId).map(i => [i.source.bundleId, i.source])).values()];
-  $('#sourceFilter').innerHTML = '<option value="">所有应用</option>' + sources.map(source => `<option value="${escape(source.bundleId)}">${escape(source.name)}</option>`).join('');
-  $('#sourceFilter').value = state.source;
+  const open = $('#filters').hidden; closeFilters(); hideSuggestions(); suggestionsDismissed = true;
+  if (open) { renderFilterUI(); $('#filters').hidden = false; $('#filterToggle').setAttribute('aria-expanded', 'true'); }
 };
-$('#typeFilters').onclick = event => { if (!event.target.dataset.type) return; state.type = event.target.dataset.type; $('#typeFilters').querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.type === state.type)); resetFilter(); };
-$('#sourceFilter').onchange = event => { state.source = event.target.value; resetFilter(); };
-$('#dateFilter').onchange = event => { state.after = event.target.value ? new Date(Date.now() - Number(event.target.value) * 86400000).toISOString() : ''; resetFilter(); };
+$('#typeFilters').onclick = event => { if (event.target.dataset.type) setFilter('type', event.target.dataset.type); };
+$('#sourceFilter').onchange = event => setFilter('source', event.target.value);
+$('#dateFilter').onchange = event => setFilter('date', event.target.value);
+$('#pinboardFilter').onchange = event => setFilter('pinboard', event.target.value);
+$('#resetFilters').onclick = () => { state.type = 'all'; state.source = state.date = state.pinboard = ''; resetFilter(); };
+$('#filterTokens').onkeydown = event => {
+  const buttons = [...$('#filterTokens').querySelectorAll('button')], index = buttons.indexOf(event.target);
+  if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); $('#searchInput').focus(); }
+  else if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+    event.preventDefault(); event.stopPropagation();
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : index + (event.key === 'ArrowRight' ? 1 : -1);
+    (buttons[next] || $('#searchInput')).focus();
+  } else if (['Backspace', 'Delete'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); if (!event.repeat) event.target.click(); }
+};
 $('#timeline').addEventListener('scroll', () => { cancelAnimationFrame(renderFrame); renderFrame = requestAnimationFrame(renderCards); });
 $('#timeline').addEventListener('wheel', event => {
   if (Math.abs(event.deltaY) > Math.abs(event.deltaX) && !event.ctrlKey) { event.preventDefault(); $('#timeline').scrollLeft += event.deltaY; }
@@ -392,13 +511,39 @@ $('#stackButton').onclick = () => attempt(() => state.status.stackCount ? api.ne
 document.addEventListener('pointerdown', event => {
   if (state.editingBoard && !event.target.closest('.board-edit, #menu')) attempt(commitBoard);
   if (!event.target.closest('#menu, #moreButton')) closeMenu();
-  if (!event.target.closest('#filters, #filterToggle')) $('#filters').hidden = true;
+  if (!event.target.closest('#filters, #filterToggle')) closeFilters();
+  if (!event.target.closest('#searchBox, #filterSuggestions')) hideSuggestions();
 });
+document.addEventListener('focusin', event => { if (!event.target.closest('#searchBox, #filterSuggestions')) hideSuggestions(); });
 document.addEventListener('keydown', event => {
   const typing = event.target.matches('input, textarea, select') || event.target.isContentEditable;
   if (isComposingKey(event, composing) || event.key === 'Dead') {
     if (!typing && !composing && (event.key === 'Process' || event.key === 'Dead' || event.keyCode === 229) && $('#menu').hidden) toggleSearch(true);
     return;
+  }
+  if (event.target.closest('#filterTokens')) return;
+  if (event.target.closest('#filters')) {
+    if (event.key === 'Escape') { event.preventDefault(); closeFilters(); $('#filterToggle').focus(); }
+    else if (event.repeat && ['Enter', ' '].includes(event.key)) event.preventDefault();
+    return;
+  }
+  if (event.target.closest('#filterSuggestions')) {
+    const buttons = [...$('#filterSuggestions').children], index = buttons.indexOf(event.target);
+    if (['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) {
+      event.preventDefault(); const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : index + (event.key === 'ArrowDown' ? 1 : -1);
+      (buttons[next] || $('#searchInput')).focus();
+    } else if (event.key === 'Escape') { event.preventDefault(); suggestionsDismissed = true; hideSuggestions(); $('#searchInput').focus(); }
+    else if (event.repeat && ['Enter', ' '].includes(event.key)) event.preventDefault();
+    return;
+  }
+  if (event.target === $('#searchInput') && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    if (['ArrowDown', 'ArrowUp'].includes(event.key)) {
+      updateSuggestions(true);
+      if (!$('#filterSuggestions').hidden) { event.preventDefault(); const buttons = $('#filterSuggestions').children; buttons[event.key === 'ArrowDown' ? 0 : buttons.length - 1]?.focus(); return; }
+    }
+    if (event.key === 'Backspace' && !state.query && !event.repeat && $('#filterTokens').children.length) {
+      event.preventDefault(); $('#filterTokens').lastElementChild.querySelector('button').focus(); return;
+    }
   }
   const modifier = event.metaKey || event.ctrlKey;
   document.body.classList.toggle('quick-keys', modifierPressed(event, state.settings.quickPasteModifier));
@@ -419,7 +564,7 @@ document.addEventListener('keydown', event => {
   }
   if (event.key === 'Escape') {
     event.preventDefault();
-    if (!$('#filters').hidden) $('#filters').hidden = true;
+    if (!$('#filters').hidden) closeFilters();
     else if (state.query) { state.query = ''; $('#searchInput').value = ''; resetFilter(); }
     else if (state.searching) toggleSearch(false);
     else api.hide();
@@ -435,7 +580,7 @@ document.addEventListener('keydown', event => {
   if (event.target === $('#searchInput') && event.key === 'Enter') {
     event.preventDefault(); if (!event.repeat) $('#timeline').focus(); return;
   }
-  if (typing) return;
+  if (typing || event.target.closest('button, a')) return;
   if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey && !modifier && !event.altKey)) {
     event.preventDefault(); const item = state.items.find(value => value.id === state.active);
     const node = item && document.getElementById(optionID(item.id));
@@ -469,7 +614,7 @@ document.addEventListener('keydown', event => {
 });
 document.addEventListener('keyup', event => document.body.classList.toggle('quick-keys', modifierPressed(event, state.settings.quickPasteModifier)));
 window.addEventListener('blur', () => document.body.classList.remove('quick-keys'));
-window.addEventListener('resize', renderCards);
+window.addEventListener('resize', () => { renderCards(); if (!$('#filterSuggestions').hidden) updateSuggestions(); });
 api.onChanged(accept);
 api.onShown(({ target }) => { document.body.dataset.panelReady = 'true'; state.target = target; closeMenu(); render(); if (state.editingBoard) $('.board-name-edit')?.focus(); else $('#timeline').focus(); });
 attempt(async () => accept(await api.getLibrary()));

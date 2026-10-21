@@ -22,13 +22,19 @@
     return 'text';
   }
 
-  function filterItems(items, { board = 'history', boards = [], query = '', type = 'all', source = '', after = '' } = {}) {
+  function filterItems(items, { board = 'history', boards = [], pinboard = '', query = '', type = 'all', source = '', after = '', before = '' } = {}) {
     const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    const from = after ? Date.parse(after) : null, until = before ? Date.parse(before) : null;
+    if ((after && !Number.isFinite(from)) || (before && !Number.isFinite(until))) return [];
     const filtered = items.filter(item => {
       if (board !== 'history' && !item.boardIds?.includes(board)) return false;
+      if (pinboard && !item.boardIds?.includes(pinboard)) return false;
       if (type !== 'all' && item.type !== type && !(type === 'text' && item.type === 'code')) return false;
       if (source && item.source?.bundleId !== source) return false;
-      if (after && item.createdAt < after) return false;
+      if (after || before) {
+        const copied = Date.parse(item.createdAt);
+        if (!Number.isFinite(copied) || (from !== null && copied < from) || (until !== null && copied >= until)) return false;
+      }
       if (!terms.length) return true;
       const haystack = searchText(item);
       return terms.every(term => haystack.includes(term));

@@ -2,6 +2,7 @@ const { test, expect, _electron: electron } = require('@playwright/test');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
+const { assertClipboardIsolation } = require('../../scripts/clipboard-test-environment');
 let application, page, directory, originalClipboard, originalFiles = [], canRestoreClipboard = false;
 test.describe.configure({ mode: 'serial' });
 
@@ -48,6 +49,7 @@ async function nativePreviewKey(key, repeat = false) {
 }
 
 test.beforeAll(async () => {
+  assertClipboardIsolation();
   directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paste-ui-'));
   const seed = path.join(directory, 'seed.json');
   const source = (name, bundleId, color) => ({ name, bundleId, color });
@@ -1022,6 +1024,171 @@ test('menu commands retain their original item ownership when background changes
     expect((await page.evaluate(id => window.paste.getItem(id), items[1].id)).boardIds.includes(board.id)).toBe(!remove);
   }
   await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+});
+test('filter controls keep Enter, Space and deletion inside the control rather than activating a clipboard item', async () => {
+  await seedKeyboardItems('FilterControlKeys', 2); await page.keyboard.press('Meta+f');
+  await page.getByRole('searchbox', { name: '搜索剪贴板' }).fill('FilterControlKeys'); await expect(page.locator('.clip-card')).toHaveCount(2);
+  const before = await application.evaluate(({ clipboard }) => clipboard.readText()), count = (await page.evaluate(() => window.paste.getLibrary())).items.length;
+  await page.getByRole('button', { name: '筛选', exact: true }).press('Enter'); await expect(page.getByRole('region', { name: '筛选条件' })).toBeVisible();
+  await page.locator('#typeFilters').getByRole('button', { name: '文本', exact: true }).press('Enter');
+  await page.keyboard.press('Delete'); await page.keyboard.press('Backspace');
+  expect((await page.evaluate(() => window.paste.getLibrary())).items.length).toBe(count);
+  await page.keyboard.press('Escape'); await page.getByRole('button', { name: '筛选', exact: true }).press('Space');
+  await expect(page.getByRole('region', { name: '筛选条件' })).toBeVisible(); expect(application.windows().length).toBe(1);
+  expect(await application.evaluate(({ clipboard }) => clipboard.readText())).toBe(before);
+  await page.keyboard.press('Escape'); await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+});
+test('visible filter tokens combine type, app, calendar and pinboard without changing the text query or deleting clips', async () => {
+  const board = await page.evaluate(() => window.paste.saveBoard({ name: 'Filter project', color: '#4f80ed' }));
+  const items = await application.evaluate((_electron, board) => {
+    const hooks = globalThis.__pasteTest, today = new Date(); today.setHours(0, 0, 0, 0);
+    const rows = [['text', 'FilterCombo note', 'Test Mail', 'test.filter.mail'], ['code', 'FilterCombo const code', 'Test Mail', 'test.filter.mail'],
+      ['link', 'https://filter.example/FilterCombo', 'Test Mail', 'test.filter.mail'], ['text', 'FilterCombo chrome', 'Test Chrome', 'test.filter.chrome'],
+      ['text', 'FilterCombo yesterday', 'Test Mail', 'test.filter.mail']];
+    const items = rows.map(([type, body, name, bundleId]) => hooks.store.add({ type, body, title: body, source: { name, bundleId } }));
+    hooks.store.pinItems([items[0].id, items[1].id, items[4].id], board);
+    hooks.store.mutate(() => items.forEach((item, index) => { hooks.store.edit(item.id).createdAt = new Date(today.getTime() + (index === 4 ? -1 : 0)).toISOString(); }));
+    hooks.imageText.onChanged(); return items.map(item => item.id);
+  }, board.id);
+  await page.keyboard.press('Meta+f'); const search = page.getByRole('searchbox', { name: '搜索剪贴板' }); await search.fill('FilterCombo');
+  await expect(page.locator('.clip-card')).toHaveCount(5); await page.getByRole('button', { name: '筛选', exact: true }).click();
+  await page.locator('#typeFilters').getByRole('button', { name: '文本', exact: true }).click();
+  await page.getByLabel('来源应用', { exact: true }).selectOption('test.filter.mail');
+  await page.getByLabel('复制日期', { exact: true }).selectOption('today'); await page.getByLabel('所属 Pinboard', { exact: true }).selectOption(board.id);
+  await expect(page.locator('.clip-card')).toHaveCount(2); expect(new Set(await page.locator('.clip-card').evaluateAll(nodes => nodes.map(node => node.dataset.id)))).toEqual(new Set(items.slice(0, 2)));
+  await expect(page.locator('#filterTokens button')).toHaveCount(4); await expect(page.locator('#filterCount')).toHaveText('4'); await expect(search).toHaveValue('FilterCombo');
+  await page.keyboard.press('Escape'); await page.screenshot({ path: 'test-results/search-active-filters.png' });
+  const theme = (await page.evaluate(() => window.paste.getLibrary())).settings.theme;
+  await page.evaluate(() => window.paste.saveSettings({ theme: 'dark' })); await expect(page.locator('.panel')).toHaveCSS('background-color', 'rgba(49, 49, 49, 0.98)');
+  await expect(search).toHaveCSS('color', 'rgb(232, 232, 232)'); await expect(page.locator('.clip-card')).toHaveCount(2);
+  await page.screenshot({ path: 'test-results/search-active-filters-dark.png' }); await page.getByRole('button', { name: '筛选', exact: true }).click();
+  await page.locator('#filters').evaluate(panel => { panel.scrollTop = 0; }); await page.screenshot({ path: 'test-results/search-filter-panel.png' });
+  await page.keyboard.press('Escape'); await page.evaluate(theme => window.paste.saveSettings({ theme }), theme);
+  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/index.html')).setBounds({ width: 390, height: 332 }));
+  try {
+    await search.focus();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.querySelector('#searchBox').getBoundingClientRect().right <= innerWidth)).toBe(true);
+    await page.screenshot({ path: 'test-results/search-active-filters-narrow.png' });
+    await page.getByRole('button', { name: '移除应用筛选：Test Mail', exact: true }).click(); await expect(page.getByLabel('来源应用', { exact: true })).toHaveValue('');
+    await page.getByRole('button', { name: '移除Pinboard筛选：Filter project', exact: true }).click(); await expect(page.locator('.clip-card')).toHaveCount(3);
+    await page.getByRole('button', { name: '移除类型筛选：文本', exact: true }).click(); await expect(page.locator('.clip-card')).toHaveCount(4);
+    await page.getByRole('button', { name: '筛选', exact: true }).click(); await page.getByRole('button', { name: '重置筛选', exact: true }).click();
+    await expect(page.locator('.clip-card')).toHaveCount(5); await expect(search).toHaveValue('FilterCombo'); await expect(page.locator('#filterTokens button')).toHaveCount(0);
+    await page.locator('#typeFilters').getByRole('button', { name: '文本', exact: true }).click(); await search.fill('');
+    const count = (await page.evaluate(() => window.paste.getLibrary())).items.length;
+    await search.press('Backspace'); await expect(page.getByRole('button', { name: '移除类型筛选：文本', exact: true })).toBeFocused();
+    await page.keyboard.press('Backspace'); await expect(page.locator('#filterTokens button')).toHaveCount(0);
+    expect((await page.evaluate(() => window.paste.getLibrary())).items.length).toBe(count);
+    await page.keyboard.press('Escape');
+  } finally { await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/index.html')).setBounds({ width: 1280, height: 332 })); }
+});
+test('metadata suggestions are explicit, keyboard selectable and stale callbacks never rewrite a newer query', async () => {
+  await application.evaluate(() => {
+    const hooks = globalThis.__pasteTest;
+    hooks.store.add({ type: 'link', body: 'https://example.com/meeting/slides-one', title: 'meeting slides one', source: { name: 'Mail', bundleId: 'test.suggestion.mail' } });
+    hooks.store.add({ type: 'link', body: 'https://example.com/meeting/slides-two', title: 'meeting slides two', source: { name: 'Mail', bundleId: 'test.suggestion.mail' } });
+    hooks.imageText.onChanged();
+  });
+  await page.keyboard.press('Meta+f'); const search = page.getByRole('searchbox', { name: '搜索剪贴板' }); await search.fill('mail link meeting slides');
+  await expect(page.locator('.clip-card')).toHaveCount(0);
+  const before = await application.evaluate(({ clipboard }) => clipboard.readText());
+  await page.getByRole('button', { name: '来自 Mail', exact: true }).click(); await expect(search).toHaveValue('link meeting slides');
+  await expect(page.getByRole('button', { name: '类型：链接', exact: true })).toBeVisible();
+  await search.press('ArrowDown'); await expect(page.getByRole('button', { name: '类型：链接', exact: true })).toBeFocused();
+  await page.keyboard.press('Enter'); await expect(search).toHaveValue('meeting slides'); await expect(page.locator('.clip-card')).toHaveCount(2);
+  await expect(page.locator('#filterTokens button')).toHaveCount(2); expect(await application.evaluate(({ clipboard }) => clipboard.readText())).toBe(before);
+  await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+  await page.keyboard.press('Meta+f'); await search.fill('mail');
+  const stale = await page.getByRole('button', { name: '来自 Mail', exact: true }).elementHandle();
+  await search.fill('new-literal-query'); await stale.evaluate(button => button.click());
+  await expect(search).toHaveValue('new-literal-query'); await expect(page.locator('#filterTokens button')).toHaveCount(0);
+  await search.fill('https://example.com/mail'); await expect(page.getByRole('group', { name: '筛选建议', exact: true })).toBeHidden();
+  await search.fill('mail'); const composingCandidate = await page.getByRole('button', { name: '来自 Mail', exact: true }).elementHandle();
+  await search.evaluate(input => input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })));
+  await expect(page.getByRole('group', { name: '筛选建议', exact: true })).toBeHidden();
+  await composingCandidate.evaluate(button => button.click()); await expect(search).toHaveValue('mail'); await expect(page.locator('#filterTokens button')).toHaveCount(0);
+  await application.evaluate(() => {
+    const service = globalThis.__pasteTest.searchService; globalThis.__imeFilterSearch = service.search; globalThis.__imeFilterQueries = [];
+    service.search = function(items, revision, query) { globalThis.__imeFilterQueries.push(query); return globalThis.__imeFilterSearch.call(this, items, revision, query); };
+  });
+  try {
+    await search.evaluate(input => { input.value = 'mail候选'; input.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true })); });
+    await page.evaluate(async () => { const { settings } = await window.paste.getLibrary(); await window.paste.saveSettings({ theme: settings.theme }); });
+    await expect.poll(() => application.evaluate(() => globalThis.__imeFilterQueries.length)).toBeGreaterThan(0);
+    expect((await application.evaluate(() => globalThis.__imeFilterQueries)).every(query => query === 'mail')).toBe(true);
+    await expect(search).toHaveValue('mail候选');
+  } finally {
+    await application.evaluate(() => { globalThis.__pasteTest.searchService.search = globalThis.__imeFilterSearch; delete globalThis.__imeFilterSearch; delete globalThis.__imeFilterQueries; });
+  }
+  await expect(page.getByRole('group', { name: '筛选建议', exact: true })).toBeHidden();
+  await search.press('Enter'); await expect(search).toHaveValue('mail候选');
+  await search.evaluate(input => { input.value = 'mail'; });
+  await search.evaluate(input => input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })));
+  await expect(page.getByRole('group', { name: '筛选建议', exact: true })).toBeVisible();
+  await page.screenshot({ path: 'test-results/search-filter-suggestions.png' });
+  await search.press('Escape'); await search.press('Escape');
+  await application.evaluate(() => {
+    const service = globalThis.__pasteTest.searchService; globalThis.__filterSearchOriginal = service.search;
+    service.search = async function(items, revision, query) {
+      const result = await globalThis.__filterSearchOriginal.call(this, items, revision, query);
+      if (query === 'mail') return new Promise(resolve => { globalThis.__releaseFilterSearch = () => resolve(result); });
+      return result;
+    };
+  });
+  try {
+    await page.keyboard.press('Meta+f'); await search.fill('mail');
+    await expect.poll(() => application.evaluate(() => !!globalThis.__releaseFilterSearch)).toBe(true);
+    await search.press('ArrowDown'); await page.keyboard.press('Escape'); await search.press('ArrowDown');
+    await application.evaluate(() => globalThis.__releaseFilterSearch()); await expect(page.locator('#timeline')).toHaveAttribute('aria-busy', 'false');
+    await expect(page.getByRole('group', { name: '筛选建议', exact: true })).toBeVisible(); await expect(page.getByRole('button', { name: '来自 Mail', exact: true })).toBeFocused();
+    await page.keyboard.press('Escape'); await search.press('Escape'); await search.press('Escape');
+  } finally {
+    await application.evaluate(() => { globalThis.__releaseFilterSearch?.(); globalThis.__pasteTest.searchService.search = globalThis.__filterSearchOriginal; delete globalThis.__filterSearchOriginal; delete globalThis.__releaseFilterSearch; });
+  }
+});
+test('active metadata filters survive renames and deletion without silently widening the search', async () => {
+  const board = await page.evaluate(() => window.paste.saveBoard({ name: 'Stable filter board', color: '#62c68d' }));
+  const ids = await application.evaluate((_electron, board) => {
+    const hooks = globalThis.__pasteTest;
+    const one = hooks.store.add({ type: 'text', body: 'MetadataFilter one', source: { name: 'Stable Mail', bundleId: 'test.stable.mail' } });
+    const two = hooks.store.add({ type: 'text', body: 'MetadataFilter other', source: { name: 'Other App', bundleId: 'test.stable.other' } });
+    hooks.store.pinItems([one.id], board); hooks.imageText.onChanged(); return [one.id, two.id];
+  }, board.id);
+  await page.keyboard.press('Meta+f'); const search = page.getByRole('searchbox', { name: '搜索剪贴板' }); await search.fill('MetadataFilter');
+  await page.getByRole('button', { name: '筛选', exact: true }).click(); await page.getByLabel('来源应用', { exact: true }).selectOption('test.stable.mail');
+  await page.getByLabel('所属 Pinboard', { exact: true }).selectOption(board.id); await page.keyboard.press('Escape'); await expect(page.locator('.clip-card')).toHaveAttribute('data-id', ids[0]);
+  const token = await page.getByRole('button', { name: '移除应用筛选：Stable Mail', exact: true }).elementHandle();
+  await page.evaluate(board => window.paste.saveBoard(board), { ...board, name: 'Renamed board' });
+  await application.evaluate((_electron, id) => {
+    const hooks = globalThis.__pasteTest; hooks.store.mutate(() => { hooks.store.edit(id).source = { name: 'Mail <img src=x>', bundleId: 'test.stable.mail' }; }); hooks.imageText.onChanged();
+  }, ids[0]);
+  await expect(page.getByRole('button', { name: '移除应用筛选：Mail <img src=x>', exact: true })).toBeVisible(); expect(await token.evaluate(button => button.isConnected)).toBe(true);
+  await expect(page.getByRole('button', { name: '移除Pinboard筛选：Renamed board', exact: true })).toBeVisible(); await expect(page.locator('#filterTokens img')).toHaveCount(0);
+  await page.evaluate(id => window.paste.deleteItems([id]), ids[0]); await page.evaluate(id => window.paste.deleteBoard(id), board.id);
+  await expect(page.locator('.clip-card')).toHaveCount(0); await expect(page.locator('#filterTokens button')).toHaveCount(2);
+  await expect(page.getByLabel('来源应用', { exact: true })).toHaveValue('test.stable.mail'); await expect(page.getByLabel('所属 Pinboard', { exact: true })).toHaveValue(board.id);
+  await page.getByRole('button', { name: '筛选', exact: true }).click(); await page.getByRole('button', { name: '重置筛选', exact: true }).click();
+  await expect(page.locator('.clip-card')).toHaveAttribute('data-id', ids[1]); await expect(search).toHaveValue('MetadataFilter');
+  await page.keyboard.press('Escape'); await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+});
+test('today excludes the previous evening and updates at local midnight without another copy or query', async () => {
+  const time = await page.evaluate(() => new Date(2026, 9, 22, 0, 1).toISOString());
+  const ids = await application.evaluate(() => {
+    const hooks = globalThis.__pasteTest, today = new Date(2026, 9, 22), tomorrow = new Date(2026, 9, 23);
+    const items = ['CalendarClip yesterday', 'CalendarClip today', 'CalendarClip tomorrow'].map(body => hooks.store.add({ type: 'text', body, title: body }));
+    const dates = [new Date(today.getTime() - 30000), today, tomorrow];
+    hooks.store.mutate(() => items.forEach((item, index) => { hooks.store.edit(item.id).createdAt = dates[index].toISOString(); })); hooks.imageText.onChanged(); return items.map(item => item.id);
+  });
+  try {
+    await page.clock.install({ time: new Date(time) }); await page.reload(); await page.waitForSelector('.clip-card');
+    await page.keyboard.press('Meta+f'); const search = page.getByRole('searchbox', { name: '搜索剪贴板' }); await search.fill('CalendarClip');
+    await expect(page.locator('.clip-card')).toHaveCount(3); await page.getByRole('button', { name: '筛选', exact: true }).click();
+    await page.getByLabel('复制日期', { exact: true }).selectOption('today'); await page.keyboard.press('Escape');
+    await expect(page.locator('.clip-card')).toHaveCount(1); await expect(page.locator('.clip-card')).toHaveAttribute('data-id', ids[1]);
+    await page.clock.fastForward(86400000 - 60000);
+    await expect(page.locator('.clip-card')).toHaveCount(1); await expect(page.locator('.clip-card')).toHaveAttribute('data-id', ids[2]);
+    await expect(search).toHaveValue('CalendarClip'); await expect(page.getByRole('button', { name: '移除日期筛选：今天', exact: true })).toBeVisible();
+  } finally { await application.close(); application = await launchApplication(); page = await application.firstWindow(); await page.waitForSelector('.clip-card'); }
 });
 test('large originals remain searchable, copyable, draggable and restorable without flooding catalog IPC', async () => {
   const body = 'Synthetic long clipboard text 🧪\n'.repeat(7000) + 'unique-tail-482709';
