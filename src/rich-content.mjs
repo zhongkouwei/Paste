@@ -1,6 +1,6 @@
 import createDOMPurify from 'dompurify';
 import { TableMap } from '@tiptap/pm/tables';
-import { getSchema } from '@tiptap/core';
+import { getSchema, getTextBetween, getTextSerializersFromSchema } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { TableKit } from '@tiptap/extension-table';
 import { listProblem, plainText } from './rich-lists.mjs';
@@ -17,18 +17,36 @@ export function embeddedImage(value) {
 }
 export function validSpan(value) { return /^[1-9]\d?$|^100$/.test(value || ''); }
 
-export function tableText(node) {
-  const map = TableMap.get(node), seen = new Set(), rows = [];
-  for (let row = 0; row < map.height; row++) {
+export function tableText(node, { from = 0, to = node.content.size } = {}) {
+  const map = TableMap.get(node), text = new Map(), visited = new Set(), rows = [];
+  let top = map.height, bottom = 0, left = map.width, right = 0;
+  map.map.forEach((position, index) => {
+    if (!visited.has(position)) {
+      visited.add(position);
+      const cell = node.nodeAt(position), start = position + 1, end = start + cell.content.size;
+      if (to >= start && from <= end) text.set(position, from <= start && to >= end ? plainText(cell) : getTextBetween(cell, {
+        from: Math.max(0, from - start), to: Math.min(cell.content.size, to - start)
+      }, { blockSeparator: '\n', textSerializers: getTextSerializersFromSchema(cell.type.schema) }));
+    }
+    if (!text.has(position)) return;
+    const row = Math.floor(index / map.width), column = index % map.width;
+    top = Math.min(top, row); bottom = Math.max(bottom, row + 1);
+    left = Math.min(left, column); right = Math.max(right, column + 1);
+  });
+  const seen = new Set();
+  for (let row = top; row < bottom; row++) {
     const cells = [];
-    for (let column = 0; column < map.width; column++) {
+    for (let column = left; column < right; column++) {
       const position = map.map[row * map.width + column];
-      cells.push(seen.has(position) ? '' : plainText(node.nodeAt(position)));
+      cells.push(seen.has(position) ? '' : text.get(position) || '');
       seen.add(position);
     }
     rows.push(cells.join('\t'));
   }
   return rows.join('\n');
+}
+export function selectedTableText({ node, pos, range }) {
+  return tableText(node, { from: Math.max(0, range.from - pos - 1), to: Math.min(node.content.size, range.to - pos - 1) });
 }
 
 const STYLE_PROPERTIES = [

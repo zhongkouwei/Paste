@@ -4,8 +4,9 @@ import { TextStyleKit } from '@tiptap/extension-text-style';
 import { Table, TableCell, TableHeader, TableKit, TableView } from '@tiptap/extension-table';
 import Image from '@tiptap/extension-image';
 import { closeHistory } from '@tiptap/pm/history';
-import { createRichContentPolicy, safeStyle, tableText } from './rich-content.mjs';
+import { createRichContentPolicy, safeStyle, selectedTableText } from './rich-content.mjs';
 import { RichOrderedList, RichBulletList, RichListItem, plainText } from './rich-lists.mjs';
+import { clipboardText, copiedListNumbers } from './rich-copy.mjs';
 
 const policy = createRichContentPolicy(window);
 export const inspect = html => policy.inspect(html);
@@ -29,7 +30,7 @@ class PreservedTableView extends TableView {
   }
   update(node) { const accepted = super.update(node); if (accepted) this.restoreWidth(); return accepted; }
 }
-const RichTable = Table.extend({ renderText: ({ node }) => tableText(node) }).configure({ View: PreservedTableView });
+const RichTable = Table.extend({ renderText: selectedTableText }).configure({ View: PreservedTableView });
 const preciseCell = Cell => Cell.extend({
   addAttributes() { return { ...this.parent?.(), colwidth: { default: null,
     parseHTML: cell => cell.hasAttribute('colwidth') ? cell.getAttribute('colwidth').split(',').map(Number) : null } }; }
@@ -48,6 +49,7 @@ export function create(element, { html, text = '', onUpdate, onSelection, onUnsu
     EmbeddedImage.configure({ inline: true, allowBase64: true })], content,
     parseOptions: { preserveWhitespace: 'full' },
     editorProps: { attributes: { role: 'textbox', 'aria-label': '剪贴板内容', 'aria-multiline': 'true', class: 'rich-editor' }, transformPastedHTML: sanitize,
+      clipboardTextSerializer: clipboardText, transformCopied: (slice, view) => copiedListNumbers(slice, view.state.selection),
       handlePaste: (_view, event) => {
         const clipboard = event.clipboardData, html = clipboard?.getData('text/html');
         const reason = html ? inspect(html).reason : clipboard?.files.length ? '请单独复制图片后编辑，当前选区未修改。' : '';

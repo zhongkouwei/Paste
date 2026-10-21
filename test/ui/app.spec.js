@@ -324,6 +324,34 @@ test('edited list numbering and HTML survive real clipboard copy, plain mode and
   const exported = await application.evaluate((_electron, id) => globalThis.__pasteTest.store.exportData().items.find(item => item.id === id), id);
   expect(exported.body).toBe(expected); expect(exported.html).toBe(saved.html);
 });
+test('real editor clipboard copy respects partial words and noncontiguous table cell ranges', async () => {
+  const id = await application.evaluate(() => {
+    const hooks = globalThis.__pasteTest, item = hooks.store.add({ type: 'text', body: 'Synthetic selected table',
+      html: '<table><tr><td><p>Visible word</p></td><td><p>Private neighbor</p></td></tr><tr><td><p>Other visible</p></td><td><p>Private second</p></td></tr></table>' });
+    hooks.imageText.onChanged(); return item.id;
+  });
+  const opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id, { mode: 'edit' }), id);
+  const preview = await opened; await preview.waitForFunction(() => document.body.dataset.previewReady === 'true');
+  const editor = preview.getByRole('textbox', { name: '剪贴板内容' });
+  for (const rectangular of [false, true]) {
+    await application.evaluate(async () => globalThis.__pasteTest.clip.write({ type: 'text', body: 'Copy sentinel' }));
+    await editor.evaluate((element, rectangular) => {
+      const engine = element.editor, text = new Map(), cells = new Map();
+      engine.state.doc.descendants((node, pos) => {
+        if (node.isText) text.set(node.text, pos);
+        if (node.type.name === 'tableCell') cells.set(node.textContent, pos);
+      });
+      if (rectangular) engine.commands.setCellSelection({ anchorCell: cells.get('Other visible'), headCell: cells.get('Visible word') });
+      else engine.commands.setTextSelection({ from: text.get('Visible word'), to: text.get('Visible word') + 7 });
+      engine.view.focus();
+    }, rectangular);
+    await preview.keyboard.press('Meta+c');
+    await expect.poll(() => application.evaluate(({ clipboard }) => clipboard.readText())).toBe(rectangular ? 'Visible word\nOther visible' : 'Visible');
+    const actual = await application.evaluate(async () => globalThis.__pasteTest.clip.read());
+    expect(actual.html).not.toContain('Private'); if (!rectangular) expect(actual.html).not.toContain('word');
+  }
+  await preview.close();
+});
 test('opening an editor or undoing all changes never normalizes the original HTML or RTF', async () => {
   await application.evaluate(async ({ clipboard, ClipboardItem }) => {
     await clipboard.write([new ClipboardItem({ 'text/plain': 'No change', 'text/html': '<div><b>No change</b></div>', 'text/rtf': '{\\rtf1\\ansi No change}' })]);
