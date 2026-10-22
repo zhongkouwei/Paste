@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('paste', {
   reorderBoards: ids => invoke('board:reorder', ids), reorderBoardItems: (boardId, ids) => invoke('board:reorderItems', boardId, ids),
   pinItems: (ids, boardId, remove = false) => invoke('board:pin', ids, boardId, remove),
   openPreview: (id, options) => invoke('preview:open', id, options), getPreview: () => invoke('preview:get'),
+  getRichText: (id, signature) => invoke('preview:richText', id, signature),
   closePreview: () => invoke('preview:close'), markPreviewDirty: value => invoke('preview:dirty', value),
   savePreview: changes => invoke('preview:save', changes), navigatePreview: delta => invoke('preview:navigate', delta),
   editImage: action => invoke('preview:image', action),

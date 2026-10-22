@@ -26,7 +26,11 @@ npm start -- --show
 
 右键菜单的删除、固定命令绑定打开菜单时的项目和添加/移除意图；后台移除项目或改变选中项时，不转而操作另一项。菜单按键不会继续作用于底层列表，键盘与鼠标执行同一命令。首次打开编辑/重命名窗口会在加载保护解除后聚焦，重命名可直接输入替换原名称。
 
-文本编辑支持粗体、斜体、下划线、删除线、选区格式和撤销/重做，保留已覆盖的字体、字号、颜色和段落/单元格样式。标准 HTML 表格可编辑，支持插入、增删行列、合并/拆分、标题行和 Tab 切换单元格；合并跨度与 CSS 小数像素列宽可跨保存、复制和重启保留，纯文本输出用制表符/换行保留坐标。内嵌 PNG/JPEG/GIF/WebP 可随文字和表格保留原始 data URL，预览也能显示；不会为图片自动联网。未修改或撤销全部修改时不重写原始 HTML/RTF；明确工具命令有独立撤销边界。代码、链接、颜色内容仍用纯文本编辑器，避免自动格式化。
+文本编辑支持粗体、斜体、下划线、删除线、选区格式和撤销/重做，保留已覆盖的字体、字号、颜色和段落/单元格样式。标准 HTML 表格可编辑，支持插入、增删行列、合并/拆分、标题行和 Tab 切换单元格；合并跨度与 CSS 小数像素列宽可跨保存、复制和重启保留，纯文本输出用制表符/换行保留坐标。内嵌 PNG/JPEG/GIF/WebP 可随文字和表格保留原始 data URL，预览也能显示；不会为图片自动联网。未修改或撤销全部修改时不重写原始 HTML/RTF；明确工具命令有独立撤销边界。不带 RTF 的代码、链接、颜色内容仍用纯文本编辑器，避免自动格式化。
+
+含 RTF 的文字记录使用系统 `textutil` 读取和重新生成 RTF，不再进入纯文本编辑后清空格式；同时覆盖仅有 RTF 的旧记录和 Electron/macOS 自动生成 Cocoa HTML 的捕获。有 HTML 时保留其编辑优先级，不强制不同 MIME 表示的正文相同；无 HTML 时才读取 RTF 派生预览。样式表先在禁止脚本/网络的临时文档中由浏览器计算、内联，再经既有净化策略显示/编辑。只有真实修改才同时保存 HTML 与新 RTF；原始字节、ID、Pinboard 和改名在未修改/全部撤销时保留。格式标记不再重复保存在 span CSS 中，关闭下划线等工具后不会残留同样的 CSS 效果。
+
+系统转换通过 stdin/stdout 串行运行，单次10秒、输入/输出各16 MiB、派生缓存最多16项/8 MiB，不创建文档临时文件。HTML 输入明确 UTF-8；保存前核对 RTF 读回正文，只容许系统附加一个段落结束 LF，不 trim 正文。转换失败/正文不一致/迟到回复保留原记录或草稿。已知会丢失的附件、对象、图形、脚注/页眉页脚等 RTF 结构及混合图片编辑暂不支持，不静默删除；此防丢失检查不是完整 RTF/RTFD 解析器。**Cocoa HTML 导出的 generic RGB 与 sRGB 存在预览偏差，尚未修复**；原生 AppKit 已独立验证新保存 RTF 的 sRGB 颜色，但这不证明原始 RTF 到预览像素一致，不能称任意富文本无损。
 
 列表编辑保留显式/隐式起点、倒序、逐项重新编号和嵌套；拆分重新编号的项目时不把该编号复制到新项。保存、纯文本复制与导出保留编号/标记及两空格嵌套缩进，表格格内的列表同样保留标记。使用同版本 Tiptap 列表引擎及 `@jsamr/counter-style` 生成内建标记，不自写罗马/字母计数算法；支持内置数字、字母、罗马和部分国际化样式，不代表全部 CSS 自定义计数器。含自定义计数器/图片标记、未支持样式、非法或超过 signed 32-bit 编号、超过 32 层嵌套的 HTML 会拒绝编辑/粘贴，保留原文，不静默丢格式。主动键入规范的 `0` 至 `2147483647` 后接点和空格仍可创建/续接列表；补零标识符和超范围数字保留为普通文字，不生成无法再次编辑的起点。列表末尾不自动补空段落；表格等结构仍保留原引擎的退出通道，初始化结构归一化不算用户编辑。
 
@@ -56,7 +60,7 @@ node scripts/benchmark-export.js 1000
 
 - `check`：所有源码、脚本与测试的 JavaScript 语法检查。
 - `test`：存储、迁移、损坏恢复、Pinboard、搜索与保留策略。
-- `test:ui`：真实 Electron + IPC。`app.spec.js` 读写系统剪贴板，使用隔离测试数据、不读取已有历史；测试前保存、结束后恢复系统剪贴板。运行该套件前退出其他剪贴板记录工具，可避免其收录测试内容。`media.spec.js`、`media-requests.spec.js`、`rich-lists.spec.js`、`rich-copy.spec.js`、`plain-paste.spec.js`、`search-cache.spec.js`、`export.spec.js`、`import.spec.js`、`text-identity.spec.js` 和 `applications.spec.js` 使用隔离合成数据/IPC；应用选择套件另只读系统 TextEdit 的公开应用元数据，不启动所选应用，均不读写系统剪贴板，无需停止原版。富文本/纯文本套件的合成 ClipboardEvent 使用独立 DataTransfer，不访问系统剪贴板。可单独运行 `npm run test:ui -- test/ui/search-cache.spec.js` 或其他独立文件。
+- `test:ui`：真实 Electron + IPC。`app.spec.js` 读写系统剪贴板，使用隔离测试数据、不读取已有历史；测试前保存、结束后恢复系统剪贴板。运行该套件前退出其他剪贴板记录工具，可避免其收录测试内容。`media.spec.js`、`media-requests.spec.js`、`rich-lists.spec.js`、`rich-copy.spec.js`、`plain-paste.spec.js`、`rtf.spec.js`、`search-cache.spec.js`、`export.spec.js`、`import.spec.js`、`text-identity.spec.js` 和 `applications.spec.js` 使用隔离合成数据/IPC；应用选择套件另只读系统 TextEdit 的公开应用元数据，不启动所选应用，均不读写系统剪贴板，无需停止原版。富文本/纯文本套件的合成 ClipboardEvent 使用独立 DataTransfer，不访问系统剪贴板。可单独运行 `npm run test:ui -- test/ui/search-cache.spec.js` 或其他独立文件。
 - 隔离数据目录不隔离全机剪贴板。`app.spec.js` 启动前检查已知 Paste/Paste Easy/Paste Like 进程，存在未停止的程序或无法检查时，该套件先失败，不启动其测试应用或写剪贴板；其他名称的工具仍须人工确认已退出。可先运行 `node scripts/clipboard-test-environment.js` 检查。第八轮发现原版仍常驻，因此更早的合成测试内容可能已被它收录，未核实或直接清理原版历史；不可把恢复当前剪贴板当作恢复其他应用的历史。
 - `test:ui` 运行前自动编译原生桥和编辑器；构建产物也包含编辑器离线包，不依赖 CDN。
 - `test:packaged`：对构建产物运行同一组端到端测试。
@@ -137,6 +141,7 @@ OCR 缓存保存在同一库中，绑定当前图片签名，图片改变后重�
 - `src/monitor.js`：变化计数、异步读取失效、暂停边界和自主复制抑制。
 - `src/editor-entry.mjs` / `src/image-editor.js`：Tiptap 基础富文本编辑、系统图像处理与非破坏性图片草稿。
 - `src/rich-content.mjs`：富文本净化、嵌入图边界、表格网格/列宽规范化与纯文本坐标序列化。
+- `src/rich-text.js` / `src/native-rich.mjs`：系统 RTF 转换、正文校验、生命周期/缓存与隔离样式表内联。
 - `src/image-text.js` / `native/images.m`：版本化 OCR 队列、系统 Vision 识别/分割与 Core Image 处理。
 - `src/preview.*` / `src/transfers.js`：独立预览、受隔离的富文本显示、原始文件拖出与系统分享。
 - `src/store.js` / `src/model.js`：原子存储、迁移、Pinboard 与搜索策略。

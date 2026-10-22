@@ -5,6 +5,26 @@ const labels = { text: '文本', code: '文本', link: '链接', image: '图片'
 let state, dirty = false, statusTimer, richEditor, imageBusy = false, ocrOpen = false, ocrBusy = false, saveBusy = false;
 let composing = false;
 let pendingCommand;
+let nativeRich;
+function needsNative(item) { return ['text', 'code', 'link', 'color'].includes(item.type) && !!item.rtf; }
+function loadNative(item) {
+  if (!needsNative(item)) { nativeRich = null; return; }
+  if (nativeRich?.id === item.id && nativeRich.signature === item.signature) return;
+  const entry = { id: item.id, signature: item.signature, loading: true }; nativeRich = entry;
+  (async () => {
+    try {
+      let html = item.html;
+      if (!html) {
+        const result = await api.getRichText(item.id, item.signature);
+        if (result.text !== item.body && result.text !== `${item.body}\n`) throw new Error('RTF与正文不一致，原文未修改。');
+        html = result.html;
+      }
+      Object.assign(entry, await PasteEditor.nativeRichHTML(html));
+    } catch (error) { entry.reason = error.message; }
+    entry.loading = false;
+    if (nativeRich === entry && state?.id === entry.id && state.item.signature === entry.signature && state.mode !== 'rename') render(state, true);
+  })();
+}
 function icons() { lucide.createIcons(); }
 function status(message) {
   $('#previewStatus').textContent = message; $('#previewStatus').hidden = false;
@@ -117,10 +137,10 @@ function renderFiles(item) {
   }
   return list;
 }
-function render(value) {
+function render(value, force = false) {
   if (!value) return;
   if (state?.id !== value.id || value.mode !== 'view') ocrOpen = false;
-  if (state?.id === value.id && state.mode === value.mode && (dirty || value.mode !== 'view')) {
+  if (!force && state?.id === value.id && state.mode === value.mode && (dirty || value.mode !== 'view')) {
     state.boards = value.boards; state.item.boardIds = value.item.boardIds;
     if (value.imageEdit) { state.imageEdit = value.imageEdit; state.item = value.item; markDirty(value.imageEdit.changed || imageBusy || value.imageEdit.busy); renderImage(); }
     renderPinboards(); renderOCR(); return;
@@ -129,7 +149,11 @@ function render(value) {
   closeTableMenu();
   richEditor?.destroy(); richEditor = null;
   const item = value.item, editing = value.mode !== 'view';
-  const supported = item.type !== 'text' || PasteEditor.supports(item.html);
+  loadNative(item);
+  const native = needsNative(item) ? nativeRich : null, html = native?.html || item.html;
+  const reason = native?.loading ? '正在读取富文本…' : native?.reason || (item.type === 'text' ? PasteEditor.inspect(html).reason : '')
+    || (item.rtf && html && new DOMParser().parseFromString(html, 'text/html').querySelector('img') ? '此RTF的内嵌图像暂不支持编辑，原文未修改。' : '');
+  const supported = !reason;
   $('#previewTitle').textContent = item.renamed ? item.title : labels[item.type];
   $('#previewMeta').textContent = item.type === 'image' ? `${item.size?.width || '?'} × ${item.size?.height || '?'}`
     : item.type === 'file' ? `${item.files.length} 个文件` : `${[...item.body].length} 个字符`;
@@ -138,18 +162,29 @@ function render(value) {
   $('#editPreview').title = supported ? '编辑' : '此富文本暂不支持无损编辑';
   $('#savePreview').hidden = !editing; $('#copyPreview').hidden = editing;
   $('#savePreview').disabled = false;
-  $('#editTools').hidden = !editing || value.mode === 'rename' || item.type !== 'text' || !supported;
+  $('#editTools').hidden = !editing || value.mode === 'rename' || (item.type !== 'text' && !native) || !supported;
   $('#imageTools').hidden = !value.imageEdit;
   const content = $('#previewContent'); content.replaceChildren(); content.className = `preview-content ${item.type === 'code' ? 'code' : ''}`;
   if (value.imageEdit) renderImage();
   else if (editing && value.mode !== 'rename' && !supported) {
-    content.append(richPreview(item.html)); $('#savePreview').hidden = true; $('#copyPreview').hidden = false;
-    status(PasteEditor.inspect(item.html).reason);
+    if (html) content.append(richPreview(html));
+    else { const text = document.createElement('pre'); text.textContent = item.body; content.append(text); }
+    $('#savePreview').hidden = true; $('#copyPreview').hidden = false;
+    status(reason);
   }
-  else if (editing && value.mode !== 'rename' && item.type === 'text') {
+  else if (editing && value.mode !== 'rename' && (item.type === 'text' || native)) {
     content.classList.add('rich-document');
-    richEditor = PasteEditor.create(content, { html: item.html, text: item.body, onUnsupported: status,
+    richEditor = PasteEditor.create(content, { html, text: item.body, allowImages: !item.rtf, onUnsupported: status,
       onUpdate: changed => { markDirty(changed); if (richEditor) $('#previewMeta').textContent = `${[...richEditor.content().body].length} 个字符`; }, onSelection: updateTools });
+    if (native && !item.html) {
+      const originalContent = richEditor.content, initial = originalContent().body;
+      if (item.body === `${initial}\n`) richEditor.content = () => { const value = originalContent(); return { ...value, body: `${value.body}\n` }; };
+      else if (initial !== item.body) {
+        richEditor.destroy(); richEditor = null; content.replaceChildren(richPreview(html));
+        $('#editTools').hidden = true; $('#savePreview').hidden = true; $('#copyPreview').hidden = false;
+        status('RTF结构与正文不一致，原文未修改。');
+      }
+    }
     updateTools();
   } else if (editing) {
     const input = document.createElement(value.mode === 'rename' ? 'input' : 'textarea');
@@ -160,9 +195,11 @@ function render(value) {
   } else if (item.type === 'image' && /^data:image\/(png|jpeg|gif|webp);base64,/.test(item.body)) {
     renderImage();
   } else if (item.type === 'file') content.append(renderFiles(item));
-  else if (item.html) content.append(richPreview(item.html));
+  else if (html) content.append(richPreview(html));
   else { const text = document.createElement('pre'); text.textContent = item.body; content.append(text); }
   renderPinboards(); renderOCR(); icons(); $('.preview-shell').inert = saveBusy; document.body.dataset.previewReady = 'true';
+  if (reason && value.mode !== 'rename') status(reason);
+  else if ($('#previewStatus').textContent === '正在读取富文本…') { clearTimeout(statusTimer); $('#previewStatus').hidden = true; }
   if (!saveBusy) {
     if (richEditor) richEditor.focus();
     else {

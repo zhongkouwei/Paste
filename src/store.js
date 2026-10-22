@@ -191,7 +191,9 @@ class ClipStore {
         item.body = changes.body; item.preview = changes.body.slice(0, 16000);
         const html = typeof changes.html === 'string' ? changes.html : '';
         if (Buffer.byteLength(html) > 16 * 1024 * 1024) throw new Error('HTML exceeds 16 MB limit');
-        item.html = html; item.rtf = ''; item.signature = textSignature(item.body, item.html);
+        const rtf = typeof changes.rtf === 'string' ? changes.rtf : '';
+        if (Buffer.byteLength(rtf) > 16 * 1024 * 1024) throw new Error('RTF exceeds 16 MB limit');
+        item.html = html; item.rtf = rtf; item.signature = textSignature(item.body, item.html, item.rtf);
       }
       if (Array.isArray(changes.boardIds)) item.boardIds = [...new Set(changes.boardIds.filter(b => this.data.boards.some(board => board.id === b)))];
       item.isFavorite = item.boardIds.length > 0;

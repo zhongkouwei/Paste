@@ -415,6 +415,28 @@ test('real plain clipboard paste preserves blank lines, padded ordinals and Mark
   const exported = await application.evaluate((_electron, id) => globalThis.__pasteTest.store.exportData().items.find(item => item.id === id), id);
   expect(exported.body).toBe(text);
 });
+test('real RTF clipboard capture edits and copies regenerated rich formats without losing identity', async () => {
+  const previous = (await page.evaluate(() => window.paste.getLibrary())).settings;
+  try {
+    await page.evaluate(() => window.paste.saveSettings({ paused: false, excludedApps: [], plainText: false }));
+    const original = await application.evaluate(async ({ clipboard, ClipboardItem }) => {
+      const rtf = String.raw`{\rtf1\ansi{\b Real RTF only} sample}`;
+      await clipboard.write([new ClipboardItem({ 'text/plain': 'Real RTF only sample', 'text/rtf': rtf })]);
+      const hooks = globalThis.__pasteTest; await hooks.poll(); return hooks.store.get(hooks.store.data.items[0].id);
+    });
+    expect(original.rtf).toContain('rtf1');
+    const opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id, { mode: 'edit' }), original.id);
+    const preview = await opened, editor = preview.getByRole('textbox', { name: '剪贴板内容' }); await expect(editor.locator('strong')).toHaveText('Real RTF only');
+    await editor.evaluate(element => { element.editor.commands.focus('end'); element.editor.commands.insertContent('!'); });
+    const closed = preview.waitForEvent('close'); await preview.locator('#savePreview').click(); await closed;
+    const saved = await page.evaluate(id => window.paste.getItem(id), original.id); expect(saved.body).toBe('Real RTF only sample!'); expect(saved.rtf).not.toBe(original.rtf);
+    await page.evaluate(id => window.paste.copy(id, { paste: false }), original.id);
+    const copied = await application.evaluate(() => globalThis.__pasteTest.clip.read()); expect(copied.text).toBe(saved.body); expect(copied.rtf).toBe(saved.rtf); expect(copied.html).toContain('<strong>Real RTF only</strong>'); expect(copied.signature).toBe(saved.signature);
+    await application.evaluate(() => globalThis.__pasteTest.poll()); expect((await page.evaluate(() => window.paste.getLibrary())).items.filter(item => item.id === original.id)).toHaveLength(1);
+    await page.evaluate(id => window.paste.copy(id, { paste: false, plain: true }), original.id);
+    const plain = await application.evaluate(async ({ clipboard }) => ({ text: await clipboard.readText(), types: (await clipboard.read())[0].types })); expect(plain.text).toBe(saved.body); expect(plain.types).not.toContain('text/rtf');
+  } finally { await page.evaluate(settings => window.paste.saveSettings(settings), previous); }
+});
 test('opening an editor or undoing all changes never normalizes the original HTML or RTF', async () => {
   await application.evaluate(async ({ clipboard, ClipboardItem }) => {
     await clipboard.write([new ClipboardItem({ 'text/plain': 'No change', 'text/html': '<div><b>No change</b></div>', 'text/rtf': '{\\rtf1\\ansi No change}' })]);

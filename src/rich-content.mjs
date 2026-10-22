@@ -56,9 +56,10 @@ export function selectedTableText({ node, pos, range }) {
   return tableText(node, { from: Math.max(0, range.from - pos - 1), to: Math.min(node.content.size, range.to - pos - 1) });
 }
 
-const STYLE_PROPERTIES = [
+export const STYLE_PROPERTIES = [
   'color', 'background-color', 'font-family', 'font-size', 'font-weight', 'font-style', 'line-height',
   'text-align', 'text-decoration', 'text-indent', 'white-space', 'vertical-align', 'list-style-type', 'list-style-position',
+  'font-kerning', 'letter-spacing', 'text-shadow', '-webkit-text-stroke', '-webkit-text-stroke-width', '-webkit-text-stroke-color',
   'width', 'height', 'min-width', 'max-width', 'min-height', 'max-height', 'border-collapse', 'border-spacing', 'table-layout',
   'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
   'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',

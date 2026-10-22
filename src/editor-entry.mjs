@@ -7,6 +7,7 @@ import { closeHistory } from '@tiptap/pm/history';
 import { createRichContentPolicy, safeStyle, selectedTableText, plainTextSlice } from './rich-content.mjs';
 import { RichOrderedList, RichBulletList, RichListItem, plainText } from './rich-lists.mjs';
 import { clipboardText, copiedListNumbers } from './rich-copy.mjs';
+export { nativeRichHTML } from './native-rich.mjs';
 
 const policy = createRichContentPolicy(window);
 export const inspect = html => policy.inspect(html);
@@ -17,7 +18,21 @@ const PreservedStyle = Extension.create({
   name: 'preservedStyle',
   addGlobalAttributes() { return [{
     types: ['paragraph', 'heading', 'blockquote', 'codeBlock', 'bulletList', 'orderedList', 'listItem', 'table', 'tableRow', 'tableCell', 'tableHeader', 'image', 'textStyle'],
-    attributes: { style: { default: null, parseHTML: node => safeStyle(node) || null,
+    attributes: { style: { default: null, parseHTML: node => {
+      const style = node.ownerDocument.createElement('span').style; style.cssText = safeStyle(node);
+      if (node.tagName === 'SPAN') {
+        // Formatting marks own these semantics; duplicate CSS would survive toggling a mark off.
+        if (/^(bold(er)?|[5-9]\d{2,})$/.test(style.fontWeight)) style.removeProperty('font-weight');
+        if (style.fontStyle === 'italic') style.removeProperty('font-style');
+        const decoration = style.textDecoration;
+        if (/underline|line-through/.test(decoration)) {
+          style.removeProperty('text-decoration');
+          const rest = decoration.replace(/\b(underline|line-through)\b/g, '').trim();
+          if (rest) style.textDecoration = rest;
+        }
+      }
+      return style.cssText || null;
+    },
       renderHTML: attributes => attributes.style ? { style: attributes.style } : {} } }
   }]; }
 });
@@ -37,7 +52,7 @@ const preciseCell = Cell => Cell.extend({
 });
 const EmbeddedImage = Image.extend({ renderText: ({ node }) => node.attrs.alt || '' });
 
-export function create(element, { html, text = '', onUpdate, onSelection, onUnsupported } = {}) {
+export function create(element, { html, text = '', allowImages = true, onUpdate, onSelection, onUnsupported } = {}) {
   let initialDocument;
   const content = html ? sanitize(html) : { type: 'doc', content: text.split('\n').map(line => ({
     type: 'paragraph', content: line ? [{ type: 'text', text: line }] : []
@@ -53,7 +68,7 @@ export function create(element, { html, text = '', onUpdate, onSelection, onUnsu
       transformCopied: (slice, view) => copiedListNumbers(slice, view.state.selection),
       handlePaste: (_view, event) => {
         const clipboard = event.clipboardData, html = clipboard?.getData('text/html');
-        const reason = html ? inspect(html).reason : clipboard?.files.length ? '请单独复制图片后编辑，当前选区未修改。' : '';
+        const reason = html ? inspect(html).reason || (!allowImages && new DOMParser().parseFromString(html, 'text/html').querySelector('img') ? '当前RTF转换不能保留内嵌图像，选区未修改。' : '') : clipboard?.files.length ? '请单独复制图片后编辑，当前选区未修改。' : '';
         if (!reason) return false;
         onUnsupported?.(reason); return true;
       } },

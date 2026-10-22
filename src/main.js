@@ -13,6 +13,7 @@ const { ClipboardMonitor } = require('./monitor');
 const { ImageProcessor, ImageDraft } = require('./image-editor');
 const { ImportService } = require('./import-service');
 const { ImageInspector } = require('./image-inspector');
+const { RichTextService, unsupportedRTF } = require('./rich-text');
 const { ApplicationCatalog, validApplicationID, captureSource } = require('./applications');
 const { ImageTextIndex } = require('./image-text');
 const { SearchService } = require('./search-service');
@@ -27,6 +28,7 @@ const TEST_MODE = process.argv.includes('--test-mode');
 app.setPath('userData', process.env.PASTE_DATA_DIR ? path.resolve(process.env.PASTE_DATA_DIR) : path.join(app.getPath('appData'), 'Paste Easy'));
 let mainWindow, settingsWindow, previewWindow, tray, store, transfers, pollTimer, targetApp;
 let previewState = null, previewDirty = false, previewOpening = false, activeShare;
+let richTextService, previewRichJob, previewSaveJob;
 let hotkeys, monitor, imageProcessor, imageDraft, imageText, capabilities = {}, processingClosing = false, processingStopped = false;
 let searchService, mediaService, importService, imageInspector, applicationCatalog, exportDialogOpen = false, importDialogOpen = false, applicationDialogOpen = false;
 let quitting = false, quitAfterPreview = false, copyQueue = Promise.resolve(), settingsQueue = Promise.resolve();
@@ -144,11 +146,17 @@ function getPreviewState() {
 function closePreview() {
   if (previewWindow && !previewWindow.isDestroyed()) previewWindow.close();
 }
+function cancelPreviewRich() { previewRichJob?.controller.abort(); previewRichJob = null; previewSaveJob?.abort(); }
+function trustedPreview(event) { return event.sender === previewWindow?.webContents && event.senderFrame === event.sender.mainFrame; }
+function samePreview(window, id, signature) {
+  return previewWindow === window && !window.isDestroyed() && previewState?.id === id && store.getMetadata(id)?.signature === signature;
+}
 function showPreview(id, { mode = 'view', anchor, ids = [] } = {}) {
   if (!store.get(id)) throw new Error('项目已被删除');
   if (!['view', 'edit', 'rename'].includes(mode)) throw new Error('Invalid preview mode');
   if (mode === 'edit' && store.get(id).type === 'file') throw new Error('文件项目不支持内容编辑');
   if (previewWindow && !previewWindow.isDestroyed() && (previewDirty || previewState?.mode !== 'view')) { previewWindow.focus(); return false; }
+  if (previewState?.id !== id) cancelPreviewRich();
   imageDraft?.dispose(); imageDraft = null;
   const item = store.get(id);
   if (mode === 'edit' && item.type === 'image') {
@@ -182,6 +190,7 @@ function showPreview(id, { mode = 'view', anchor, ids = [] } = {}) {
     else { quitAfterPreview = false; quitting = false; }
   });
   previewWindow.on('closed', () => {
+    cancelPreviewRich();
     imageDraft?.dispose(); imageDraft = null;
     store.protectedItemId = null;
     previewWindow = null; previewState = null; previewDirty = false;
@@ -358,6 +367,19 @@ function registerIPC() {
     'board:pin': (_event, ids, boardId, remove) => { store.pinItems(ids, boardId, !!remove); emit(); return snapshot(); },
     'preview:open': (_event, id, options) => showPreview(id, options),
     'preview:get': () => getPreviewState(),
+    'preview:richText': (event, id, signature) => {
+      if (!trustedPreview(event) || previewState?.id !== id) throw new Error('富文本预览已关闭');
+      const item = store.get(id), window = previewWindow;
+      if (!item || item.signature !== signature || !['text', 'code', 'link', 'color'].includes(item.type) || !item.rtf) throw new Error('富文本内容已改变');
+      if (previewRichJob?.id === id && previewRichJob.signature === signature) return previewRichJob.promise;
+      previewRichJob?.controller.abort();
+      const controller = new AbortController(), job = { controller, id, signature };
+      job.promise = richTextService.read(item.rtf, { signal: controller.signal, key: signature }).then(result => {
+        if (!samePreview(window, id, signature)) throw new Error('富文本内容已改变');
+        return result;
+      }).finally(() => { if (previewRichJob === job) previewRichJob = null; });
+      previewRichJob = job; return job.promise;
+    },
     'preview:close': closePreview,
     'preview:dirty': (event, value) => { if (event.sender === previewWindow?.webContents) previewDirty = !!value || !!imageDraft?.busy; },
     'preview:image': async (event, action) => {
@@ -370,9 +392,10 @@ function registerIPC() {
       previewDirty = draft.state().changed;
       return getPreviewState();
     },
-    'preview:save': (event, changes) => {
+    'preview:save': async (event, changes) => {
       if (!previewState) throw new Error('Preview closed');
-      if (event.sender !== previewWindow?.webContents) throw new Error('Untrusted preview editor');
+      if (!trustedPreview(event)) throw new Error('Untrusted preview editor');
+      if (previewSaveJob) throw new Error('正在保存富文本');
       if (imageDraft) {
         if (imageDraft.busy) throw new Error('图片正在处理中');
         if (imageDraft.state().changed) {
@@ -385,13 +408,26 @@ function registerIPC() {
           imageDraft.markSaved();
           queueImageText(store.get(previewState.id));
         }
-      } else store.update(previewState.id, changes || {});
+      } else {
+        const id = previewState.id, window = previewWindow, source = store.get(id);
+        if (typeof changes?.body === 'string' && ['text', 'code', 'link', 'color'].includes(source.type) && source.rtf) {
+          if (unsupportedRTF(source.rtf)) throw new Error('此RTF包含系统转换无法保留的附件或文档结构，原文未修改。');
+          if (typeof changes.html !== 'string') throw new Error('富文本编辑内容不可用，原文未修改。');
+          const controller = new AbortController(); previewSaveJob = controller;
+          try {
+            const rtf = await richTextService.write(changes.html, changes.body, { signal: controller.signal });
+            if (!samePreview(window, id, source.signature)) throw new Error('富文本内容已改变，原文未修改。');
+            store.update(id, { ...changes, rtf });
+          } finally { if (previewSaveJob === controller) previewSaveJob = null; }
+        } else store.update(id, changes || {});
+      }
       previewDirty = false; emit(); return snapshot();
     },
     'preview:navigate': (_event, direction) => {
       if (!previewState || previewState.mode !== 'view' || previewDirty || ![-1, 1].includes(direction)) return false;
       const ids = previewState.ids.filter(id => !!store.get(id)), index = ids.indexOf(previewState.id), next = ids[index + direction];
       if (!next) return false;
+      cancelPreviewRich();
       previewState = { ...previewState, id: next, ids, mode: 'view' }; previewWindow.webContents.send('preview:changed', getPreviewState()); return true;
     },
     'item:drag': dragItem,
@@ -497,6 +533,7 @@ else {
       searchService = new SearchService({ directory: app.getPath('userData') });
       mediaService = new MediaService(store, nativeImage);
       imageInspector = new ImageInspector(electron);
+      richTextService = new RichTextService();
       applicationCatalog = new ApplicationCatalog(request => nativeInput('application-info', request, 10000));
       importService = new ImportService(store, {
         validateImage: async (file, { turns = 0, signal } = {}) => {
@@ -542,7 +579,7 @@ else {
       registerIPC(); applyRuntimeSettings();
       store.exportService.onChanged = state => { for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('export:changed', state); };
       importService.onChanged = state => { if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('import:changed', state); };
-      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, isIgnored, imageProcessor, imageInspector, applicationCatalog, imageText, searchService, mediaService, importService, thumbnail };
+      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, isIgnored, imageProcessor, imageInspector, richTextService, applicationCatalog, imageText, searchService, mediaService, importService, thumbnail };
       try { hotkeys.apply(store.data.settings); } catch (error) { report(error); }
       for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(event, () => { if (mainWindow.isVisible()) placePanel(); });
       app.on('activate', () => showPanel());
@@ -560,7 +597,7 @@ app.on('before-quit', event => {
     event.preventDefault(); clearInterval(pollTimer);
     if (!processingClosing) {
       processingClosing = true;
-      Promise.allSettled([imageText?.close(), imageProcessor?.close(), imageInspector?.close(), searchService?.close(), store?.exportService.close(), importService?.close()]).then(() => { processingStopped = true; app.quit(); });
+      Promise.allSettled([imageText?.close(), imageProcessor?.close(), imageInspector?.close(), richTextService?.close(), searchService?.close(), store?.exportService.close(), importService?.close()]).then(() => { processingStopped = true; app.quit(); });
     }
   }
 });
