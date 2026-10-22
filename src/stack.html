@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Paste Stack</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="stack.css">
+</head>
+<body>
+  <main class="stack-panel">
+    <header class="stack-header"><i data-lucide="layers"></i><h1>Stack</h1><span id="count" aria-label="待粘贴数量">0</span>
+      <button id="next" class="icon-button" title="粘贴下一项" aria-label="粘贴下一项"><i data-lucide="clipboard-paste"></i></button>
+      <button id="reverse" class="icon-button" title="反转顺序" aria-label="反转顺序" aria-pressed="false"><i data-lucide="arrow-down-up"></i></button>
+      <button id="stop" class="icon-button" title="结束 Stack 并清空队列" aria-label="结束 Stack 并清空队列"><i data-lucide="x"></i></button>
+    </header>
+    <div class="stack-state"><span id="mode"></span><button id="retry" class="icon-button small" title="重新检查辅助功能权限" aria-label="重新检查辅助功能权限"><i data-lucide="refresh-cw"></i></button><button id="permission" class="icon-button small" title="打开辅助功能设置" aria-label="打开辅助功能设置"><i data-lucide="shield-alert"></i></button></div>
+    <p id="error" role="status" hidden></p>
+    <ol id="entries" aria-label="Stack队列"></ol>
+    <p id="empty">Stack 为空</p>
+  </main>
+  <script src="../node_modules/lucide/dist/umd/lucide.js"></script>
+  <script src="stack.js"></script>
+</body>
+</html>

@@ -1,7 +1,8 @@
 class ClipboardMonitor {
-  constructor({ readVersion, readSnapshot, onSnapshot, isPaused = () => false, isKnown = () => false, onError = () => {} }) {
-    Object.assign(this, { readVersion, readSnapshot, onSnapshot, isPaused, isKnown, onError });
+  constructor({ readVersion, readSnapshot, onSnapshot, isPaused = () => false, isKnown = () => false, onError = () => {}, readContext = () => null, onObserved = () => {} }) {
+    Object.assign(this, { readVersion, readSnapshot, onSnapshot, isPaused, isKnown, onError, readContext, onObserved });
     this.version = null; this.signature = ''; this.generation = 0; this.busy = false; this.suspended = 0; this.initial = true;
+    this.pending = null; this.owned = new Map(); this.ownedTokens = new Set();
   }
 
   async versionNow() {
@@ -9,10 +10,14 @@ class ClipboardMonitor {
     return Number.isInteger(value) ? value : null;
   }
 
-  async tick() {
-    if (this.busy || this.suspended) return;
+  tick() {
+    if (this.pending) return this.pending;
+    if (this.suspended) return Promise.resolve();
+    this.pending = this.check().finally(() => { this.pending = null; }); return this.pending;
+  }
+  async check() {
     this.busy = true;
-    const generation = this.generation;
+    const generation = this.generation, context = this.readContext();
     try {
       const before = await this.versionNow();
       if (generation !== this.generation || this.suspended) return;
@@ -23,13 +28,26 @@ class ClipboardMonitor {
       // A copy or settings change during an asynchronous read invalidates that
       // candidate. Do not advance the version; retry the new clipboard next tick.
       if (generation !== this.generation || this.suspended || this.isPaused() || (before !== null && before !== after)) return;
-      if (snapshot && snapshot.signature !== this.signature && !(this.initial && this.isKnown(snapshot.signature))) await this.onSnapshot(snapshot);
+      const owned = !!snapshot?.clipboardWriteID && this.owned.get(after) === snapshot.clipboardWriteID;
+      const uncertain = !owned && !!snapshot?.clipboardWriteID && this.ownedTokens.has(snapshot.clipboardWriteID);
+      let saved;
+      if (snapshot && !owned && snapshot.signature !== this.signature && !(this.initial && this.isKnown(snapshot.signature))) {
+        const { clipboardWriteID: _writeID, ...record } = snapshot;
+        saved = await this.onSnapshot(record);
+      }
+      await this.onObserved(snapshot, { version: after, initial: this.initial, owned, uncertain, context, saved });
       this.version = after; this.signature = snapshot?.signature || ''; this.initial = false;
     } catch (error) { this.onError(error); }
     finally { this.busy = false; }
   }
 
-  remember(signature) { this.signature = signature; this.initial = false; }
+  remember(signature, lease) {
+    this.signature = signature; this.initial = false;
+    if (Number.isSafeInteger(lease?.version) && typeof lease.token === 'string') this.owned.set(lease.version, lease.token);
+    if (typeof lease?.token === 'string') this.ownedTokens.add(lease.token);
+    while (this.owned.size > 64) this.owned.delete(this.owned.keys().next().value);
+    while (this.ownedTokens.size > 64) this.ownedTokens.delete(this.ownedTokens.values().next().value);
+  }
 
   async suspend(operation, { baseline = false } = {}) {
     this.generation += 1; this.suspended += 1;

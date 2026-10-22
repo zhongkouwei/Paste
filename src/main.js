@@ -16,7 +16,9 @@ const { ImportService } = require('./import-service');
 const { ImageInspector } = require('./image-inspector');
 const { RichTextService, unsupportedRTF } = require('./rich-text');
 const { ApplicationCatalog, validApplicationID, captureSource } = require('./applications');
-const { PasteTargetSession, PasteDelivery } = require('./paste-target');
+const { PasteTargetSession, PasteDelivery, targetIdentity } = require('./paste-target');
+const { StackQueue } = require('./stack-queue');
+const { StackInput } = require('./stack-input');
 const { ClipboardOwnership } = require('./clipboard-ownership');
 const { ImageTextIndex } = require('./image-text');
 const { SearchService } = require('./search-service');
@@ -37,7 +39,8 @@ let searchService, mediaService, importService, imageInspector, applicationCatal
 let quitting = false, quitAfterPreview = false, copyQueue = Promise.resolve(), settingsQueue = Promise.resolve();
 let copyRequest = 0;
 let suppressBlur = false;
-let lastError = '', stack = [], stackMode = false, stackGeneration = 0;
+let lastError = '', stackWindow, stackReady, stackOpening, stackLifecycle = 0, stackPollRequested = false, stackPolling = null;
+const stackQueue = new StackQueue();
 const PANEL_HEIGHT = 332;
 const helper = path.join(app.getAppPath().replace(/app\.asar$/, 'app.asar.unpacked'), 'native/bin/paste-bridge');
 const pasteTargets = new PasteTargetSession({ ownPID: process.pid, read: () => native('frontmost'),
@@ -49,6 +52,18 @@ const pasteDelivery = new PasteDelivery({ simulate: TEST_MODE, permission: () =>
   activate: ({ pid, bundleId, launchTime }, lease) => nativeInput('paste', { target: { pid, bundleId, launchTime }, lease }),
   dismiss: () => { hidePanel(); closePreview(); }, recover: () => showPanel(),
   onError: error => console.error('Paste delivery failed', error.message) });
+const stackInput = new StackInput({ helper, ownPID: process.pid, simulate: TEST_MODE,
+  baseline: () => monitor?.version ?? 0,
+  inventory: epoch => stackQueue.active && store.data.settings.pasteTarget === 'application' ? stackQueue.inventory(epoch) : { count: 0, busy: false },
+  onPaste: ({ target, epoch }) => nextInStack({ target, nativeEpoch: epoch, background: true }),
+  onClipboard: (version, reset) => {
+    if (!stackQueue.active) return;
+    if (reset || store.data.settings.paused) stackQueue.version = version;
+    requestStackPoll();
+  },
+  onState: () => { if (store) emit(); },
+  onFailure: error => { stackQueue.cancelPending(); stackInput.reset(); stackQueue.deliveryError = error.message; if (store) emit(); }
+});
 
 async function native(command, ...args) {
   if (process.platform !== 'darwin' || !fs.existsSync(helper)) return {};
@@ -66,10 +81,17 @@ async function nativeInput(command, data, timeout = 4000, options = {}) {
   }
 }
 
-function snapshot() { return { ...store.snapshot(), capabilities, status: { error: lastError, stackMode, stackCount: stack.length } }; }
+function snapshot() { return { ...store.snapshot(), capabilities, status: { error: lastError, stackMode: stackQueue.active, stackCount: stackQueue.entries.length } }; }
+function stackSnapshot(library = store.snapshot()) {
+  const items = new Map(library.items.map(item => [item.id, item]));
+  return { ...stackQueue.snapshot(), input: stackInput.snapshot(), paused: store.data.settings.paused,
+    copyOnly: store.data.settings.pasteTarget !== 'application', entries: stackQueue.snapshot().entries.map(entry => ({ ...entry, item: items.get(entry.itemId) })) };
+}
 function emit() {
-  stack = stack.filter(id => !!store.get(id));
+  stackQueue.retain(id => !!store.getMetadata(id));
   const library = snapshot();
+  stackInput.sync();
+  if (stackWindow && !stackWindow.isDestroyed()) stackWindow.webContents.send('stack:changed', stackSnapshot(library));
   for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('library:changed', library);
   if (previewWindow && !previewWindow.isDestroyed()) {
     if (previewState?.draft || store.get(previewState?.id)) previewWindow.webContents.send('preview:changed', getPreviewState());
@@ -105,7 +127,7 @@ async function clipboardSnapshot() {
   if (!formats.length) return null;
   const source = await currentSource();
   if (isIgnored(formats, source)) return null;
-  const metadata = { source: source ? { name: source.name, bundleId: source.bundleId, icon: source.icon, color: sourceColor(source) } : null };
+  const metadata = { ...(value.clipboardWriteID ? { clipboardWriteID: value.clipboardWriteID } : {}), source: source ? { name: source.name, bundleId: source.bundleId, icon: source.icon, color: sourceColor(source) } : null };
   if (value.image) {
     return { ...metadata, type: 'image', title: '图片', body: '', imageBuffer: value.image, signature, signatureFormat: 'pixels-v1' };
   }
@@ -125,10 +147,59 @@ function capture(item) {
     delete item.imageBuffer;
   }
   const saved = store.add(item); lastError = ''; if (store.data.settings.sound && !TEST_MODE) shell.beep(); emit(); queueImageText(saved);
+  return saved;
 }
 function imageBytes(item) { return item.asset ? store.readAsset(item.asset) : nativeImage.createFromDataURL(item.body).toPNG(); }
 function queueImageText(item) { if (capabilities.textRecognition && item.type === 'image') imageText.enqueue(item.id).catch(error => console.error('Image text recognition:', error.message)); }
 async function poll() { return monitor.tick(); }
+function requestStackPoll() {
+  stackPollRequested = true;
+  if (stackPolling) return stackPolling;
+  stackPolling = (async () => {
+    while (stackPollRequested && stackQueue.active && !quitting) { stackPollRequested = false; await poll(); }
+  })().finally(() => { stackPolling = null; });
+  return stackPolling;
+}
+async function showStack() {
+  if (!stackWindow || stackWindow.isDestroyed()) {
+    const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+    stackWindow = createWindow('stack.html', { type: 'panel', focusable: false, show: false, frame: false,
+      width: 340, height: 430, minWidth: 280, minHeight: 230, x: display.x + display.width - 360, y: display.y + 30,
+      alwaysOnTop: true, skipTaskbar: true, fullscreenable: false, minimizable: false, title: 'Paste Stack', backgroundColor: '#f4f4f4' });
+    const window = stackWindow;
+    stackReady = new Promise((resolve, reject) => {
+      window.webContents.once('did-finish-load', resolve);
+      window.webContents.once('did-fail-load', (_event, code, description) => reject(Error(`Stack窗口加载失败: ${code} ${description}`)));
+    });
+    window.on('close', event => { if (!quitting) { event.preventDefault(); void stopStack(); } });
+    window.on('closed', () => { if (stackWindow === window) { stackWindow = null; stackReady = null; void stopStack(); } });
+    window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  }
+  await stackReady;
+  if (stackQueue.active && !quitting && !stackWindow?.isDestroyed()) { emit(); stackWindow.showInactive(); }
+}
+async function activateStack() {
+  if (stackQueue.active) { await showStack(); return true; }
+  if (stackOpening) return stackOpening;
+  const lifecycle = ++stackLifecycle;
+  const operation = (async () => {
+    const ready = await stackInput.start();
+    // Finish any history read from before activation before assigning the new
+    // collection session. It must not advance past a copy for the new session.
+    if (monitor.pending) await monitor.pending;
+    if (lifecycle !== stackLifecycle || quitting) return false;
+    stackQueue.start(stackInput.state.version ?? ready.version); emit();
+    try { await showStack(); } catch (error) { await stopStack(); throw error; }
+    return stackQueue.active;
+  })();
+  stackOpening = operation;
+  try { return await operation; } finally { if (stackOpening === operation) stackOpening = null; }
+}
+async function stopStack() {
+  stackLifecycle++; stackQueue.stop(); stackPollRequested = false;
+  if (stackWindow && !stackWindow.isDestroyed()) stackWindow.hide();
+  await stackInput.stop(); if (store && !quitting) emit(); return false;
+}
 
 function placePanel() {
   const display = screen.getDisplayNearestPoint(pasteTargets.snapshot()?.windowPoint || screen.getCursorScreenPoint());
@@ -326,6 +397,8 @@ async function performSaveSettings(changes) {
     else store.settings(settings);
   } catch (error) { if (shortcutsChanged) hotkeys.apply(previous); throw error; }
   applyRuntimeSettings();
+  if (settings.paused !== previous.paused && stackQueue.active) stackQueue.version = monitor.version;
+  if (settings.pasteTarget !== previous.pasteTarget) { stackQueue.cancelPending(); stackInput.reset(); }
   if (!TEST_MODE) app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin });
   emit(); return snapshot();
 }
@@ -339,18 +412,35 @@ function copyContext({ paste = false, plain = false } = {}) {
     pasteTarget: store.data.settings.pasteTarget, target: pasteTargets.snapshot() });
 }
 function copy(id, options) { copyRequest += 1; const context = copyContext(options); return queueCopy(() => performCopy(id, context)); }
-function nextInStack() {
+function nextInStack({ target, nativeEpoch, background = false, readTarget } = {}) {
   copyRequest += 1;
-  const generation = stackGeneration, context = copyContext({ paste: true });
+  const token = stackQueue.reserve(nativeEpoch === undefined ? 'manual' : 'native', nativeEpoch);
+  if (!token) return Promise.resolve({ ok: false, error: 'Stack 为空' });
+  const context = Object.freeze({ ...copyContext({ paste: true }), background, ...(background ? { target: target || null } : {}) });
+  // Start the lookup at acceptance, but reserve the occurrence and preferences
+  // first. A late result must not select from a reversed or replacement queue.
+  const destination = readTarget ? Promise.resolve().then(readTarget).then(value => ({ target: targetIdentity(value, process.pid) }), error => ({ error })) : null;
+  emit();
   return queueCopy(async () => {
-    if (generation !== stackGeneration) return { ok: false, error: 'Stack 已重置，请重新粘贴。' };
-    const id = stack[0];
-    if (!id) return { ok: false, error: 'Stack 为空' };
-    const result = await performCopy(id, context);
-    // A reset or deletion during the write must not consume a different queue head.
-    if (result.ok && generation === stackGeneration && stack[0] === id) stack.shift();
-    emit(); return result;
+    let result, failed = false;
+    try {
+      const resolved = destination ? await destination : null;
+      if (!stackQueue.begin(token)) return { ok: false, error: 'Stack 已重置或项目已移除，请重新粘贴。' };
+      if (resolved?.error) throw resolved.error;
+      result = await performCopy(token.itemId, resolved ? { ...context, target: resolved.target } : context);
+      failed = !result.ok;
+      if (token.session === stackQueue.session) stackQueue.deliveryError = result.ok ? '' : result.error;
+      return result;
+    } catch (error) { failed = true; if (token.session === stackQueue.session) stackQueue.deliveryError = error.message; throw error; }
+    finally {
+      stackQueue.finish(token, result?.ok === true);
+      if (failed && token.session === stackQueue.session) { stackQueue.cancelPending(); stackInput.reset(); }
+      emit();
+    }
   });
+}
+function nextFromStackWindow() {
+  return nextInStack({ readTarget: () => pasteTargets.read(), background: true });
 }
 async function recognizeItem(id, retry = false) {
   if (!capabilities.textRecognition) throw new Error('此系统不支持图片文字识别');
@@ -370,7 +460,12 @@ async function copyImageText(id) {
     if (request !== copyRequest || (Number.isInteger(version) && version !== currentVersion)) throw new Error('图片文字复制已被后续复制替代');
     const item = store.get(id), ocr = item?.ocr;
     if (!ocr?.text || ocr.signature !== item.signature) throw new Error('未识别到可复制的文字');
-    await monitor.suspend(async () => monitor.remember(await clip.write({ type: 'text', body: ocr.text })));
+    await monitor.suspend(async () => {
+      if (stackQueue.active && !stackInput.simulate) {
+        const receipt = await pasteOwnership.write(writeID => clip.write({ type: 'text', body: ocr.text }, { writeID }));
+        monitor.remember(receipt.signature, receipt.lease || { token: receipt.token });
+      } else monitor.remember(await clip.write({ type: 'text', body: ocr.text }));
+    });
     if (!TEST_MODE) { hidePanel(); closePreview(); }
     return { ok: true, copied: true };
   });
@@ -382,9 +477,9 @@ async function performCopy(id, context) {
   let lease;
   await monitor.suspend(async () => {
     const options = { plain: context.plain, image: item.asset ? store.readAsset(item.asset) : undefined };
-    if (context.paste && context.pasteTarget === 'application' && context.target && !pasteDelivery.simulate) {
+    if ((context.paste && context.pasteTarget === 'application' && context.target && !pasteDelivery.simulate) || (stackQueue.active && !stackInput.simulate)) {
       const receipt = await pasteOwnership.write(writeID => clip.write(item, { ...options, writeID }));
-      lease = receipt.lease; monitor.remember(receipt.signature);
+      lease = receipt.lease; monitor.remember(receipt.signature, lease || { token: receipt.token });
     } else monitor.remember(await clip.write(item, options));
   });
   return pasteDelivery.deliver({ ...context, lease });
@@ -552,9 +647,20 @@ function registerIPC() {
     'settings:open': openSettings, 'permission:get': () => native('permission'),
     'permission:open': () => shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'),
     'panel:hide': () => { closePreview(); hidePanel(); },
-    'stack:toggle': () => { stackMode = !stackMode; if (!stackMode) { stack = []; stackGeneration += 1; } emit(); return stackMode; },
-    'stack:add': (_event, id) => { if (!store.get(id)) throw new Error('Invalid item'); if (!stack.includes(id)) stack.push(id); emit(); return stack; },
-    'stack:next': nextInStack,
+    'stack:toggle': () => stackQueue.active || stackOpening ? stopStack() : activateStack(),
+    'stack:add': async (_event, id) => { if (!store.getMetadata(id)) throw new Error('Invalid item'); if (!await activateStack()) return []; stackQueue.add(id); emit(); return stackQueue.ordered().map(entry => entry.itemId); },
+    'stack:get': () => stackSnapshot(),
+    'stack:reverse': () => { stackQueue.reverse(); emit(); return stackSnapshot(); },
+    'stack:remove': (_event, id) => { stackQueue.remove(id); emit(); return stackSnapshot(); },
+    'stack:stop': stopStack,
+    'stack:retry': async () => {
+      if (stackQueue.active) {
+        if (stackInput.state.running) stackInput.refreshPermission();
+        else { await stackInput.start(); stackInput.reset(); }
+      }
+      return stackSnapshot();
+    },
+    'stack:next': event => event.sender === stackWindow?.webContents ? nextFromStackWindow() : nextInStack(),
     'library:export': async () => {
       if (applicationDialogOpen) throw new Error('请先关闭应用程序选择窗口。');
       if (importDialogOpen || importService.state().phase !== 'idle') throw new Error('请先完成或取消备份恢复。');
@@ -591,7 +697,7 @@ function registerIPC() {
     'library:revealImportBackup': () => { const file = importService.lastCheckpoint; if (!file || !fs.existsSync(file)) throw new Error('尚无恢复前备份。'); if (!TEST_MODE) shell.showItemInFolder(file); return file; }
   };
   for (const [channel, handler] of Object.entries(handlers)) ipcMain.handle(channel, (event, ...args) => {
-    if (![mainWindow?.webContents, settingsWindow?.webContents, previewWindow?.webContents].includes(event.sender) || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted IPC sender');
+    if (![mainWindow?.webContents, settingsWindow?.webContents, previewWindow?.webContents, stackWindow?.webContents].includes(event.sender) || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted IPC sender');
     return handler(event, ...args);
   });
 }
@@ -638,6 +744,11 @@ else {
           return value;
         },
         readSnapshot: clipboardSnapshot, onSnapshot: capture, onError: report,
+        readContext: () => stackQueue.active ? stackQueue.session : null,
+        onObserved: (value, { version, context, owned, uncertain, saved }) => {
+          const item = saved || (value && store.data.items.find(item => item.signature === value.signature));
+          stackQueue.observe(item?.id, { version, session: context, owned, uncertain }); emit();
+        },
         isPaused: () => store.data.settings.paused, isKnown: signature => store.data.items.some(item => item.signature === signature)
       });
       if (TEST_MODE && process.env.PASTE_TEST_SEED && !store.data.items.length) {
@@ -657,15 +768,15 @@ else {
       });
       hotkeys = new GlobalHotkeys(globalShortcut, {
         history: () => mainWindow.isVisible() || pasteTargets.pending ? hidePanel() : showPanel(),
-        stack: () => { stackMode = true; emit(); showPanel('stack'); }
+        stack: () => activateStack().catch(report)
       }, TEST_MODE);
       registerIPC(); applyRuntimeSettings();
       store.exportService.onChanged = state => { for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('export:changed', state); };
       importService.onChanged = state => { if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('import:changed', state); };
-      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, isIgnored, imageProcessor, imageInspector, richTextService, applicationCatalog, imageText, searchService, mediaService, importService, thumbnail, pasteTargets, pasteOwnership, pasteDelivery, showPanel, hidePanel, hotkeys, capturePreviewBlur: () => previewBlurAction(previewWindow) };
+      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, textSignature, monitor, isIgnored, imageProcessor, imageInspector, richTextService, applicationCatalog, imageText, searchService, mediaService, importService, thumbnail, pasteTargets, pasteOwnership, pasteDelivery, stackQueue, stackInput, requestStackPoll, showPanel, hidePanel, hotkeys, capturePreviewBlur: () => previewBlurAction(previewWindow) };
       try { hotkeys.apply(store.data.settings); } catch (error) { report(error); }
       for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(event, () => { if (mainWindow.isVisible()) placePanel(); });
-      app.on('activate', () => { if (!mainWindow.isVisible() && !pasteTargets.pending) showPanel(); });
+      app.on('activate', () => { if (stackQueue.active) void showStack().catch(report); else if (!mainWindow.isVisible() && !pasteTargets.pending) showPanel(); });
       mainWindow.webContents.once('did-finish-load', () => { if (process.argv.includes('--show') || TEST_MODE) showPanel(); });
       if (!TEST_MODE) pollTimer = setInterval(poll, 650);
       for (const item of store.data.items) queueImageText(item);
@@ -680,7 +791,7 @@ app.on('before-quit', event => {
     event.preventDefault(); clearInterval(pollTimer);
     if (!processingClosing) {
       processingClosing = true;
-      Promise.allSettled([imageText?.close(), imageProcessor?.close(), imageInspector?.close(), richTextService?.close(), searchService?.close(), store?.exportService.close(), importService?.close()]).then(() => { processingStopped = true; app.quit(); });
+      Promise.allSettled([stopStack(), imageText?.close(), imageProcessor?.close(), imageInspector?.close(), richTextService?.close(), searchService?.close(), store?.exportService.close(), importService?.close()]).then(() => { processingStopped = true; app.quit(); });
     }
   }
 });

@@ -16,7 +16,7 @@ class ClipboardOwnership {
     // could instead certify a newer copy made by another application.
     const lease = Number.isSafeInteger(version) && version >= 0 && version < Number.MAX_SAFE_INTEGER
       ? Object.freeze({ version: version + 1, token }) : null;
-    return { signature, lease };
+    return { signature, lease, token };
   }
   async verify(lease) {
     if (!validLease(lease)) return { ok: false, error: 'clipboard-unavailable' };

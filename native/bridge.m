@@ -2,6 +2,7 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import "images.h"
 #import "pasteboard.h"
+#import "stack-events.h"
 
 static void output(NSDictionary *value) {
     NSData *data = [NSJSONSerialization dataWithJSONObject:value options:NSJSONWritingSortedKeys error:nil];
@@ -118,6 +119,7 @@ static NSDictionary *preparePaste(id target) {
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSString *command = argc > 1 ? @(argv[1]) : @"";
+        if ([command isEqualToString:@"stack-events"]) return PasteRunStackEvents(NSPasteboard.generalPasteboard, YES, getppid());
         if ([command isEqualToString:@"frontmost"]) { frontmost(); return 0; }
         if ([command isEqualToString:@"application-info"]) {
             @try {
@@ -176,6 +178,7 @@ int main(int argc, const char *argv[]) {
                         CGEventRef down = CGEventCreateKeyboardEvent(NULL, 9, true), up = CGEventCreateKeyboardEvent(NULL, 9, false);
                         if (!down || !up) { if (down) CFRelease(down); if (up) CFRelease(up); return @{ @"ok": @NO, @"error": @"event-failed" }; }
                         CGEventSetFlags(down, kCGEventFlagMaskCommand); CGEventSetFlags(up, kCGEventFlagMaskCommand);
+                        CGEventSetIntegerValueField(down, kCGEventSourceUserData, PasteSyntheticKeyTag); CGEventSetIntegerValueField(up, kCGEventSourceUserData, PasteSyntheticKeyTag);
                         CGEventPost(kCGHIDEventTap, down); CGEventPost(kCGHIDEventTap, up);
                         CFRelease(down); CFRelease(up); return @{ @"ok": @YES };
                     });

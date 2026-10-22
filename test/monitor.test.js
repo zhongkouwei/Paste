@@ -66,3 +66,23 @@ test('a failed pause baseline leaves settings and capture retryable', async () =
   monitor.readVersion = async () => 1; await monitor.tick();
   assert.equal(state.captures.length, 1);
 });
+test('observation sees every stable recopy even when persistence deduplicates and never persists write metadata', async () => {
+  const observed = [], { state, monitor } = fixture({ readContext: () => 17, onObserved: (item, observation) => observed.push(observation) });
+  state.snapshot.clipboardWriteID = 'foreign-token';
+  await monitor.tick(); state.version++; await monitor.tick();
+  assert.equal(state.captures.length, 1); assert.equal(state.captures[0].clipboardWriteID, undefined);
+  assert.deepEqual(observed.map(value => [value.version, value.context]), [[1, 17], [2, 17]]);
+});
+test('owned receipts require BOTH version and token; unknown-version writes remain uncertain, never certified', async () => {
+  const observed = [], { state, monitor } = fixture({ onObserved: (_item, observation) => observed.push(observation) });
+  monitor.remember('one', { version: 1, token: 'ours' }); state.snapshot.clipboardWriteID = 'ours'; await monitor.tick();
+  assert.equal(observed[0].owned, true); assert.equal(state.captures.length, 0);
+  state.version++; await monitor.tick(); assert.equal(observed[1].owned, false); assert.equal(observed[1].uncertain, true);
+  monitor.remember('one', { token: 'unknown-version' }); state.version++; state.snapshot.clipboardWriteID = 'unknown-version'; await monitor.tick(); assert.equal(observed[2].uncertain, true);
+});
+test('concurrent pollers share a read and await its completion without losing its captured context', async () => {
+  let context = 1, complete; const observed = [];
+  const { monitor } = fixture({ readContext: () => context, readSnapshot: () => new Promise(resolve => { complete = resolve; }), onObserved: (_item, observation) => observed.push(observation) });
+  const first = monitor.tick(); await new Promise(resolve => setImmediate(resolve)); context = 2;
+  assert.equal(first, monitor.tick()); complete({ signature: 'one' }); await first; assert.equal(observed[0].context, 1);
+});

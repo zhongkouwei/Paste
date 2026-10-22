@@ -24,6 +24,11 @@ class ClipboardService {
     if (!first) return { formats: [], text: '', html: '', rtf: '', image: null, files: [] };
     const text = async type => first.types.includes(type) ? (await first.getType(type)).text() : '';
     const [plain, html, rtf] = await Promise.all([text('text/plain'), text('text/html'), text('text/rtf')]);
+    let clipboardWriteID;
+    if (first.types.includes(WRITE_ID_MIME)) {
+      const identity = await first.getType(WRITE_ID_MIME);
+      if (identity.size === 36) { const value = await identity.text(); if (validWriteID(value)) clipboardWriteID = value; }
+    }
     const paths = await Promise.all(entries.map(async entry => {
       if (entry.types.includes('text/uri-list')) {
         const uri = await (await entry.getType('text/uri-list')).text();
@@ -41,7 +46,7 @@ class ClipboardService {
     }
     let image = null;
     if (first.types.includes('image/png') && !files.length) image = Buffer.from(await (await first.getType('image/png')).arrayBuffer());
-    const value = { formats, text: plain, html, rtf, image, files };
+    const value = { formats, text: plain, html, rtf, image, files, ...(clipboardWriteID ? { clipboardWriteID } : {}) };
     value.signature = image ? imageSignature(image, this.nativeImage) : files.length ? hash(`file:${files.join('\n')}`) : textSignature(plain, html, rtf);
     return value;
   }

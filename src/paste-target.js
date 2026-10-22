@@ -32,9 +32,9 @@ class PasteDelivery {
   constructor({ permission, verify, activate, dismiss, recover, simulate = false, onError = () => {} }) {
     Object.assign(this, { permission, verify, activate, dismiss, recover, simulate, onError });
   }
-  async deliver({ paste, pasteTarget, target, lease }) {
+  async deliver({ paste, pasteTarget, target, lease, background = false }) {
     if (this.simulate) return { ok: true, copied: true };
-    if (!paste || pasteTarget !== 'application') { this.dismiss(); return { ok: true, copied: true }; }
+    if (!paste || pasteTarget !== 'application') { if (!background) this.dismiss(); return { ok: true, copied: true }; }
     if (!target) return { ok: false, copied: true, error: '内容已复制，未能确认目标应用，请切回目标应用粘贴。' };
     let permission;
     try { permission = await this.permission(); }
@@ -45,11 +45,11 @@ class PasteDelivery {
     if (permission?.accessibility !== true) return { ok: false, copied: true, error: '内容已复制。自动粘贴需要在系统设置中授权辅助功能。' };
     let result;
     try {
-      this.dismiss();
+      if (!background) this.dismiss();
       result = await this.activate(target, lease);
       if (result?.ok === true) return { ok: true, copied: true };
     } catch (error) { this.onError(error); }
-    try { await this.recover(); } catch (error) { this.onError(error); }
+    try { if (!background) await this.recover(); } catch (error) { this.onError(error); }
     if (result?.error?.startsWith('clipboard-')) return clipboardFailure(result);
     return { ok: false, copied: true, error: '目标应用不可用，内容已复制到剪贴板，请手动粘贴或重试。' };
   }

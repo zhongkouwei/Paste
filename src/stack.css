@@ -1,0 +1,17 @@
+.stack-panel { height: 100%; display: flex; flex-direction: column; background: var(--panel); }
+.stack-header { -webkit-app-region: drag; display: flex; align-items: center; gap: 8px; padding: 12px; min-height: 52px; border-bottom: 1px solid var(--line); }
+.stack-header h1 { font-size: 14px; font-weight: 600; margin: 0; }
+.stack-header button { -webkit-app-region: no-drag; flex: 0 0 28px; }
+#count { font-variant-numeric: tabular-nums; min-width: 20px; margin-right: auto; color: var(--muted); }
+.stack-state { display: flex; align-items: center; gap: 4px; min-height: 34px; padding: 4px 12px; font-size: 11px; color: var(--muted); }
+#mode { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+#error { margin: 0; padding: 8px 12px; color: light-dark(#a52f35, #ff9da2); background: var(--field); font-size: 12px; overflow-wrap: anywhere; max-height: 110px; overflow: auto; flex-shrink: 0; }
+#entries { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 0 12px 12px; list-style: none; }
+.stack-entry { display: grid; grid-template-columns: 22px minmax(0, 1fr) 28px; align-items: center; gap: 8px; border-bottom: 1px solid var(--line); min-height: 58px; padding: 8px 0; }
+.stack-entry.pending { opacity: .55; }
+.stack-entry .content { min-width: 0; }
+.stack-entry strong { display: block; font-size: 12px; font-weight: 500; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.stack-entry p { margin: 4px 0 0; color: var(--muted); white-space: nowrap; text-overflow: ellipsis; overflow: hidden; font-size: 11px; }
+.stack-entry .position { color: var(--muted); font-size: 10px; text-align: center; }
+#empty { margin: auto; color: var(--muted); font-size: 12px; }
+.stack-panel:has(#empty:not([hidden])) #entries { flex: 0; padding: 0; }

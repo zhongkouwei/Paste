@@ -40,6 +40,8 @@ contextBridge.exposeInMainWorld('paste', {
   changeExcludedApplication: (id, remove = false) => invoke('settings:changeExcludedApplication', id, remove),
   getPermission: () => invoke('permission:get'), openPermission: () => invoke('permission:open'), hide: () => invoke('panel:hide'),
   toggleStack: () => invoke('stack:toggle'), addToStack: id => invoke('stack:add', id), nextInStack: () => invoke('stack:next'),
+  getStack: () => invoke('stack:get'), reverseStack: () => invoke('stack:reverse'), removeFromStack: id => invoke('stack:remove', id),
+  stopStack: () => invoke('stack:stop'), retryStack: () => invoke('stack:retry'), onStackChanged: callback => listen('stack:changed', callback),
   exportLibrary: () => invoke('library:export'),
   getExportState: () => invoke('library:exportState'), cancelExport: () => invoke('library:cancelExport'),
   onExportChanged: callback => listen('export:changed', callback),

@@ -2,8 +2,15 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { ClipboardService } = require('../src/clipboard');
 const { textSignature } = require('../src/store');
+const { WRITE_ID_MIME } = require('../src/clipboard-ownership');
 
 function entry(values) { return { types: Object.keys(values), getType: async type => new Blob([values[type]]) }; }
+test('read ownership metadata is bounded, validated and excluded from payload identity', async () => {
+  const token = '22222222-2222-4222-8222-222222222222'; let identity = token;
+  const service = new ClipboardService({ clipboard: { read: async () => [entry({ 'text/plain': 'Body', [WRITE_ID_MIME]: identity })] } });
+  const value = await service.read(); assert.equal(value.clipboardWriteID, token); assert.equal(value.signature, textSignature('Body'));
+  for (const malformed of ['x'.repeat(36), token + 'extra', '']) { identity = malformed; assert.equal((await service.read()).clipboardWriteID, undefined); }
+});
 test('reads every native file item in order rather than only the first entry', async () => {
   const clipboard = { read: async () => [entry({ 'text/uri-list': 'file:///tmp/first.txt' }), entry({ 'electron application/osclipboard;format="public.file-url"': 'file:///tmp/second.txt' }), entry({ 'text/uri-list': 'file:///tmp/first.txt' })] };
   const service = new ClipboardService({ clipboard });
