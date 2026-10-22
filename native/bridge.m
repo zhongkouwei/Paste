@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import <ApplicationServices/ApplicationServices.h>
 #import "images.h"
+#import "pasteboard.h"
 
 static void output(NSDictionary *value) {
     NSData *data = [NSJSONSerialization dataWithJSONObject:value options:NSJSONWritingSortedKeys error:nil];
@@ -82,6 +83,38 @@ static NSDictionary *applicationsInfo(NSDictionary *request) {
     return @{ @"ok": @YES, @"applications": applications };
 }
 
+static NSDictionary *pasteRequest(void) {
+    NSMutableData *input = [NSMutableData data];
+    while (input.length <= 4096) {
+        NSData *part = [NSFileHandle.fileHandleWithStandardInput readDataOfLength:MIN(1024, 4097 - input.length)];
+        if (!part.length) break;
+        [input appendData:part];
+    }
+    id value = input.length <= 4096 ? [NSJSONSerialization JSONObjectWithData:input options:0 error:nil] : nil;
+    return [value isKindOfClass:NSDictionary.class] ? value : nil;
+}
+
+static NSDictionary *preparePaste(id target) {
+    if (![target isKindOfClass:NSDictionary.class]) return @{ @"ok": @NO, @"error": @"target-unavailable" };
+    id pidValue = target[@"pid"], launchValue = target[@"launchTime"];
+    if (![pidValue isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)pidValue) == CFBooleanGetTypeID()
+        || !isfinite([pidValue doubleValue]) || floor([pidValue doubleValue]) != [pidValue doubleValue] || [pidValue doubleValue] <= 0 || [pidValue doubleValue] > INT_MAX
+        || !validBundleID(target[@"bundleId"]) || ![launchValue isKindOfClass:NSNumber.class]
+        || CFGetTypeID((__bridge CFTypeRef)launchValue) == CFBooleanGetTypeID() || !isfinite([launchValue doubleValue]) || [launchValue doubleValue] <= 0) return @{ @"ok": @NO, @"error": @"target-unavailable" };
+    if (!AXIsProcessTrusted()) return @{ @"ok": @NO, @"error": @"accessibility-required" };
+    int pid = [pidValue intValue];
+    NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+    if (!app || app.terminated) return @{ @"ok": @NO, @"error": @"target-unavailable" };
+    if (![app.bundleIdentifier isEqualToString:target[@"bundleId"]] || fabs(app.launchDate.timeIntervalSince1970 - [launchValue doubleValue]) > .001) return @{ @"ok": @NO, @"error": @"target-changed" };
+    if (![app activateWithOptions:0]) return @{ @"ok": @NO, @"error": @"activation-failed" };
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:1];
+    while (NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier != pid && deadline.timeIntervalSinceNow > 0) [NSThread sleepForTimeInterval:.02];
+    if (NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier != pid) return @{ @"ok": @NO, @"error": @"activation-failed" };
+    [NSThread sleepForTimeInterval:.08];
+    if (app.terminated || NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier != pid) return @{ @"ok": @NO, @"error": @"target-changed" };
+    return @{ @"ok": @YES };
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSString *command = argc > 1 ? @(argv[1]) : @"";
@@ -122,32 +155,32 @@ int main(int argc, const char *argv[]) {
                 if (!url.isFileURL || (url.host.length && ![url.host isEqualToString:@"localhost"])) { output(@{ @"ok": @NO, @"error": @"invalid-file-url" }); return 1; }
                 [urls addObject:url];
             }
-            [NSPasteboard.generalPasteboard clearContents];
-            output(@{ @"ok": @([NSPasteboard.generalPasteboard writeObjects:urls]) }); return 0;
+            id writeID = request[@"writeID"];
+            if (writeID && !PasteValidWriteID(writeID)) { output(@{ @"ok": @NO, @"error": @"invalid-write-id" }); return 1; }
+            BOOL ok = PasteWriteFiles(NSPasteboard.generalPasteboard, urls, writeID);
+            output(@{ @"ok": @(ok) }); return ok ? 0 : 1;
         }
-        if ([command isEqualToString:@"paste"]) {
-            if (!AXIsProcessTrusted()) { output(@{ @"ok": @NO, @"error": @"accessibility-required" }); return 0; }
-            int pid = argc > 2 ? [@(argv[2]) intValue] : 0;
-            NSRunningApplication *app = pid > 0 ? [NSRunningApplication runningApplicationWithProcessIdentifier:pid] : nil;
-            if (!app || app.terminated) { output(@{ @"ok": @NO, @"error": @"target-unavailable" }); return 0; }
-            NSString *expectedBundle = argc > 3 ? @(argv[3]) : nil;
-            double expectedLaunchTime = argc > 4 ? [@(argv[4]) doubleValue] : 0;
-            if (!expectedBundle || ![app.bundleIdentifier isEqualToString:expectedBundle] || expectedLaunchTime <= 0
-                || fabs(app.launchDate.timeIntervalSince1970 - expectedLaunchTime) > .001) {
-                output(@{ @"ok": @NO, @"error": @"target-changed" }); return 0;
-            }
-            if (![app activateWithOptions:0]) { output(@{ @"ok": @NO, @"error": @"activation-failed" }); return 0; }
-            NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:1];
-            while (NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier != pid && deadline.timeIntervalSinceNow > 0) [NSThread sleepForTimeInterval:.02];
-            if (NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier != pid) { output(@{ @"ok": @NO, @"error": @"activation-failed" }); return 0; }
-            [NSThread sleepForTimeInterval:.08];
-            if (app.terminated || NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier != pid) {
-                output(@{ @"ok": @NO, @"error": @"target-changed" }); return 0;
-            }
-            CGEventRef down = CGEventCreateKeyboardEvent(NULL, 9, true), up = CGEventCreateKeyboardEvent(NULL, 9, false);
-            CGEventSetFlags(down, kCGEventFlagMaskCommand); CGEventSetFlags(up, kCGEventFlagMaskCommand);
-            CGEventPost(kCGHIDEventTap, down); CGEventPost(kCGHIDEventTap, up);
-            CFRelease(down); CFRelease(up); output(@{ @"ok": @YES }); return 0;
+        if ([command isEqualToString:@"paste"] || [command isEqualToString:@"check-pasteboard"]) {
+            @try {
+                NSDictionary *request = pasteRequest();
+                BOOL checking = [command isEqualToString:@"check-pasteboard"];
+                NSDictionary *lease = checking ? request : request[@"lease"];
+                if (!PasteValidLease(lease)) { output(@{ @"ok": @NO, @"error": @"clipboard-unavailable" }); return 1; }
+                NSDictionary *result = checking ? PasteCheckOwnership(NSPasteboard.generalPasteboard, lease)
+                    : PasteGuardedEvent(NSPasteboard.generalPasteboard, lease, ^{ return preparePaste(request[@"target"]); }, ^{
+                        NSDictionary *target = request[@"target"];
+                        NSRunningApplication *front = NSWorkspace.sharedWorkspace.frontmostApplication;
+                        if (!front || front.terminated || front.processIdentifier != [target[@"pid"] intValue]
+                            || ![front.bundleIdentifier isEqualToString:target[@"bundleId"]]
+                            || fabs(front.launchDate.timeIntervalSince1970 - [target[@"launchTime"] doubleValue]) > .001) return @{ @"ok": @NO, @"error": @"target-changed" };
+                        CGEventRef down = CGEventCreateKeyboardEvent(NULL, 9, true), up = CGEventCreateKeyboardEvent(NULL, 9, false);
+                        if (!down || !up) { if (down) CFRelease(down); if (up) CFRelease(up); return @{ @"ok": @NO, @"error": @"event-failed" }; }
+                        CGEventSetFlags(down, kCGEventFlagMaskCommand); CGEventSetFlags(up, kCGEventFlagMaskCommand);
+                        CGEventPost(kCGHIDEventTap, down); CGEventPost(kCGHIDEventTap, up);
+                        CFRelease(down); CFRelease(up); return @{ @"ok": @YES };
+                    });
+                output(result); return [result[@"ok"] boolValue] ? 0 : 1;
+            } @catch (NSException *exception) { output(@{ @"ok": @NO, @"error": @"clipboard-unavailable" }); return 1; }
         }
         output(@{ @"ok": @NO, @"error": @"unknown-command" }); return 1;
     }

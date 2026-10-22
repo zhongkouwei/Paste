@@ -16,12 +16,13 @@ const { ImageInspector } = require('./image-inspector');
 const { RichTextService, unsupportedRTF } = require('./rich-text');
 const { ApplicationCatalog, validApplicationID, captureSource } = require('./applications');
 const { PasteTargetSession, PasteDelivery } = require('./paste-target');
+const { ClipboardOwnership } = require('./clipboard-ownership');
 const { ImageTextIndex } = require('./image-text');
 const { SearchService } = require('./search-service');
 const { MediaService, thumbnail } = require('./media');
 const { applicationMenuTemplate, previewShortcut } = require('./app-menu');
 const clip = new ClipboardService({ ...electron, fileBridge: process.platform === 'darwin' ? {
-  read: () => native('read-files'), write: files => nativeInput('write-files', { files })
+  read: () => native('read-files'), write: (files, options) => nativeInput('write-files', { files, ...options })
 } : undefined });
 
 const execute = promisify(execFile);
@@ -40,8 +41,11 @@ const PANEL_HEIGHT = 332;
 const helper = path.join(app.getAppPath().replace(/app\.asar$/, 'app.asar.unpacked'), 'native/bin/paste-bridge');
 const pasteTargets = new PasteTargetSession({ ownPID: process.pid, read: () => native('frontmost'),
   onError: error => console.error('Could not resolve foreground application', error.message) });
+const pasteOwnership = new ClipboardOwnership({ readVersion: async () => (await native('change-count')).count,
+  check: lease => nativeInput('check-pasteboard', lease), onError: error => console.error('Clipboard ownership unavailable', error.message) });
 const pasteDelivery = new PasteDelivery({ simulate: TEST_MODE, permission: () => native('permission'),
-  activate: target => native('paste', target.pid, target.bundleId, target.launchTime),
+  verify: lease => pasteOwnership.verify(lease),
+  activate: ({ pid, bundleId, launchTime }, lease) => nativeInput('paste', { target: { pid, bundleId, launchTime }, lease }),
   dismiss: () => { hidePanel(); closePreview(); }, recover: () => showPanel(),
   onError: error => console.error('Paste delivery failed', error.message) });
 
@@ -344,11 +348,15 @@ async function performCopy(id, context) {
   const item = store.get(id);
   if (!item) throw new Error('此项目已被删除。');
   if (item.type === 'file' && fileDetails(item).some(file => !file.exists)) throw new Error('原始文件已移动或删除，无法粘贴。');
+  let lease;
   await monitor.suspend(async () => {
-    const signature = await clip.write(item, { plain: context.plain, image: item.asset ? store.readAsset(item.asset) : undefined });
-    monitor.remember(signature);
+    const options = { plain: context.plain, image: item.asset ? store.readAsset(item.asset) : undefined };
+    if (context.paste && context.pasteTarget === 'application' && context.target && !pasteDelivery.simulate) {
+      const receipt = await pasteOwnership.write(writeID => clip.write(item, { ...options, writeID }));
+      lease = receipt.lease; monitor.remember(receipt.signature);
+    } else monitor.remember(await clip.write(item, options));
   });
-  return pasteDelivery.deliver(context);
+  return pasteDelivery.deliver({ ...context, lease });
 }
 
 function registerIPC() {
@@ -609,7 +617,7 @@ else {
       registerIPC(); applyRuntimeSettings();
       store.exportService.onChanged = state => { for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('export:changed', state); };
       importService.onChanged = state => { if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('import:changed', state); };
-      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, isIgnored, imageProcessor, imageInspector, richTextService, applicationCatalog, imageText, searchService, mediaService, importService, thumbnail, pasteTargets, pasteDelivery, showPanel, hidePanel, hotkeys };
+      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, isIgnored, imageProcessor, imageInspector, richTextService, applicationCatalog, imageText, searchService, mediaService, importService, thumbnail, pasteTargets, pasteOwnership, pasteDelivery, showPanel, hidePanel, hotkeys };
       try { hotkeys.apply(store.data.settings); } catch (error) { report(error); }
       for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(event, () => { if (mainWindow.isVisible()) placePanel(); });
       app.on('activate', () => { if (!mainWindow.isVisible() && !pasteTargets.pending) showPanel(); });

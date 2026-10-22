@@ -29,24 +29,34 @@ class PasteTargetSession {
 }
 
 class PasteDelivery {
-  constructor({ permission, activate, dismiss, recover, simulate = false, onError = () => {} }) {
-    Object.assign(this, { permission, activate, dismiss, recover, simulate, onError });
+  constructor({ permission, verify, activate, dismiss, recover, simulate = false, onError = () => {} }) {
+    Object.assign(this, { permission, verify, activate, dismiss, recover, simulate, onError });
   }
-  async deliver({ paste, pasteTarget, target }) {
+  async deliver({ paste, pasteTarget, target, lease }) {
     if (this.simulate) return { ok: true, copied: true };
     if (!paste || pasteTarget !== 'application') { this.dismiss(); return { ok: true, copied: true }; }
     if (!target) return { ok: false, copied: true, error: '内容已复制，未能确认目标应用，请切回目标应用粘贴。' };
     let permission;
     try { permission = await this.permission(); }
     catch (error) { this.onError(error); return { ok: false, copied: true, error: '内容已复制。无法检查辅助功能权限，请手动粘贴或重试。' }; }
+    let ownership;
+    try { ownership = await this.verify(lease); } catch (error) { this.onError(error); }
+    if (ownership?.ok !== true) return clipboardFailure(ownership);
     if (permission?.accessibility !== true) return { ok: false, copied: true, error: '内容已复制。自动粘贴需要在系统设置中授权辅助功能。' };
+    let result;
     try {
       this.dismiss();
-      const result = await this.activate(target);
+      result = await this.activate(target, lease);
       if (result?.ok === true) return { ok: true, copied: true };
     } catch (error) { this.onError(error); }
     try { await this.recover(); } catch (error) { this.onError(error); }
+    if (result?.error?.startsWith('clipboard-')) return clipboardFailure(result);
     return { ok: false, copied: true, error: '目标应用不可用，内容已复制到剪贴板，请手动粘贴或重试。' };
   }
+}
+function clipboardFailure(result) {
+  return { ok: false, copied: true, error: result?.error === 'clipboard-changed'
+    ? '剪贴板已被其他复制替换，已取消自动粘贴。请重新选择原项目后重试。'
+    : '内容已复制，但无法确认剪贴板归属，已取消自动粘贴。请手动粘贴或重试。' };
 }
 module.exports = { targetIdentity, PasteTargetSession, PasteDelivery };

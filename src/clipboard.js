@@ -1,5 +1,6 @@
 const { hash, textSignature, htmlPayload } = require('./store');
 const crypto = require('node:crypto');
+const { WRITE_ID_MIME, validWriteID } = require('./clipboard-ownership');
 
 function imageSignature(buffer, nativeImage) {
   return decodedImageSignature(nativeImage.createFromBuffer(buffer));
@@ -45,7 +46,8 @@ class ClipboardService {
     return value;
   }
 
-  async write(item, { plain = false, image } = {}) {
+  async write(item, { plain = false, image, writeID } = {}) {
+    if (writeID !== undefined && !validWriteID(writeID)) throw new Error('Invalid clipboard write identity');
     let contents, signature;
     if (item.type === 'image') {
       const buffer = image || this.nativeImage.createFromDataURL(item.body).toPNG();
@@ -55,12 +57,13 @@ class ClipboardService {
       const files = item.body.split('\n').filter(file => file.startsWith('file://'));
       if (!files.length) throw new Error('Invalid file clipboard item');
       if (this.fileBridge) {
-        const result = await this.fileBridge.write(files);
+        const result = await this.fileBridge.write(files, writeID === undefined ? {} : { writeID });
         if (!result.ok) throw new Error('无法写入系统文件剪贴板，请检查原生辅助程序。');
         return hash(`file:${files.join('\n')}`);
       }
-      await this.clipboard.write(files.map(file => new this.ClipboardItem({ 'text/uri-list': file,
-        'electron application/osclipboard;format="public.file-url"': new Blob([file]) })));
+      await this.clipboard.write(files.map((file, index) => new this.ClipboardItem({ 'text/uri-list': file,
+        'electron application/osclipboard;format="public.file-url"': new Blob([file]),
+        ...(writeID && index === 0 ? { [WRITE_ID_MIME]: new Blob([writeID]) } : {}) })));
       return hash(`file:${files.join('\n')}`);
     } else {
       const body = item.body.toWellFormed(), html = plain ? '' : htmlPayload(item.html).toWellFormed();
@@ -69,6 +72,7 @@ class ClipboardService {
       if (html) contents['text/html'] = html; if (rtf) contents['text/rtf'] = rtf;
       signature = textSignature(body, html, rtf);
     }
+    if (writeID) contents[WRITE_ID_MIME] = new Blob([writeID]);
     await this.clipboard.write([new this.ClipboardItem(contents)]);
     return signature;
   }

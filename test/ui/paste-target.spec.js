@@ -13,12 +13,16 @@ test.beforeEach(async () => {
   ids = await application.evaluate(async () => {
     const hooks = globalThis.__pasteTest;
     globalThis.__front = { pid: 111, bundleId: 'test.target.A', launchTime: 1.234, name: 'Target A' };
-    globalThis.__writes = []; globalThis.__sent = []; globalThis.__permissionReads = 0;
+    globalThis.__writes = []; globalThis.__sent = []; globalThis.__leases = []; globalThis.__permissionReads = 0; globalThis.__clipboardVersion = 0;
+    hooks.pasteOwnership.readVersion = async () => globalThis.__clipboardVersion;
+    hooks.pasteOwnership.check = async lease => ({ ok: lease.version === globalThis.__clipboardVersion && lease.token === globalThis.__clipboardToken, error: 'clipboard-changed' });
     // Only adapters are synthetic; the real main-process queue, context and delivery path run.
     hooks.clip.read = () => { throw Error('Unexpected system clipboard read'); };
     hooks.clip.write = async (item, options) => {
       globalThis.__writes.push({ id: item.id, plain: options.plain });
       if (globalThis.__holdWrite) { globalThis.__holdWrite = false; await new Promise(resolve => { globalThis.__releaseWrite = resolve; }); }
+      globalThis.__clipboardVersion++; globalThis.__clipboardToken = options.writeID;
+      globalThis.__clipboardBody = item.body;
       return `synthetic:${item.id}`;
     };
     hooks.pasteTargets.read = async () => globalThis.__front;
@@ -28,7 +32,7 @@ test.beforeEach(async () => {
       if (globalThis.__holdPermission) return new Promise(resolve => { globalThis.__releasePermission = () => resolve({ accessibility: true }); });
       return { accessibility: true };
     };
-    hooks.pasteDelivery.activate = async target => { globalThis.__sent.push(target); return { ok: true }; };
+    hooks.pasteDelivery.activate = async (target, lease) => { globalThis.__sent.push(target); globalThis.__leases.push(lease); return { ok: true }; };
     const ids = ['Alpha', 'Beta'].map(name => hooks.store.add({ type: 'text', body: `${name} target fixture`, title: name }).id);
     hooks.imageText.onChanged(); await hooks.showPanel(); return ids;
   });
@@ -50,8 +54,53 @@ test('queued copies retain their requested targets and settings rather than foll
   expect(await page.evaluate(() => Promise.all([window.__first, window.__second]))).toEqual([{ ok: true, copied: true }, { ok: true, copied: true }]);
   expect(await sent()).toEqual([{ pid: 111, bundleId: 'test.target.A', launchTime: 1.234 }, { pid: 222, bundleId: 'test.target.B', launchTime: 2.345 }]);
   expect(await application.evaluate(() => globalThis.__writes.map(value => value.plain))).toEqual([false, false]);
+  const leases = await application.evaluate(() => globalThis.__leases);
+  expect(leases.map(lease => lease.version)).toEqual([1, 2]); expect(leases[0].token).not.toBe(leases[1].token);
   await page.evaluate(id => window.paste.copy(id, { paste: true }), ids[0]);
   expect(await application.evaluate(() => globalThis.__writes.map(value => value.plain))).toEqual([false, false, true]); expect(await sent()).toHaveLength(2);
+});
+
+test('foreign copy during permission wait cancels visibly, preserves Stack and never restores over the newer content', async () => {
+  await page.evaluate(async ids => { await window.paste.toggleStack(); for (const id of ids) await window.paste.addToStack(id); }, ids);
+  await application.evaluate(() => { globalThis.__holdPermission = true; });
+  await page.locator('#stackButton').click();
+  await expect.poll(() => application.evaluate(() => typeof globalThis.__releasePermission)).toBe('function');
+  await application.evaluate(() => { globalThis.__clipboardVersion++; globalThis.__clipboardBody = 'Later foreign B'; globalThis.__releasePermission(); });
+  await expect(page.locator('#status')).toContainText('其他复制替换'); await expect(page.locator('#stackCount')).toHaveText('2');
+  expect(await sent()).toEqual([]); expect(await application.evaluate(() => globalThis.__clipboardBody)).toBe('Later foreign B');
+  expect(await application.evaluate(() => globalThis.__writes)).toHaveLength(1);
+  await page.screenshot({ path: 'test-results/paste-ownership-cancelled.png' });
+  await application.evaluate(() => { globalThis.__holdPermission = false; });
+  expect(await page.evaluate(() => window.paste.nextInStack())).toMatchObject({ ok: true }); await expect(page.locator('#stackCount')).toHaveText('1');
+  expect(await application.evaluate(() => globalThis.__writes.map(value => value.id))).toEqual([ids[0], ids[0]]);
+});
+test('native-stage ownership failure restores the panel and does not consume the Stack head', async () => {
+  await page.evaluate(async id => { await window.paste.toggleStack(); await window.paste.addToStack(id); }, ids[0]);
+  await application.evaluate(() => { globalThis.__pasteTest.pasteDelivery.activate = async () => {
+    globalThis.__clipboardVersion++; globalThis.__clipboardBody = 'Activation-time foreign copy'; return { ok: false, error: 'clipboard-changed' };
+  }; });
+  expect(await page.evaluate(() => window.paste.nextInStack())).toMatchObject({ ok: false, copied: true, error: expect.stringContaining('其他复制替换') });
+  await expect(page.locator('#stackCount')).toHaveText('1');
+  expect(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible())).toBe(true);
+  expect(await application.evaluate(() => globalThis.__clipboardBody)).toBe('Activation-time foreign copy');
+  expect(await application.evaluate(() => globalThis.__writes)).toHaveLength(1);
+});
+test('missing version helper permits one explicit copy but never an unverified automatic paste', async () => {
+  await application.evaluate(() => { globalThis.__pasteTest.pasteOwnership.readVersion = async () => { throw Error('Injected counter failure'); }; });
+  const result = await page.evaluate(id => window.paste.copy(id, { paste: true }), ids[0]);
+  expect(result).toMatchObject({ ok: false, copied: true, error: expect.stringContaining('无法确认剪贴板归属') });
+  expect(await sent()).toEqual([]); expect(await application.evaluate(() => globalThis.__writes)).toHaveLength(1);
+  expect(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible())).toBe(true);
+});
+test('failed clipboard writes are not reported as copied and leave Stack available for retry', async () => {
+  await page.evaluate(async id => { await window.paste.toggleStack(); await window.paste.addToStack(id); }, ids[0]);
+  await application.evaluate(() => { globalThis.__workingWrite = globalThis.__pasteTest.clip.write; globalThis.__pasteTest.clip.write = async () => { throw Error('Injected clipboard write failure'); }; });
+  await page.locator('#stackButton').click(); await expect(page.locator('#status')).toContainText('Injected clipboard write failure');
+  await expect(page.evaluate(() => window.paste.nextInStack())).rejects.toThrow('Injected clipboard write failure');
+  await expect(page.locator('#stackCount')).toHaveText('1'); expect(await sent()).toEqual([]);
+  await application.evaluate(() => { globalThis.__pasteTest.clip.write = globalThis.__workingWrite; });
+  expect(await page.evaluate(() => window.paste.nextInStack())).toMatchObject({ ok: true });
+  expect((await page.evaluate(() => window.paste.getLibrary())).status.stackCount).toBe(0); await expect(page.locator('#stackCount')).toBeHidden();
 });
 test('an application switch during permission lookup cannot redirect a paste to the newly captured target', async () => {
   await application.evaluate(() => { globalThis.__holdPermission = true; });

@@ -3,6 +3,8 @@ const assert = require('node:assert/strict');
 const { targetIdentity, PasteTargetSession, PasteDelivery } = require('../src/paste-target');
 const app = (pid = 111) => ({ pid, bundleId: `test.app${pid}`, launchTime: 123.456, name: `App ${pid}`, windowPoint: { x: -1200, y: 10 }, icon: 'not retained' });
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { resolve, promise }; };
+const lease = { version: 1, token: '22222222-2222-4222-8222-222222222222' };
+const verify = async value => ({ ok: value === lease });
 
 test('paste identities are immutable snapshots and require PID, bundle and launch time', () => {
   const original = app(), target = targetIdentity(original, 999);
@@ -40,8 +42,8 @@ test('overlapping self-foreground refreshes retain the currently displayed ident
 });
 test('permission waits cannot redirect a request to a subsequently discovered application', async () => {
   let front = app(); const targets = new PasteTargetSession({ ownPID: 999, read: async () => front }); await targets.refresh(); const target = targets.snapshot();
-  const job = deferred(), sent = [], delivery = new PasteDelivery({ permission: () => job.promise, activate: async value => { sent.push(value); return { ok: true }; }, dismiss() {}, recover() {} });
-  const pending = delivery.deliver({ paste: true, pasteTarget: 'application', target }); front = app(222); await targets.refresh(); job.resolve({ accessibility: true });
+  const job = deferred(), sent = [], delivery = new PasteDelivery({ verify, permission: () => job.promise, activate: async (value, receipt) => { assert.equal(receipt, lease); sent.push(value); return { ok: true }; }, dismiss() {}, recover() {} });
+  const pending = delivery.deliver({ paste: true, pasteTarget: 'application', target, lease }); front = app(222); await targets.refresh(); job.resolve({ accessibility: true });
   assert.deepEqual(await pending, { ok: true, copied: true }); assert.equal(sent[0].pid, 111); assert.equal(targets.snapshot().pid, 222);
 });
 test('copy-only mode never probes permissions or activates an application', async () => {
@@ -50,8 +52,8 @@ test('copy-only mode never probes permissions or activates an application', asyn
   assert.equal(dismissed, 2);
 });
 test('unknown targets, denied permissions and permission failures report that the content was already copied', async () => {
-  let activated = 0, dismissed = 0, reads = 0; const errors = [], delivery = new PasteDelivery({ permission: async () => { reads += 1; return { accessibility: false }; }, activate: () => { activated += 1; }, dismiss: () => { dismissed += 1; }, onError: error => errors.push(error) });
-  const context = { paste: true, pasteTarget: 'application', target: null };
+  let activated = 0, dismissed = 0, reads = 0; const errors = [], delivery = new PasteDelivery({ verify, permission: async () => { reads += 1; return { accessibility: false }; }, activate: () => { activated += 1; }, dismiss: () => { dismissed += 1; }, onError: error => errors.push(error) });
+  const context = { paste: true, pasteTarget: 'application', target: null, lease };
   assert.match((await delivery.deliver(context)).error, /未能确认目标/); assert.equal(reads, 0);
   context.target = targetIdentity(app(), 999); assert.match((await delivery.deliver(context)).error, /授权辅助功能/);
   delivery.permission = async () => { throw Error('helper unavailable'); }; const result = await delivery.deliver(context); assert.equal(result.ok, false); assert.equal(result.copied, true); assert.match(result.error, /无法检查/);
@@ -59,9 +61,9 @@ test('unknown targets, denied permissions and permission failures report that th
 });
 test('native activation failures and recovery failures preserve copied status and permit retry', async () => {
   const errors = []; let dismissed = 0, recovered = 0;
-  const delivery = new PasteDelivery({ permission: async () => ({ accessibility: true }), activate: async () => { throw Error('native activation failed'); },
+  const delivery = new PasteDelivery({ verify, permission: async () => ({ accessibility: true }), activate: async () => { throw Error('native activation failed'); },
     dismiss: () => { dismissed += 1; }, recover: async () => { recovered += 1; throw Error('panel recovery failed'); }, onError: error => errors.push(error) });
-  const context = { paste: true, pasteTarget: 'application', target: targetIdentity(app(), 999) };
+  const context = { paste: true, pasteTarget: 'application', target: targetIdentity(app(), 999), lease };
   assert.deepEqual(await delivery.deliver(context), { ok: false, copied: true, error: '目标应用不可用，内容已复制到剪贴板，请手动粘贴或重试。' }); assert.equal(dismissed, 1); assert.equal(recovered, 1); assert.equal(errors.length, 2);
   delivery.activate = async () => ({ ok: false }); delivery.recover = async () => { recovered += 1; }; assert.equal((await delivery.deliver(context)).ok, false);
   delivery.activate = async () => ({ ok: true }); assert.equal((await delivery.deliver(context)).ok, true); assert.equal(recovered, 2);
