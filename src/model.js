@@ -5,9 +5,10 @@
 })(typeof globalThis === 'object' ? globalThis : this, function () {
   const TYPES = ['text', 'link', 'code', 'image', 'color', 'file'];
   const COLORS = ['#ef6259', '#f3ad43', '#62c68d', '#4f80ed', '#af78d3', '#dc79b0', '#8e9299'];
+  const PAUSE_DURATIONS = [5 * 60000, 15 * 60000, 60 * 60000];
   const DEFAULT_SETTINGS = {
     launchAtLogin: false, background: true, showInMenuBar: true, pasteTarget: 'application', plainText: false,
-    retentionDays: 30, maxItems: 10000, paused: false, sound: false,
+    retentionDays: 30, maxItems: 10000, paused: false, pausedUntil: null, sound: false,
     ignoreConfidential: true, ignoreTransient: true, excludedApps: ['com.apple.keychainaccess'],
     hotkey: 'CommandOrControl+Shift+V', stackHotkey: 'CommandOrControl+Shift+C',
     nextBoardHotkey: 'CommandOrControl+Right', previousBoardHotkey: 'CommandOrControl+Left',
@@ -92,6 +93,9 @@
     for (const key of ['launchAtLogin', 'background', 'showInMenuBar', 'plainText', 'sound', 'paused', 'ignoreConfidential', 'ignoreTransient']) {
       if (typeof input[key] === 'boolean') result[key] = input[key];
     }
+    if (typeof input.paused === 'boolean') result.pausedUntil = null;
+    if (result.paused && (input.pausedUntil === null || (Number.isSafeInteger(input.pausedUntil) && input.pausedUntil > 0 && input.pausedUntil <= 8640000000000000))) result.pausedUntil = input.pausedUntil;
+    if (!result.paused) result.pausedUntil = null;
     if (['application', 'clipboard'].includes(input.pasteTarget)) result.pasteTarget = input.pasteTarget;
     if ([0, 1, 7, 30, 365].includes(input.retentionDays)) result.retentionDays = input.retentionDays;
     if (Number.isInteger(input.maxItems) && input.maxItems >= 100 && input.maxItems <= 100000) result.maxItems = input.maxItems;
@@ -137,5 +141,5 @@
     return (aliases[key] || key).toLowerCase() === event.key.toLowerCase();
   }
 
-  return { TYPES, COLORS, DEFAULT_SETTINGS, classifyText, filterItems, searchText, relativeTime, imageTextMatches, prune, sanitizeSettings, modifierPressed, shortcutMatches, isComposingKey, itemLocations };
+  return { TYPES, COLORS, PAUSE_DURATIONS, DEFAULT_SETTINGS, classifyText, filterItems, searchText, relativeTime, imageTextMatches, prune, sanitizeSettings, modifierPressed, shortcutMatches, isComposingKey, itemLocations };
 });

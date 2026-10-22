@@ -219,7 +219,9 @@ function accept(library) {
   if (!library) return;
   if (Number.isInteger(state.revision) && library.revision < state.revision) return;
   mediaSkipped.clear();
+  const previousCaptureError = state.status.capture?.error;
   Object.assign(state, { items: library.items, boards: library.boards, settings: library.settings, revision: library.revision, capabilities: library.capabilities || {}, status: library.status || {} });
+  if (previousCaptureError && !state.status.capture?.error && $('#status').textContent === previousCaptureError) { clearTimeout(toastTimer); $('#status').hidden = true; }
   if (mediaFailures.size) {
     const items = new Map(state.items.map(item => [item.id, item]));
     for (const [key, failure] of mediaFailures) {
@@ -332,6 +334,15 @@ function renderCards() {
   paintMedia();
   paintImageMatches();
 }
+function renderCapture() {
+  const capture = state.status.capture || { paused: state.settings.paused }, visible = capture.paused || capture.resuming;
+  document.querySelector('.panel').classList.toggle('capture-paused', !!visible);
+  const button = $('#captureButton'); button.hidden = !visible; button.disabled = capture.pending;
+  $('#captureLabel').textContent = capture.resuming ? '恢复中' : '已暂停';
+  const until = capture.until ? new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(new Date(capture.until)) : '';
+  button.title = capture.error || (capture.resuming ? '正在恢复记录' : until ? `已暂停至${until}；继续记录` : '记录已暂停；继续记录');
+  button.setAttribute('aria-label', capture.resuming ? '正在恢复记录' : '继续记录');
+}
 function paintImageMatches() {
   if (!state.query.trim()) return;
   for (const node of document.querySelectorAll('.clip-card[data-type=image]')) {
@@ -366,7 +377,7 @@ function render() {
   if (!state.selected.size && items.length) { state.anchor = items[0].id; state.selected.add(items[0].id); }
   if (!items.some(item => item.id === state.active)) state.active = [...state.selected][0] || null;
   if (!items.some(item => item.id === state.anchor)) state.anchor = state.active;
-  renderBoards(); renderFilterUI(); renderCards();
+  renderBoards(); renderFilterUI(); renderCards(); renderCapture();
 }
 function scrollToIndex(index) {
   const left = 24 + index * 264;
@@ -608,10 +619,18 @@ $('#timeline').oncontextmenu = event => {
   if (!state.selected.has(item.id)) select(Number(node.dataset.index));
   itemMenu(item, event.clientX, event.clientY);
 };
+function pauseMenuEntries() {
+  const paused = state.status.capture?.paused ?? state.settings.paused;
+  return [
+    { label: paused ? '继续记录' : '暂停记录', icon: paused ? 'play' : 'pause', key: '⌘T', shortcut: 'Meta+T', action: () => api.toggleCapture() },
+    { heading: '暂停时长' },
+    ...[[300000, '5分钟'], [900000, '15分钟'], [3600000, '1小时'], [null, '直到手动恢复']].map(([duration, label]) => ({ label, icon: 'clock', action: () => api.pauseCapture(duration) }))
+  ];
+}
 $('#moreButton').onclick = () => menu([
   { label: '新建文本', icon: 'file-plus-2', key: '⌘N', shortcut: 'Meta+n', action: newText },
   { label: '设置…', icon: 'settings', key: '⌘,', shortcut: 'Meta+,', action: () => api.openSettings() },
-  { label: state.settings.paused ? '继续记录' : '暂停记录', icon: state.settings.paused ? 'play' : 'pause', action: async () => accept(await api.saveSettings({ paused: !state.settings.paused })) },
+  ...pauseMenuEntries(),
   { label: state.status.stackMode ? '退出 Paste Stack' : 'Paste Stack', icon: 'layers', action: () => api.toggleStack() },
   { label: '粘贴 Stack 下一项', icon: 'clipboard-paste', disabled: !state.status.stackCount, action: pasteStackNext }, null,
   { label: '导出备份…', icon: 'download', action: () => api.exportLibrary() },
@@ -619,6 +638,7 @@ $('#moreButton').onclick = () => menu([
   { label: '关闭', icon: 'x', key: 'Esc', shortcut: 'Escape', action: () => api.hide() }
 ], innerWidth - 230, 48);
 $('#stackButton').onclick = () => attempt(() => state.status.stackCount ? pasteStackNext() : api.toggleStack());
+$('#captureButton').onclick = () => attempt(() => api.resumeCapture());
 document.addEventListener('pointerdown', event => {
   if (state.editingBoard && !event.target.closest('.board-edit, #menu')) attempt(commitBoard);
   if (!event.target.closest('#menu, #moreButton')) closeMenu();
@@ -657,6 +677,7 @@ document.addEventListener('keydown', event => {
     }
   }
   const modifier = event.metaKey || event.ctrlKey;
+  if (shortcutMatches(event, 'CommandOrControl+T')) { event.preventDefault(); if (!event.repeat) attempt(() => api.toggleCapture()); return; }
   if (shortcutMatches(event, 'CommandOrControl+N')) { event.preventDefault(); if (!event.repeat) attempt(newText); return; }
   document.body.classList.toggle('quick-keys', modifierPressed(event, state.settings.quickPasteModifier));
   if ($('#menu').hidden === false) {

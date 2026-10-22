@@ -13,11 +13,11 @@ function render() {
   $('#next').disabled = !state.entries.some(entry => !entry.pending);
   $('#reverse').disabled = state.entries.length < 2;
   $('#reverse').setAttribute('aria-pressed', String(state.direction === 'newest'));
-  $('#mode').textContent = state.paused ? '记录已暂停' : state.copyOnly ? '仅复制模式' : state.input.keyboard ? (state.direction === 'oldest' ? '按复制顺序' : '按倒序') : '顺序粘贴未启用';
+  $('#mode').textContent = state.capture?.resuming ? '正在恢复记录' : (state.capture?.paused ?? state.paused) ? '记录已暂停' : state.copyOnly ? '仅复制模式' : state.input.keyboard ? (state.direction === 'oldest' ? '按复制顺序' : '按倒序') : '顺序粘贴未启用';
   const permissions = !state.input.keyboard && !state.copyOnly;
   $('#permission').hidden = !permissions; $('#retry').hidden = !permissions;
   const inputError = state.input.error === 'accessibility-required' ? '需要辅助功能权限才能顺序粘贴。' : state.input.error === 'keyboard-paused' ? '系统已暂停顺序粘贴，请重新检查权限。' : state.input.error && state.input.error !== 'simulation' ? '顺序粘贴已暂停，请重新检查权限。' : '';
-  $('#error').textContent = localError || state.deliveryError || state.problem || inputError;
+  $('#error').textContent = localError || state.capture?.error || state.deliveryError || state.problem || inputError;
   $('#error').hidden = !$('#error').textContent;
   $('#empty').hidden = !!state.entries.length;
   const fragment = document.createDocumentFragment();

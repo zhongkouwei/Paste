@@ -1,9 +1,12 @@
 class ClipboardMonitor {
-  constructor({ readVersion, readSnapshot, onSnapshot, isPaused = () => false, isKnown = () => false, onError = () => {}, readContext = () => null, onObserved = () => {} }) {
-    Object.assign(this, { readVersion, readSnapshot, onSnapshot, isPaused, isKnown, onError, readContext, onObserved });
+  constructor({ readVersion, readSnapshot, onSnapshot, isPaused = () => false, isKnown = () => false, onError = () => {}, readContext = () => null, onObserved = () => {}, onBaseline = () => {} }) {
+    Object.assign(this, { readVersion, readSnapshot, onSnapshot, isPaused, isKnown, onError, readContext, onObserved, onBaseline });
     this.version = null; this.signature = ''; this.generation = 0; this.busy = false; this.suspended = 0; this.initial = true;
     this.pending = null; this.owned = new Map(); this.ownedTokens = new Set();
+    this.needsBaseline = false; this.baselineError = '';
   }
+  invalidate() { this.generation++; }
+  requireBaseline() { this.invalidate(); this.needsBaseline = true; }
 
   async versionNow() {
     const value = await this.readVersion();
@@ -22,6 +25,11 @@ class ClipboardMonitor {
       const before = await this.versionNow();
       if (generation !== this.generation || this.suspended) return;
       if (this.isPaused()) { this.version = before; this.signature = ''; return; }
+      if (this.needsBaseline) {
+        if (!Number.isSafeInteger(before) || before < 0) throw Error('无法确认剪贴板变化，记录尚未恢复。');
+        this.version = before; this.signature = ''; this.initial = false; this.needsBaseline = false;
+        await this.onBaseline(before); this.baselineError = ''; return;
+      }
       if (before !== null && before === this.version) return;
       const snapshot = await this.readSnapshot();
       const after = await this.versionNow();
@@ -37,7 +45,7 @@ class ClipboardMonitor {
       }
       await this.onObserved(snapshot, { version: after, initial: this.initial, owned, uncertain, context, saved });
       this.version = after; this.signature = snapshot?.signature || ''; this.initial = false;
-    } catch (error) { this.onError(error); }
+    } catch (error) { if (this.needsBaseline) this.baselineError = error.message; this.onError(error); }
     finally { this.busy = false; }
   }
 

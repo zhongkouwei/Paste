@@ -47,6 +47,7 @@ task_id：`2026-10-21-paste-parity-01a05dea`。此文件是同一任务的持续
 | Stack | 自动复制收集/重复独立项、非激活浮窗、普通Command-V顺序消费、反转/逐项移除、成功消费/失败保留与后续取消；请求固定项目与目标，标记防自己写回重入；权限/关闭/通信释放、仅复制不接管；私有原生与隔离Electron回归 | 本机原版浮窗/动作仍未实测；真实全局热键/键盘布局/权限主体、跨应用目标消费与零遗漏/持续运行未完成，不称完整Stack已验收；最多1000项，已开始写入不能撤回，事件发送不是目标已消费确认 |
 | 目标应用粘贴 | 请求入队前固定目标身份/纯文本与投递偏好，前台失败清旧目标、乱序/取消会话保护、权限/激活异常返回已复制状态；写前计数+同次随机标记绑定归属，权限/激活等待后失效则取消并保留Stack；原生核对PID/Bundle/启动时间和发送前归属 | 多应用、全屏、多个显示器、权限失败和辅助程序授权的人工矩阵尚未完成；Electron实际系统归属新增回归待独占时段，按键检查至目标消费无原子保证，适配器/私有剪贴板通过不等于真实外部投递 |
 | 隐私 | 忽略机密/瞬时标记的系统剪贴板 E2E；原生多选应用/本机名称图标/稳定ID规则、并发增删/重启/失败保留；新复制逐次查询前台身份，不复用旧来源 | 屏幕共享遮蔽、静态加密、敏感链接预览策略；前台启发式不等于后台真实写入者完整归因，物理切换/后台写入验收仍缺 |
+| 暂停记录 | Command-T/菜单、定时/手动恢复、持续状态；即时会话闸门与在途失效，恢复先建立新计数基线、不补录暂停期间内容；计数/写盘故障保持受保护状态，过期/旧计时/重启/导入/退出已有定向回归 | 原版具体时长/操作与像素、物理睡眠唤醒/时钟变更矩阵仍待验；暂停写盘失败只保证当前会话，重启不能保证保留失败意图；新偏好键不代表旧版本备份导入兼容 |
 | 数据可靠性 | version 3 清单/不可变正文，逐项校验后只保留引用/摘要；原子主/备份、迁移原件/降级保护；Worker 快照导出/分块图片/取消/原子替换；流式校验/预览/合并或替换恢复、冲突重映射、恢复前独立备份、失败保留/重启 | 备份管理/加密、真断电/硬崩溃、旧库首次拆分/内联快照克隆、全量校验 IO/大单项/媒体元数据，10万项/低磁盘/能耗；媒体去重/资产回收仍待优化 |
 | 外观 | 深浅色样式、1920/1280/768/390pt 几何与无溢出截图 | 同样本逐状态截图差分、动画、原生菜单/弹出层准确度、VoiceOver |
 | iCloud / 跨设备 | 未实现 | 容器与账号配置、冲突合并、离线队列、端到端验证 |
@@ -639,6 +640,26 @@ ClipboardMonitor在稳定的前后变化计数之间观测每次复制，已知�
 影响22文件：运行src/main.js、src/preload.js、src/renderer.js、src/clipboard.js、src/selection.js、src/selection-composer.js、src/selection-compose-preload.js、src/selection-compose.html、src/selection-compose.js；原生/构建native/bridge.m、native/selection.h、native/selection.m、scripts/build-native.js；测试test/clipboard.test.js、test/selection.test.js、test/native-selection.test.js、test/fixtures/selection.m、test/ui/selection.spec.js、test/ui/app.spec.js；文档README.md、CHANGELOG.md、本记录。无新增依赖/库或备份格式，未恢复色彩stash。
 
 完整目标继续active，不标完成/blocked；独立合并方法与失败案例留在本记录及原生/Node/Electron测试中，不新增未经真实跨应用验证的通用skill。下一步仍以实际权限/目标消费及本机原版交互/像素为核心，不因多选功能产生新的RTF边缘格式支线。
+
+## 第三十轮：即时暂停与定时安全恢复
+
+上一轮06f7e57为实质进展，起始工作区干净。核实INDEX、README/脚本、代码与最近变更，通用MEMORY仍无Paste命中；CUA原版getApp仍返回Mac锁屏，没有绕过、改权限或假设已有待回复的解锁/剪贴板独占请求已获同意。Info.plist再次核实仍7.0.2。只读通用本地化可见Pause/Resume/Paused-until键，没有具体时长证据；[官方Mac帮助](https://pasteapp.io/help/paste-on-mac)及[快捷键](https://pasteapp.io/help/keyboard-shortcuts)确认Command-T/菜单暂停与选择时长，本机原版菜单与像素未实测。5/15/60分钟和手动恢复是当前独立实现选择，不伪称为原版精确选项。
+
+原实现只有boolean paused、菜单手动切换，无快捷命令/到期状态。更重要的是performSaveSettings在暂停前await monitor.suspend({baseline:true})的变化计数：辅助程序异常会让设置操作失败、根本停不下来；旧在途读取也要在请求边界失效，而不是等辅助程序返回。新CapturePause在收到暂停意图时立即关会话闸门并增加monitor generation，再串行持久化；整个暂停路径不依赖计数读取。写盘失败不释放当前会话闸门，UI显示错误并可重试/恢复，明确不能保证失败暂停跨重启。其他设置更新不会意外清除该会话保护。
+
+恢复先设置needsBaseline屏障，在适配器可用时立即读新计数并忽略当前剪贴板，之后真正新复制才进入历史/Stack；失败或无效计数保持“恢复中”、不读正文并可后续重试，不先报告已正常记录。暂停再恢复、快速三次切换、旧timer/异步结果、导入恢复和退出都按当前意图/读代次核对。旧在途候选不能在恢复后补录；退出关闭闸门、失效读与取消timer。原有自主复制/数据保护沿用，暂停不禁用用户主动搜索/复制/编辑/新建；已经开始的复制不能撤回，不把暂停功能称为清空历史或安全擦除。
+
+可选pausedUntil为绝对毫秒时间戳，默认null；手动暂停/恢复清旧deadline，无该字段的旧paused库继续无限暂停。普通备份/实际重启均保留新偏好，过期恢复也需先建立基线；导入成功后要求新基线，避免用导入前的计数收录暂停期间数据。库/备份版本号未变，但偏好schema扩展，旧版本严格导入器可能拒绝新字段，回滚兼容未因此自动通过。真实模式以有界timer/常规poll检查截止，监听[Electron powerMonitor.resume](https://www.electronjs.org/docs/latest/api/power-monitor)重新核对；时间倒拨、过期、旧timer和失败5秒退避已有受控时钟测试。TEST_MODE禁自动timer/真实唤醒监听，通过同一check分支验证，不把它称为实际睡眠唤醒测试；调度/后端故障也不承诺到期毫秒级恢复。
+
+Command-T复用原生Menu/before-input-event及DOM精确修饰/组合/重复保护，未向globalShortcut新增系统级Command-T，不抢其他应用的同组合。菜单栏/更多菜单提供时长和手动恢复，暂停/恢复中持续显示，恢复按钮/原生tooltip、Stack状态同步；原生预览命令不关未保存草稿。默认活动布局不变，只在暂停/恢复中出现状态按钮，并针对320pt预留导航空间，浅/深色使用不同对比色；这是本项目当前状态呈现，不是原版像素证明。
+
+新增10项CapturePause/设置/原生命令Node与1项Monitor屏障回归，覆盖辅助程序失效仍可暂停、计数失败保持屏障、写盘失败会话保护/到期重试、倒拨时间、旧计时、快速意图、旧偏好/截止校验和退出取消。8项独立Electron实际运行主进程/监视器/ClipStore/UI和重启，仅以合成计数/正文/受控时钟替换系统适配器；覆盖deadline、旧在途候选、Stack、计数/磁盘故障、原生/DOM快捷键重复、未保存草稿、320pt及实际备份导入。首轮导入测试误读state().preview.token（实际是state().token），修正fixture接口后，暂停/导入20项定向复跑全通过；未改产品来迎合错误断言。早期JS语法检查发现Stack状态表达式漏分支，已补回原有倒序分支，后续完整check和回归均通过。
+
+最终验证（2026-10-23 01:25 Asia/Shanghai）：`/var/folders/ks/007yts0d7qg0kwy1mnq_q1qh0000gn/T/paste-capture-pause-final-lhOfYX`驱动退出0，四日志均回读。267项Node/check/build、十七独立文件源码147项（190.64秒）、新实际产物147项（194.79秒）、八暂停流程五轮40次（37.27秒）全部通过；src全60文件与受测app.asar逐字节相同。320pt浅色暂停截图已查看，状态、更多、搜索/导航无相互遮挡，正文/卡片正常，不作原版差分。完整197项/18文件，app.spec.js 50系统项仍未运行，前置只发现活动原版PID55543并拒绝；未暂停原版/访问系统正文/发真实跨应用键，不改系统时钟/授权或直接读取原版库。
+
+严格codesign完整性通过，release:verify在Gatekeeper非零，有效身份0；公开生产audit0、完整8moderate且无high/critical。旧撤销Paste Like未运行或重签，不清隔离/关安全保护，未发行。原版时长/暂停呈现、实际睡眠唤醒/IME/快捷键/多屏全屏及真实归属/目标消费/像素、同步隐私与发行完整门槛继续保留。
+
+影响16文件：运行src/capture-pause.js、src/monitor.js、src/main.js、src/model.js、src/app-menu.js、src/preload.js、src/renderer.js、src/index.html、src/styles.css、src/stack.js；测试test/capture-pause.test.js、test/monitor.test.js、test/ui/capture-pause.spec.js；文档README.md、CHANGELOG.md、本记录。无新增依赖/原生代码/库版本或原版素材修改，不恢复色彩stash。完整目标继续active，不标完成/blocked；方法留在当前项目记录与回归，不另建未经物理系统验收的通用skill。
 
 ## 继续入口
 

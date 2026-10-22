@@ -86,3 +86,11 @@ test('concurrent pollers share a read and await its completion without losing it
   const first = monitor.tick(); await new Promise(resolve => setImmediate(resolve)); context = 2;
   assert.equal(first, monitor.tick()); complete({ signature: 'one' }); await first; assert.equal(observed[0].context, 1);
 });
+test('a resume baseline barrier invalidates older reads and cannot observe or persist the paused payload', async () => {
+  const { state, monitor } = fixture(); let release; const baselines = [];
+  monitor.onBaseline = version => baselines.push(version);
+  monitor.readSnapshot = () => new Promise(resolve => { release = resolve; });
+  const old = monitor.tick(); await new Promise(resolve => setImmediate(resolve)); monitor.requireBaseline(); release({ signature: 'private' }); await old;
+  assert.equal(state.captures.length, 0); await monitor.tick(); assert.deepEqual(baselines, [1]); assert.equal(state.captures.length, 0);
+  monitor.readSnapshot = async () => ({ signature: 'public' }); state.version++; await monitor.tick(); assert.deepEqual(state.captures, [{ signature: 'public' }]);
+});

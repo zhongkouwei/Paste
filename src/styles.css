@@ -35,6 +35,8 @@ svg { width: 18px; height: 18px; stroke-width: 1.7; flex-shrink: 0; }
 .icon-button.small { width: 24px; height: 24px; padding: 3px; }
 .icon-button.small svg { width: 16px; height: 16px; }
 .toolbar-end { display: flex; position: absolute; right: 18px; top: 16px; gap: 6px; }
+.panel.capture-paused .navigation { max-width: calc(100% - 198px); }
+#captureButton { width: auto; gap: 4px; padding: 4px 6px; color: light-dark(#a8392d, #ff9984); font-size: 12px; white-space: nowrap; }
 #stackButton { opacity: 0; }
 .toolbar-end:hover #stackButton, #stackButton:focus-visible, #stackButton.active { opacity: 1; }
 #stackCount { position: absolute; right: -3px; top: -6px; background: var(--selected); color: white; font-size: 9px; border-radius: 8px; min-width: 15px; padding: 1px 3px; }
@@ -111,6 +113,7 @@ body.quick-keys .quick-key { display: block; }
 @media (max-width: 600px) {
   .toolbar { justify-content: flex-start; padding-left: 16px; }
   .navigation { justify-content: flex-start; gap: 5px; max-width: calc(100% - 48px); }
+  .panel.capture-paused .navigation { max-width: calc(100% - 130px); }
   .toolbar-end { right: 10px; }
   #stackButton { display: none; }
   .search-box { width: 100%; max-width: none; flex: 1; min-width: 0; }
