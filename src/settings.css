@@ -28,7 +28,17 @@ input { accent-color: var(--selected); }
 .retention input { width: 100%; margin: 0; }
 .retention > div { display: flex; justify-content: space-between; font-size: 12px; margin-top: 10px; }
 .excluded-group ul { margin: 0; padding: 0; list-style: none; }
-.excluded-group li { display: flex; justify-content: space-between; align-items: center; min-height: 36px; font-size: 12px; overflow-wrap: anywhere; }
+.excluded-group li { display: flex; gap: 10px; align-items: center; min-height: 48px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13px; overflow-wrap: anywhere; }
+.excluded-icon { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex-shrink: 0; color: var(--muted); }
+.excluded-icon img { display: block; width: 28px; height: 28px; object-fit: contain; }
+.excluded-icon svg { width: 22px; height: 22px; }
+.excluded-label { min-width: 0; flex: 1; }
+.excluded-name { display: block; line-height: 18px; }
+.excluded-group li > .icon-button { flex-shrink: 0; }
+.excluded-group .excluded-empty { justify-content: center; min-height: 76px; color: var(--muted); }
+.excluded-toolbar { display: flex; min-height: 32px; align-items: center; }
+.excluded-advanced { border-top: 1px solid var(--line); padding: 8px 0; }
+.excluded-advanced summary { cursor: pointer; font-size: 12px; color: var(--muted); }
 .excluded-group form { display: flex; padding: 6px 0; border-top: 1px solid var(--line); }
 .excluded-group form input { width: 100%; min-width: 0; padding: 4px 7px; }
 .shortcut-list { margin-top: 20px; }

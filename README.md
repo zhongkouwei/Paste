@@ -56,7 +56,7 @@ node scripts/benchmark-export.js 1000
 
 - `check`：所有源码、脚本与测试的 JavaScript 语法检查。
 - `test`：存储、迁移、损坏恢复、Pinboard、搜索与保留策略。
-- `test:ui`：真实 Electron + IPC。`app.spec.js` 读写系统剪贴板，使用隔离测试数据、不读取已有历史；测试前保存、结束后恢复系统剪贴板。运行该套件前退出其他剪贴板记录工具，可避免其收录测试内容。`media.spec.js`、`media-requests.spec.js`、`rich-lists.spec.js`、`rich-copy.spec.js`、`plain-paste.spec.js`、`search-cache.spec.js`、`export.spec.js`、`import.spec.js` 和 `text-identity.spec.js` 只用合成存储/图像和 IPC，不读写系统剪贴板，无需停止原版；富文本/纯文本套件的合成 ClipboardEvent 使用独立 DataTransfer，不访问系统剪贴板。可单独运行 `npm run test:ui -- test/ui/search-cache.spec.js` 或其他独立文件。
+- `test:ui`：真实 Electron + IPC。`app.spec.js` 读写系统剪贴板，使用隔离测试数据、不读取已有历史；测试前保存、结束后恢复系统剪贴板。运行该套件前退出其他剪贴板记录工具，可避免其收录测试内容。`media.spec.js`、`media-requests.spec.js`、`rich-lists.spec.js`、`rich-copy.spec.js`、`plain-paste.spec.js`、`search-cache.spec.js`、`export.spec.js`、`import.spec.js`、`text-identity.spec.js` 和 `applications.spec.js` 使用隔离合成数据/IPC；应用选择套件另只读系统 TextEdit 的公开应用元数据，不启动所选应用，均不读写系统剪贴板，无需停止原版。富文本/纯文本套件的合成 ClipboardEvent 使用独立 DataTransfer，不访问系统剪贴板。可单独运行 `npm run test:ui -- test/ui/search-cache.spec.js` 或其他独立文件。
 - 隔离数据目录不隔离全机剪贴板。`app.spec.js` 启动前检查已知 Paste/Paste Easy/Paste Like 进程，存在未停止的程序或无法检查时，该套件先失败，不启动其测试应用或写剪贴板；其他名称的工具仍须人工确认已退出。可先运行 `node scripts/clipboard-test-environment.js` 检查。第八轮发现原版仍常驻，因此更早的合成测试内容可能已被它收录，未核实或直接清理原版历史；不可把恢复当前剪贴板当作恢复其他应用的历史。
 - `test:ui` 运行前自动编译原生桥和编辑器；构建产物也包含编辑器离线包，不依赖 CDN。
 - `test:packaged`：对构建产物运行同一组端到端测试。
@@ -75,6 +75,10 @@ version 1/2 库在读取时保留原文件，下一次成功保存迁移；原�
 删除历史保留 Pinboard 中的项目；删除 Pinboard 不删除其项目。正在编辑的项目在窗口关闭前免于自动到期/容量清理和清空历史，显式删除会被拒绝。历史期限变更立即执行，固定内容豁免。`PASTE_DATA_DIR` 可指定隔离数据目录；`--test-mode` 关闭自动监听与全局快捷键，仅用于开发验收。
 
 监听按系统剪贴板变化计数读取内容；未变化时不重复读取/解码图片，读取途中变化会丢弃旧候选并重试。暂停期间不补录，设置保存和自主复制分别串行执行。HTML 签名忽略 Electron 添加的已知编码前缀；图片按尺寸与解码像素识别，旧图片记录首次升级会一次性迁移签名，保留 ID/固定状态和原始文件。
+
+隐私页可通过原生选择器一次添加最多32个 `.app`，显示本机应用名称/64px图标，并按 Bundle ID 去重和排除；已移动/卸载或无法定位的规则保留原标识，仍可移除。“按标识添加”保留旧配置和未安装应用的高级入口。名称/图标仅为本次运行的有界元数据缓存，设置/备份仍只保存标识，不存应用路径或图标，不启动所选程序。添加/移除在现有设置队列中基于最新值执行，选择器晚返回和连续操作不会恢复已移除的规则；查询的迟到回复不复活旧行，取消/校验/保存失败保留原设置。
+
+每次新复制重新读取前台应用身份，不再复用800ms缓存或把之前应用当成当前未知来源；来源读取失败保持该次捕获可重试。未变化的剪贴板仍不读来源。排除基于捕获时能识别到的前台 Bundle ID，不是后台剪贴板真实写入者的完整归因或系统级DLP；物理切换/后台写入仍需人工矩阵验证。新增规则不追溯删除既有历史、备份或缓存，也不等于加密/安全擦除。屏幕共享遮蔽仍未实现，不能用未验证的开关或单独一次系统API调用宣称隐私保护已完整对齐。
 
 文本身份由原生 `JSON.stringify(['text-v2', body, htmlPayload(html), rtf])` 的 SHA-256 决定，正文/HTML/RTF 有明确字段边界，未配对 UTF-16 单元转义后再哈希。旧版直接拼接 `text:...\nhtml:...\nrtf:...` 会让嵌入相同分隔符的不同内容碰撞，直接 UTF-8 编码还会把不同未配对代理项变成同一替代字符，导致重复制/旧目录合并/备份合并误覆盖。新算法保留已知 HTML 传输前缀归一化，正常内容、字段原文、ID、改名、成员和排序不改；启动按既有加载流程重算文本签名，不因仅打开库就写回清单，不在加载时按签名合并记录。后续成功事务写入新签名，旧版本迁移原件/备份和原始内容文件保留；`text-v2` 是内部身份域，不是库或导出格式版本。不要降级回旧算法构建写回新库；本次修复不能凭空重建已经被旧逻辑覆盖的原文，是否有可用历史副本须另行核实，本轮未扫描真实用户历史。
 

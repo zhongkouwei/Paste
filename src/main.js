@@ -13,6 +13,7 @@ const { ClipboardMonitor } = require('./monitor');
 const { ImageProcessor, ImageDraft } = require('./image-editor');
 const { ImportService } = require('./import-service');
 const { ImageInspector } = require('./image-inspector');
+const { ApplicationCatalog, validApplicationID, captureSource } = require('./applications');
 const { ImageTextIndex } = require('./image-text');
 const { SearchService } = require('./search-service');
 const { MediaService, thumbnail } = require('./media');
@@ -27,10 +28,10 @@ app.setPath('userData', process.env.PASTE_DATA_DIR ? path.resolve(process.env.PA
 let mainWindow, settingsWindow, previewWindow, tray, store, transfers, pollTimer, targetApp;
 let previewState = null, previewDirty = false, previewOpening = false, activeShare;
 let hotkeys, monitor, imageProcessor, imageDraft, imageText, capabilities = {}, processingClosing = false, processingStopped = false;
-let searchService, mediaService, importService, imageInspector, exportDialogOpen = false, importDialogOpen = false;
+let searchService, mediaService, importService, imageInspector, applicationCatalog, exportDialogOpen = false, importDialogOpen = false, applicationDialogOpen = false;
 let quitting = false, quitAfterPreview = false, copyQueue = Promise.resolve(), settingsQueue = Promise.resolve();
 let copyRequest = 0;
-let sourceCache = null, lastSourceAt = 0, suppressBlur = false;
+let suppressBlur = false;
 let lastError = '', stack = [], stackMode = false;
 const PANEL_HEIGHT = 332;
 const helper = path.join(app.getAppPath().replace(/app\.asar$/, 'app.asar.unpacked'), 'native/bin/paste-bridge');
@@ -74,11 +75,7 @@ function sourceColor(source) {
 }
 
 async function currentSource() {
-  if (Date.now() - lastSourceAt < 800) return sourceCache;
-  const value = await native('frontmost');
-  lastSourceAt = Date.now();
-  if (value.pid && value.pid !== process.pid && !/paste-easy|pastelike/i.test(value.bundleId || '')) sourceCache = value;
-  return sourceCache;
+  return captureSource(() => native('frontmost'), process.pid);
 }
 
 function isIgnored(formats, source) {
@@ -253,7 +250,7 @@ function applyRuntimeSettings() {
 }
 
 function saveSettings(changes) {
-  const operation = settingsQueue.then(() => performSaveSettings(changes));
+  const operation = settingsQueue.then(() => performSaveSettings(typeof changes === 'function' ? changes(store.data.settings) : changes));
   settingsQueue = operation.catch(() => {}); return operation;
 }
 async function performSaveSettings(changes) {
@@ -415,6 +412,27 @@ function registerIPC() {
       if (!TEST_MODE) shell.showItemInFolder(files[index].path); return files[index].path;
     },
     'settings:save': (_event, changes) => saveSettings(changes),
+    'settings:excludedApplications': async (event, ids) => {
+      if (event.sender !== settingsWindow?.webContents || !Array.isArray(ids) || ids.length > 32 || ids.some(id => !store.data.settings.excludedApps.includes(id))) throw new Error('无效的应用程序查询。');
+      return applicationCatalog.metadata(ids);
+    },
+    'settings:chooseExcludedApplications': async event => {
+      if (event.sender !== settingsWindow?.webContents) throw new Error('请从隐私设置选择应用程序。');
+      if (exportDialogOpen || importDialogOpen) throw new Error('请先关闭当前文件选择窗口。');
+      if (applicationDialogOpen) throw new Error('应用程序选择窗口已打开。');
+      applicationDialogOpen = true;
+      try {
+        const result = await dialog.showOpenDialog(settingsWindow, { title: '忽略应用程序', buttonLabel: '添加', defaultPath: '/Applications',
+          properties: ['openFile', 'multiSelections'], filters: [{ name: '应用程序', extensions: ['app'] }] });
+        if (result.canceled) return false;
+        const ids = await applicationCatalog.selected(result.filePaths);
+        return saveSettings(previous => ({ excludedApps: [...previous.excludedApps, ...ids] }));
+      } finally { applicationDialogOpen = false; }
+    },
+    'settings:changeExcludedApplication': (event, id, remove = false) => {
+      if (event.sender !== settingsWindow?.webContents || !validApplicationID(id) || typeof remove !== 'boolean') throw new Error('无效的应用程序标识。');
+      return saveSettings(previous => ({ excludedApps: remove ? previous.excludedApps.filter(value => value !== id) : [...previous.excludedApps, id] }));
+    },
     'settings:open': openSettings, 'permission:get': () => native('permission'),
     'permission:open': () => shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'),
     'panel:hide': () => { closePreview(); mainWindow.hide(); },
@@ -422,6 +440,7 @@ function registerIPC() {
     'stack:add': (_event, id) => { if (!store.get(id)) throw new Error('Invalid item'); if (!stack.includes(id)) stack.push(id); emit(); return stack; },
     'stack:next': async () => { const id = stack[0]; if (!id) return { ok: false, error: 'Stack 为空' }; const result = await copy(id, { paste: true }); if (result.ok) stack.shift(); emit(); return result; },
     'library:export': async () => {
+      if (applicationDialogOpen) throw new Error('请先关闭应用程序选择窗口。');
       if (importDialogOpen || importService.state().phase !== 'idle') throw new Error('请先完成或取消备份恢复。');
       if (exportDialogOpen || store.exportService.state().running) throw new Error('已有备份正在选择位置或导出，请等待或取消。');
       exportDialogOpen = true;
@@ -436,6 +455,7 @@ function registerIPC() {
     'library:exportState': () => store.exportService.state(),
     'library:cancelExport': () => store.exportService.cancel(),
     'library:prepareImport': async () => {
+      if (applicationDialogOpen) throw new Error('请先关闭应用程序选择窗口。');
       if (exportDialogOpen || importDialogOpen) throw new Error('请先关闭备份文件选择窗口。');
       importService.checkAvailable(); importDialogOpen = true;
       try {
@@ -477,6 +497,7 @@ else {
       searchService = new SearchService({ directory: app.getPath('userData') });
       mediaService = new MediaService(store, nativeImage);
       imageInspector = new ImageInspector(electron);
+      applicationCatalog = new ApplicationCatalog(request => nativeInput('application-info', request, 10000));
       importService = new ImportService(store, {
         validateImage: async (file, { turns = 0, signal } = {}) => {
           const inspect = (file, options) => imageInspector.inspect(file, options);
@@ -521,7 +542,7 @@ else {
       registerIPC(); applyRuntimeSettings();
       store.exportService.onChanged = state => { for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('export:changed', state); };
       importService.onChanged = state => { if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('import:changed', state); };
-      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, imageProcessor, imageInspector, imageText, searchService, mediaService, importService, thumbnail };
+      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, isIgnored, imageProcessor, imageInspector, applicationCatalog, imageText, searchService, mediaService, importService, thumbnail };
       try { hotkeys.apply(store.data.settings); } catch (error) { report(error); }
       for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(event, () => { if (mainWindow.isVisible()) placePanel(); });
       app.on('activate', () => showPanel());

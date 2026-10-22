@@ -2,14 +2,18 @@
 const $ = selector => document.querySelector(selector);
 let library, recording = null, timer, exportSelecting = false, exportState = { running: false, revision: -1 };
 let importSelecting = false, importState = { phase: 'idle', revision: -1 };
+let excludedKey = '', excludedEpoch = 0, choosingApplications = false;
+const excludedRows = new Map(), excludedMetadata = new Map();
 const retention = [1, 7, 30, 365, 0];
 function status(message) { $('#settingsStatus').textContent = message; $('#settingsStatus').hidden = false; clearTimeout(timer); timer = setTimeout(() => { $('#settingsStatus').hidden = true; }, 5000); }
+function clearStatus() { clearTimeout(timer); $('#settingsStatus').hidden = true; }
 async function attempt(task) { try { return await task(); } catch (error) { status(error.message); return undefined; } }
 async function save(changes) {
   try { render(await window.paste.saveSettings(changes)); }
   catch (error) { render(library); throw error; }
 }
 function render(value) {
+  if (library && value.revision < library.revision) return;
   library = value;
   document.querySelectorAll('[data-setting]').forEach(input => {
     if (input.type === 'checkbox') input.checked = !!value.settings[input.dataset.setting];
@@ -21,15 +25,38 @@ function render(value) {
     if (recording?.button === button) return;
     button.textContent = value.settings[button.dataset.shortcut].replace(/CommandOrControl/g, '⌘').replace(/Shift/g, '⇧').replace(/Alt/g, '⌥').replace(/Control/g, '⌃').replace(/Right/g, '→').replace(/Left/g, '←').replace(/\+/g, '') || '未设置';
   });
-  $('#excludedApps').replaceChildren();
-  for (const id of value.settings.excludedApps) {
-    const li = document.createElement('li'), text = document.createElement('span'), remove = document.createElement('button');
-    text.textContent = id; remove.className = 'icon-button'; remove.title = '移除'; remove.setAttribute('aria-label', `移除 ${id}`); remove.innerHTML = '<i data-lucide="minus"></i>';
-    remove.onclick = () => attempt(() => save({ excludedApps: library.settings.excludedApps.filter(entry => entry !== id) }));
-    li.append(text, remove); $('#excludedApps').append(li);
-  }
+  renderExcludedApplications(value.settings.excludedApps);
   $('#itemCount').textContent = value.items.length; $('#boardCount').textContent = value.boards.length;
   lucide.createIcons();
+}
+function updateExcludedApplication(id, value) {
+  const row = excludedRows.get(id); if (!row) return;
+  const name = value?.name || id; row.name.textContent = name; row.name.title = `${name}\n${id}`;
+  row.note.textContent = value && !value.available ? '未安装或无法定位' : ''; row.note.hidden = !row.note.textContent;
+  row.remove.setAttribute('aria-label', `移除 ${name}`);
+  row.icon.replaceChildren();
+  if (value?.icon) {
+    const image = document.createElement('img'); image.alt = ''; image.src = value.icon; image.onerror = () => { image.remove(); row.icon.innerHTML = '<i data-lucide="app-window"></i>'; lucide.createIcons(); }; row.icon.append(image);
+  } else { row.icon.innerHTML = '<i data-lucide="app-window"></i>'; }
+}
+function renderExcludedApplications(ids) {
+  const key = JSON.stringify(ids); if (key === excludedKey) return; excludedKey = key; const epoch = ++excludedEpoch;
+  for (const id of excludedMetadata.keys()) if (!ids.includes(id)) excludedMetadata.delete(id);
+  excludedRows.clear(); $('#excludedApps').replaceChildren();
+  for (const id of ids) {
+    const li = document.createElement('li'), icon = document.createElement('span'), label = document.createElement('span'), name = document.createElement('span'), note = document.createElement('small'), remove = document.createElement('button');
+    li.dataset.bundleId = id; icon.className = 'excluded-icon'; label.className = 'excluded-label'; name.className = 'excluded-name';
+    remove.className = 'icon-button'; remove.title = '移除'; remove.innerHTML = '<i data-lucide="minus"></i>';
+    remove.onclick = () => attempt(async () => { remove.disabled = true; try { render(await window.paste.changeExcludedApplication(id, true)); clearStatus(); } finally { remove.disabled = false; } });
+    label.append(name, note); li.append(icon, label, remove); $('#excludedApps').append(li); excludedRows.set(id, { name, note, icon, remove }); updateExcludedApplication(id, excludedMetadata.get(id));
+  }
+  if (!ids.length) { const empty = document.createElement('li'); empty.className = 'excluded-empty'; empty.textContent = '没有项目'; $('#excludedApps').append(empty); }
+  (async () => {
+    for (let offset = 0; offset < ids.length; offset += 32) {
+      const values = await window.paste.getExcludedApplications(ids.slice(offset, offset + 32)); if (epoch !== excludedEpoch) return;
+      for (const value of values) { excludedMetadata.set(value.bundleId, value); updateExcludedApplication(value.bundleId, value); } lucide.createIcons();
+    }
+  })().catch(error => { if (epoch === excludedEpoch) status(error.message); });
 }
 document.querySelectorAll('[data-page]').forEach(button => { button.onclick = () => {
   document.querySelectorAll('[data-page]').forEach(tab => tab.classList.toggle('active', tab === button));
@@ -39,7 +66,12 @@ document.querySelectorAll('[data-page]').forEach(button => { button.onclick = ()
 document.querySelectorAll('[data-setting]').forEach(input => { input.onchange = () => attempt(() => save({ [input.dataset.setting]: input.type === 'checkbox' ? input.checked : input.value })); });
 document.querySelectorAll('[name=pasteTarget]').forEach(input => { input.onchange = () => attempt(() => save({ pasteTarget: input.value })); });
 $('#retention').onchange = event => attempt(() => save({ retentionDays: retention[Number(event.target.value)] }));
-$('#excludeForm').onsubmit = event => { event.preventDefault(); attempt(async () => { await save({ excludedApps: [...library.settings.excludedApps, $('#excludeId').value.trim()] }); $('#excludeId').value = ''; }); };
+$('#excludeForm').onsubmit = event => { event.preventDefault(); attempt(async () => { render(await window.paste.changeExcludedApplication($('#excludeId').value.trim())); clearStatus(); $('#excludeId').value = ''; }); };
+$('#chooseExcludedApps').onclick = () => attempt(async () => {
+  if (choosingApplications) return; choosingApplications = true; $('#chooseExcludedApps').disabled = true;
+  try { const value = await window.paste.chooseExcludedApplications(); if (value) { excludedKey = ''; render(library && value.revision < library.revision ? library : value); clearStatus(); } }
+  finally { choosingApplications = false; $('#chooseExcludedApps').disabled = false; }
+});
 document.querySelectorAll('[data-shortcut]').forEach(button => { button.onclick = () => {
   if (recording) { recording.button.classList.remove('recording'); recording = null; render(library); }
   recording = { key: button.dataset.shortcut, button }; button.textContent = '按下快捷键'; button.classList.add('recording');

@@ -33,10 +33,67 @@ static void frontmost(void) {
     output(result);
 }
 
+static BOOL validBundleID(id value) {
+    return [value isKindOfClass:NSString.class] && [value length] > 0 && [value length] <= 200
+        && [value rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"] invertedSet]].location == NSNotFound;
+}
+
+static NSDictionary *applicationInfo(NSURL *url) {
+    NSNumber *directory = nil; [url getResourceValue:&directory forKey:NSURLIsDirectoryKey error:nil];
+    if (!directory.boolValue || ![url.pathExtension.lowercaseString isEqualToString:@"app"]) return nil;
+    NSBundle *bundle = [NSBundle bundleWithURL:url];
+    NSString *identifier = bundle.bundleIdentifier;
+    if (!validBundleID(identifier) || ![bundle.infoDictionary[@"CFBundlePackageType"] isEqual:@"APPL"]) return nil;
+    id name = bundle.localizedInfoDictionary[@"CFBundleDisplayName"] ?: bundle.infoDictionary[@"CFBundleDisplayName"]
+        ?: bundle.localizedInfoDictionary[@"CFBundleName"] ?: bundle.infoDictionary[@"CFBundleName"];
+    if (![name isKindOfClass:NSString.class] || ![name length] || [name length] > 1000) name = [NSFileManager.defaultManager displayNameAtPath:url.path];
+    NSMutableDictionary *result = [@{ @"bundleId": identifier, @"name": name ?: identifier, @"available": @YES } mutableCopy];
+    NSImage *icon = [NSWorkspace.sharedWorkspace iconForFile:url.path];
+    NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:64 pixelsHigh:64 bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:256 bitsPerPixel:32];
+    if (icon && bitmap) {
+        [NSGraphicsContext saveGraphicsState]; NSGraphicsContext.currentContext = [NSGraphicsContext graphicsContextWithBitmapImageRep:bitmap];
+        [icon drawInRect:NSMakeRect(0, 0, 64, 64) fromRect:NSZeroRect operation:NSCompositingOperationCopy fraction:1];
+        [NSGraphicsContext restoreGraphicsState];
+        NSData *png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+        if (png.length && png.length <= 32768) result[@"icon"] = [@"data:image/png;base64," stringByAppendingString:[png base64EncodedStringWithOptions:0]];
+    }
+    return result;
+}
+
+static NSDictionary *applicationsInfo(NSDictionary *request) {
+    BOOL selecting = request[@"paths"] != nil;
+    NSArray *values = request[selecting ? @"paths" : @"identifiers"];
+    if (![values isKindOfClass:NSArray.class] || values.count > 32 || (selecting && request[@"identifiers"])) return @{ @"ok": @NO, @"error": @"invalid-applications" };
+    NSMutableArray *applications = [NSMutableArray array];
+    for (id value in values) {
+        NSURL *url = nil;
+        if (selecting) {
+            if (![value isKindOfClass:NSString.class] || ![value isAbsolutePath] || [value length] > 4096 || [value rangeOfString:@"\0"].location != NSNotFound) return @{ @"ok": @NO, @"error": @"invalid-application" };
+            url = [[NSURL fileURLWithPath:value] URLByResolvingSymlinksInPath];
+        } else {
+            if (!validBundleID(value)) return @{ @"ok": @NO, @"error": @"invalid-applications" };
+            url = [NSWorkspace.sharedWorkspace URLForApplicationWithBundleIdentifier:value];
+        }
+        NSDictionary *info = url ? applicationInfo(url) : nil;
+        if (selecting && !info) return @{ @"ok": @NO, @"error": @"invalid-application" };
+        if (!selecting && ![info[@"bundleId"] isEqual:value]) info = nil;
+        [applications addObject:info ?: @{ @"bundleId": value, @"name": value, @"available": @NO }];
+    }
+    return @{ @"ok": @YES, @"applications": applications };
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSString *command = argc > 1 ? @(argv[1]) : @"";
         if ([command isEqualToString:@"frontmost"]) { frontmost(); return 0; }
+        if ([command isEqualToString:@"application-info"]) {
+            @try {
+                NSData *input = [NSFileHandle.fileHandleWithStandardInput readDataToEndOfFile];
+                id request = input.length <= 256 * 1024 ? [NSJSONSerialization JSONObjectWithData:input options:0 error:nil] : nil;
+                NSDictionary *result = [request isKindOfClass:NSDictionary.class] ? applicationsInfo(request) : @{ @"ok": @NO, @"error": @"invalid-applications" };
+                output(result); return [result[@"ok"] boolValue] ? 0 : 1;
+            } @catch (NSException *exception) { output(@{ @"ok": @NO, @"error": @"application-info-failed" }); return 1; }
+        }
         if ([command hasPrefix:@"image-"]) {
             NSDictionary *request = @{};
             if (![command isEqualToString:@"image-capabilities"]) {

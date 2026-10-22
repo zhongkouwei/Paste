@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('paste', {
   editImage: action => invoke('preview:image', action),
   startDrag: ids => invoke('item:drag', ids), shareItem: id => invoke('item:share', id), revealItem: (id, index = 0) => invoke('item:reveal', id, index),
   saveSettings: changes => invoke('settings:save', changes), openSettings: () => invoke('settings:open'),
+  getExcludedApplications: ids => invoke('settings:excludedApplications', ids), chooseExcludedApplications: () => invoke('settings:chooseExcludedApplications'),
+  changeExcludedApplication: (id, remove = false) => invoke('settings:changeExcludedApplication', id, remove),
   getPermission: () => invoke('permission:get'), openPermission: () => invoke('permission:open'), hide: () => invoke('panel:hide'),
   toggleStack: () => invoke('stack:toggle'), addToStack: id => invoke('stack:add', id), nextInStack: () => invoke('stack:next'),
   exportLibrary: () => invoke('library:export'),

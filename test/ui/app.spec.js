@@ -1441,6 +1441,7 @@ test('settings open as a real window and save privacy, theme and retention', asy
   await settings.getByRole('slider', { name: '保留历史' }).fill('4');
   await settings.getByRole('button', { name: '隐私', exact: true }).click();
   await expect(settings.getByRole('switch', { name: /忽略机密内容/ })).toBeChecked();
+  await settings.getByText('按标识添加', { exact: true }).click();
   await settings.getByRole('textbox', { name: '忽略应用的 Bundle ID' }).fill('com.example.private');
   await settings.getByRole('button', { name: '添加忽略应用' }).click();
   await expect(settings.locator('#excludedApps')).toContainText('com.example.private');

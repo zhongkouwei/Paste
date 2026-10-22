@@ -42,7 +42,11 @@
         <label class="setting-row"><span>忽略瞬时内容<small>不保存其他应用生成的临时数据。</small></span><input type="checkbox" role="switch" data-setting="ignoreTransient"></label>
       </div>
       <h2>忽略应用程序</h2>
-      <div class="settings-group excluded-group"><ul id="excludedApps"></ul><form id="excludeForm"><input id="excludeId" placeholder="com.example.app" aria-label="忽略应用的 Bundle ID" pattern="[A-Za-z0-9_.-]+" required><button type="submit" class="icon-button" aria-label="添加忽略应用" title="添加"><i data-lucide="plus"></i></button></form></div>
+      <div class="settings-group excluded-group">
+        <ul id="excludedApps" aria-label="忽略的应用"></ul>
+        <div class="excluded-toolbar"><button id="chooseExcludedApps" class="icon-button" aria-label="添加应用程序" title="添加应用程序"><i data-lucide="plus"></i></button></div>
+        <details class="excluded-advanced"><summary>按标识添加</summary><form id="excludeForm"><input id="excludeId" placeholder="com.example.app" aria-label="忽略应用的 Bundle ID" pattern="[A-Za-z0-9_.-]+" maxlength="200" required><button type="submit" class="icon-button" aria-label="添加忽略应用" title="添加"><i data-lucide="plus"></i></button></form></details>
+      </div>
     </section>
     <section data-section="shortcuts" hidden>
       <div class="settings-group">
