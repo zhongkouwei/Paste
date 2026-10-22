@@ -1,5 +1,15 @@
 const { contextBridge, ipcRenderer } = require('electron');
-const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args);
+const invoke = async (channel, ...args) => {
+  try { return await ipcRenderer.invoke(channel, ...args); }
+  catch (error) {
+    const prefix = `Error invoking remote method '${channel}': `;
+    if (typeof error?.message === 'string' && error.message.startsWith(prefix)) {
+      const message = error.message.slice(prefix.length);
+      error.message = message.startsWith('Error: ') ? message.slice(7) : message;
+    }
+    throw error;
+  }
+};
 const listen = (channel, callback) => {
   const listener = (_event, data) => callback(data);
   ipcRenderer.on(channel, listener);
@@ -11,6 +21,7 @@ contextBridge.exposeInMainWorld('paste', {
   getMedia: requests => invoke('item:media', requests),
   getDetail: id => invoke('item:detail', id),
   copy: (id, options) => invoke('item:copy', id, options),
+  newText: boardId => invoke('item:new', boardId), requestNewText: () => invoke('item:requestNew'),
   recognizeItem: (id, retry = false) => invoke('item:recognize', id, retry), copyImageText: id => invoke('item:copyText', id),
   getOCR: id => invoke('item:ocr', id),
   updateItem: (id, changes) => invoke('item:update', id, changes), deleteItems: ids => invoke('item:delete', ids),
@@ -20,6 +31,7 @@ contextBridge.exposeInMainWorld('paste', {
   openPreview: (id, options) => invoke('preview:open', id, options), getPreview: () => invoke('preview:get'),
   getRichText: (id, signature) => invoke('preview:richText', id, signature),
   closePreview: () => invoke('preview:close'), markPreviewDirty: value => invoke('preview:dirty', value),
+  pinDraft: (boardId, remove) => invoke('preview:pinDraft', boardId, remove),
   savePreview: changes => invoke('preview:save', changes), navigatePreview: delta => invoke('preview:navigate', delta),
   editImage: action => invoke('preview:image', action),
   startDrag: ids => invoke('item:drag', ids), shareItem: id => invoke('item:share', id), revealItem: (id, index = 0) => invoke('item:reveal', id, index),
@@ -35,6 +47,7 @@ contextBridge.exposeInMainWorld('paste', {
   getImportState: () => invoke('library:importState'), cancelImport: () => invoke('library:cancelImport'), revealImportBackup: () => invoke('library:revealImportBackup'),
   onImportChanged: callback => listen('import:changed', callback),
   onChanged: callback => listen('library:changed', callback), onShown: callback => listen('panel:shown', callback),
+  onNewText: callback => listen('item:new', callback), onItemCreated: callback => listen('item:created', callback),
   onPreviewChanged: callback => listen('preview:changed', callback),
   onPreviewCommand: callback => listen('preview:command', callback)
 });

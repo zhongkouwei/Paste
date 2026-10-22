@@ -396,6 +396,10 @@ function clearSearch() {
   closeFilters(); hideSuggestions(); suggestionsDismissed = false;
 }
 function setBoard(id) { clearSearch(); state.board = id; closeMenu(); resetFilter(); }
+async function newText() {
+  closeMenu(); if (state.editingBoard) await commitBoard();
+  return api.newText(state.searching ? 'history' : state.board);
+}
 function toggleSearch(open) {
   if (open) {
     const wasOpen = state.searching; state.searching = true; document.body.classList.add('searching');
@@ -601,6 +605,7 @@ $('#timeline').oncontextmenu = event => {
   itemMenu(item, event.clientX, event.clientY);
 };
 $('#moreButton').onclick = () => menu([
+  { label: '新建文本', icon: 'file-plus-2', key: '⌘N', shortcut: 'Meta+n', action: newText },
   { label: '设置…', icon: 'settings', key: '⌘,', shortcut: 'Meta+,', action: () => api.openSettings() },
   { label: state.settings.paused ? '继续记录' : '暂停记录', icon: state.settings.paused ? 'play' : 'pause', action: async () => accept(await api.saveSettings({ paused: !state.settings.paused })) },
   { label: state.status.stackMode ? '退出 Paste Stack' : 'Paste Stack', icon: 'layers', action: () => api.toggleStack() },
@@ -648,6 +653,7 @@ document.addEventListener('keydown', event => {
     }
   }
   const modifier = event.metaKey || event.ctrlKey;
+  if (shortcutMatches(event, 'CommandOrControl+N')) { event.preventDefault(); if (!event.repeat) attempt(newText); return; }
   document.body.classList.toggle('quick-keys', modifierPressed(event, state.settings.quickPasteModifier));
   if ($('#menu').hidden === false) {
     const buttons = [...$('#menu').querySelectorAll('button:not(:disabled)')];
@@ -718,6 +724,8 @@ document.addEventListener('keyup', event => document.body.classList.toggle('quic
 window.addEventListener('blur', () => document.body.classList.remove('quick-keys'));
 window.addEventListener('resize', () => { renderCards(); if (!$('#filterSuggestions').hidden) updateSuggestions(); });
 api.onChanged(accept);
+api.onNewText(() => attempt(newText));
+api.onItemCreated(({ id, boardId }) => attempt(async () => { accept(await api.getLibrary()); showIn(id, boardId); }));
 api.onShown(({ target }) => {
   mediaEpoch += 1; mediaSkipped.clear(); mediaFailures.clear(); clearMediaWarning();
   document.body.dataset.panelReady = 'true'; state.target = target; closeMenu(); render();

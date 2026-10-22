@@ -1,6 +1,6 @@
 const { shortcutMatches } = require('./model');
 
-function applicationMenuTemplate(openSettings, platform = process.platform) {
+function applicationMenuTemplate(openSettings, platform = process.platform, newText = () => {}) {
   return [
     ...(platform === 'darwin' ? [{ label: 'Paste Easy', submenu: [
       { role: 'about' }, { type: 'separator' },
@@ -8,7 +8,10 @@ function applicationMenuTemplate(openSettings, platform = process.platform) {
       { type: 'separator' }, { role: 'services' }, { type: 'separator' },
       { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }
     ] }] : []),
-    { role: 'fileMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }
+    { role: 'fileMenu', submenu: [
+      { id: 'new-text', label: '新建文本', accelerator: 'CommandOrControl+N', click: newText },
+      { type: 'separator' }, { role: 'close' }
+    ] }, { role: 'editMenu' }, { role: 'windowMenu' }
   ];
 }
 function previewShortcut(input, platform = process.platform) {
@@ -18,4 +21,8 @@ function previewShortcut(input, platform = process.platform) {
   if (shortcutMatches(event, 'CommandOrControl+R', platform)) return 'rename';
   return null;
 }
-module.exports = { applicationMenuTemplate, previewShortcut };
+function newTextShortcut(input, platform = process.platform) {
+  return input.type === 'keyDown' && !input.isComposing && shortcutMatches({ key: input.key || '', metaKey: input.meta,
+    ctrlKey: input.control, altKey: input.alt, shiftKey: input.shift }, 'CommandOrControl+N', platform);
+}
+module.exports = { applicationMenuTemplate, previewShortcut, newTextShortcut };

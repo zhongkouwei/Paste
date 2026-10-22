@@ -2,9 +2,10 @@ const electron = require('electron');
 const { app, BrowserWindow, globalShortcut, ipcMain, Menu, ShareMenu, nativeImage, Tray, screen, dialog, shell, nativeTheme } = electron;
 const path = require('node:path');
 const fs = require('node:fs');
+const { randomUUID } = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
-const { ClipStore, hash } = require('./store');
+const { ClipStore, hash, textSignature } = require('./store');
 const { classifyText, sanitizeSettings } = require('./model');
 const { ClipboardService, imageSignature } = require('./clipboard');
 const { Transfers, fileDetails } = require('./transfers');
@@ -20,7 +21,7 @@ const { ClipboardOwnership } = require('./clipboard-ownership');
 const { ImageTextIndex } = require('./image-text');
 const { SearchService } = require('./search-service');
 const { MediaService, thumbnail } = require('./media');
-const { applicationMenuTemplate, previewShortcut } = require('./app-menu');
+const { applicationMenuTemplate, previewShortcut, newTextShortcut } = require('./app-menu');
 const clip = new ClipboardService({ ...electron, fileBridge: process.platform === 'darwin' ? {
   read: () => native('read-files'), write: (files, options) => nativeInput('write-files', { files, ...options })
 } : undefined });
@@ -71,7 +72,7 @@ function emit() {
   const library = snapshot();
   for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('library:changed', library);
   if (previewWindow && !previewWindow.isDestroyed()) {
-    if (store.get(previewState?.id)) previewWindow.webContents.send('preview:changed', getPreviewState());
+    if (previewState?.draft || store.get(previewState?.id)) previewWindow.webContents.send('preview:changed', getPreviewState());
     else closePreview();
   }
 }
@@ -155,7 +156,7 @@ function itemDetail(id) {
 }
 function getPreviewState() {
   if (!previewState) return null;
-  const item = itemDetail(previewState.id);
+  const item = previewState.draft || itemDetail(previewState.id);
   if (imageDraft) { item.body = `data:image/png;base64,${imageDraft.image.buffer.toString('base64')}`; item.size = imageDraft.image.size; }
   return { ...previewState, item, imageEdit: imageDraft?.state(), capabilities, boards: store.data.boards };
 }
@@ -176,14 +177,26 @@ function trustedPreview(event) { return event.sender === previewWindow?.webConte
 function samePreview(window, id, signature) {
   return previewWindow === window && !window.isDestroyed() && previewState?.id === id && store.getMetadata(id)?.signature === signature;
 }
-function showPreview(id, { mode = 'view', anchor, ids = [] } = {}) {
-  if (!store.get(id)) throw new Error('项目已被删除');
-  if (!['view', 'edit', 'rename'].includes(mode)) throw new Error('Invalid preview mode');
+function requestNewText() {
+  if (previewWindow && !previewWindow.isDestroyed() && (previewDirty || previewState?.mode !== 'view')) { previewWindow.focus(); return false; }
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  mainWindow.webContents.send('item:new'); return true;
+}
+async function createTextDraft(boardId = 'history') {
+  if (previewWindow && !previewWindow.isDestroyed() && (previewDirty || previewState?.mode !== 'view')) { previewWindow.focus(); return false; }
+  if (typeof boardId !== 'string' || (boardId !== 'history' && !store.data.boards.some(board => board.id === boardId))) throw new Error('目标Pinboard不存在。');
+  if (!mainWindow.isVisible() && !await showPanel()) return false;
+  return showPreview(randomUUID(), { mode: 'create', boardId });
+}
+function showPreview(id, { mode = 'view', anchor, ids = [], boardId = 'history' } = {}) {
+  if (mode !== 'create' && !store.get(id)) throw new Error('项目已被删除');
+  if (!['view', 'edit', 'rename', 'create'].includes(mode)) throw new Error('Invalid preview mode');
   if (mode === 'edit' && store.get(id).type === 'file') throw new Error('文件项目不支持内容编辑');
   if (previewWindow && !previewWindow.isDestroyed() && (previewDirty || previewState?.mode !== 'view')) { previewWindow.focus(); return false; }
   if (previewState?.id !== id) cancelPreviewRich();
   imageDraft?.dispose(); imageDraft = null;
-  const item = store.get(id);
+  const item = mode === 'create' ? { id, type: 'text', body: '', html: '', rtf: '', signature: textSignature('', '', ''),
+    title: '新建文本', boardIds: boardId === 'history' ? [] : [boardId] } : store.get(id);
   if (mode === 'edit' && item.type === 'image') {
     const current = imageBytes(item);
     const original = item.originalAsset ? store.readAsset(item.originalAsset) : item.originalBody?.startsWith('data:image/png;base64,')
@@ -194,7 +207,7 @@ function showPreview(id, { mode = 'view', anchor, ids = [] } = {}) {
       transform: (buffer, turns, options) => imageProcessor.rotate(buffer, turns, options),
       cutout: capabilities.backgroundRemoval ? (buffer, options) => imageProcessor.cutout(buffer, options) : undefined });
   }
-  previewState = { id, mode, ids: Array.isArray(ids) ? ids.filter(value => !!store.get(value)).slice(0, 100000) : [] };
+  previewState = { id, mode, ids: Array.isArray(ids) ? ids.filter(value => !!store.get(value)).slice(0, 100000) : [], ...(mode === 'create' ? { draft: item } : {}) };
   store.protectedItemId = mode !== 'view' ? id : null;
   previewDirty = false;
   if (previewWindow && !previewWindow.isDestroyed()) {
@@ -261,7 +274,9 @@ function createWindow(file, options) {
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.on('will-attach-webview', event => event.preventDefault());
-  if (file === 'preview.html') window.webContents.on('before-input-event', (event, input) => {
+  window.webContents.on('before-input-event', (event, input) => {
+    if (newTextShortcut(input)) { event.preventDefault(); if (!input.isAutoRepeat) requestNewText(); return; }
+    if (file !== 'preview.html') return;
     if (previewState?.mode !== 'view') return;
     const command = previewShortcut(input);
     if (command) { event.preventDefault(); if (!input.isAutoRepeat) window.webContents.send('preview:command', command); }
@@ -398,6 +413,8 @@ function registerIPC() {
     'item:get': (_event, id) => { const item = store.get(id); return item?.asset ? { ...item, body: `data:image/png;base64,${store.readAsset(item.asset).toString('base64')}` } : item; },
     'item:detail': (_event, id) => itemDetail(id),
     'item:copy': (_event, id, options) => copy(id, options),
+    'item:new': (event, boardId) => { if (event.sender !== mainWindow?.webContents) throw new Error('请从主面板新建文本。'); return createTextDraft(boardId); },
+    'item:requestNew': () => requestNewText(),
     'item:recognize': (_event, id, retry) => recognizeItem(id, retry),
     'item:copyText': (_event, id) => copyImageText(id),
     'item:ocr': (_event, id) => { const item = store.get(id); return item?.ocr && item.ocr.signature === item.signature ? item.ocr : null; },
@@ -416,7 +433,7 @@ function registerIPC() {
     'board:reorder': (_event, ids) => { store.reorderBoards(ids); emit(); return snapshot(); },
     'board:reorderItems': (_event, id, ids) => { store.reorderBoardItems(id, ids); emit(); return snapshot(); },
     'board:pin': (_event, ids, boardId, remove) => { store.pinItems(ids, boardId, !!remove); emit(); return snapshot(); },
-    'preview:open': (_event, id, options) => showPreview(id, options),
+    'preview:open': (_event, id, options) => { if (options?.mode === 'create') throw new Error('请使用新建文本命令。'); return showPreview(id, options); },
     'preview:get': () => getPreviewState(),
     'preview:richText': (event, id, signature) => {
       if (!trustedPreview(event) || previewState?.id !== id) throw new Error('富文本预览已关闭');
@@ -433,6 +450,13 @@ function registerIPC() {
     },
     'preview:close': closePreview,
     'preview:dirty': (event, value) => { if (event.sender === previewWindow?.webContents) previewDirty = !!value || !!imageDraft?.busy; },
+    'preview:pinDraft': (event, boardId, remove) => {
+      if (!trustedPreview(event) || !previewState?.draft || typeof boardId !== 'string' || typeof remove !== 'boolean') throw new Error('新建文本已关闭。');
+      if (!remove && !store.data.boards.some(board => board.id === boardId)) throw new Error('目标Pinboard不存在。');
+      const draft = previewState.draft;
+      previewState = { ...previewState, draft: { ...draft, boardIds: remove ? draft.boardIds.filter(id => id !== boardId) : [...new Set([...draft.boardIds, boardId])] } };
+      previewWindow.webContents.send('preview:changed', getPreviewState()); return true;
+    },
     'preview:image': async (event, action) => {
       if (event.sender !== previewWindow?.webContents || !imageDraft) throw new Error('图片编辑已关闭');
       const draft = imageDraft;
@@ -447,6 +471,11 @@ function registerIPC() {
       if (!previewState) throw new Error('Preview closed');
       if (!trustedPreview(event)) throw new Error('Untrusted preview editor');
       if (previewSaveJob) throw new Error('正在保存富文本');
+      if (previewState.draft) {
+        const saved = store.createText(changes, previewState.draft.boardIds), destination = previewState.draft.boardIds[0] || 'history';
+        previewState = { id: saved.id, mode: 'edit', ids: [] }; store.protectedItemId = saved.id;
+        previewDirty = false; emit(); mainWindow.webContents.send('item:created', { id: saved.id, boardId: destination }); return snapshot();
+      }
       if (imageDraft) {
         if (imageDraft.busy) throw new Error('图片正在处理中');
         if (imageDraft.state().changed) {
@@ -619,7 +648,7 @@ else {
         frame: false, transparent: true, resizable: false, movable: false, minimizable: false, maximizable: false,
         fullscreenable: false, alwaysOnTop: true, skipTaskbar: true, title: 'Paste Easy', vibrancy: 'under-window' });
       mainWindow.setAlwaysOnTop(true, 'pop-up-menu');
-      Menu.setApplicationMenu(Menu.buildFromTemplate(applicationMenuTemplate(openSettings)));
+      Menu.setApplicationMenu(Menu.buildFromTemplate(applicationMenuTemplate(openSettings, process.platform, requestNewText)));
       mainWindow.on('blur', () => {
         const epoch = pasteTargets.epoch;
         setTimeout(() => {

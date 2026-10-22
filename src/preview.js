@@ -73,7 +73,7 @@ function renderOCR() {
   const enabled = state?.item.type === 'image' && state.mode === 'view' && state.capabilities?.textRecognition;
   $('#recognizePreview').hidden = !enabled; $('#recognizePreview').setAttribute('aria-pressed', String(!!enabled && ocrOpen));
   $('#ocrPanel').hidden = !enabled || !ocrOpen;
-  const ocr = state?.item.ocr, text = ocr?.signature === state?.item.signature ? ocr.text : '';
+  const ocr = state?.item.ocr, text = ocr && ocr.signature === state?.item.signature ? ocr.text : '';
   if ($('#ocrText').value !== text) $('#ocrText').value = text;
   $('#copyOCR').disabled = !text || ocrBusy; $('#retryOCR').disabled = ocrBusy;
   const message = ocrBusy ? '正在识别…' : ocr?.status === 'error' ? ocr.error || '文字识别失败' : !text ? '未识别到文字' : '';
@@ -111,12 +111,14 @@ function richPreview(html) {
 function renderPinboards() {
   const panel = $('#previewPinboards'); panel.replaceChildren();
   if (!state.boards.length) { const empty = document.createElement('span'); empty.textContent = '暂无 Pinboard'; panel.append(empty); }
-  for (const board of state.boards) {
+  const boards = [...state.boards];
+  if (state.draft) for (const id of state.item.boardIds) if (!boards.some(board => board.id === id)) boards.push({ id, name: '已删除的 Pinboard', color: '#77808a' });
+  for (const board of boards) {
     const label = document.createElement('label'), input = document.createElement('input'), dot = document.createElement('b'), name = document.createElement('span');
     input.type = 'checkbox'; input.checked = state.item.boardIds.includes(board.id);
     dot.className = 'board-dot'; if (/^#[a-f0-9]{6}$/i.test(board.color)) dot.style.setProperty('--board-color', board.color);
     name.textContent = board.name;
-    input.onchange = () => attempt(() => api.pinItems([state.item.id], board.id, !input.checked));
+    input.onchange = () => attempt(() => state.draft ? api.pinDraft(board.id, !input.checked) : api.pinItems([state.item.id], board.id, !input.checked));
     label.append(input, dot, name); panel.append(label);
   }
 }
@@ -154,7 +156,8 @@ function render(value, force = false) {
   const reason = native?.loading ? '正在读取富文本…' : native?.reason || (item.type === 'text' ? PasteEditor.inspect(html).reason : '')
     || (item.rtf && html && new DOMParser().parseFromString(html, 'text/html').querySelector('img') ? '此RTF的内嵌图像暂不支持编辑，原文未修改。' : '');
   const supported = !reason;
-  $('#previewTitle').textContent = item.renamed ? item.title : labels[item.type];
+  $('#previewTitle').textContent = value.draft ? '新建文本' : item.renamed ? item.title : labels[item.type];
+  $('#sharePreview').hidden = !!value.draft;
   $('#previewMeta').textContent = item.type === 'image' ? `${item.size?.width || '?'} × ${item.size?.height || '?'}`
     : item.type === 'file' ? `${item.files.length} 个文件` : `${[...item.body].length} 个字符`;
   $('#editPreview').hidden = editing || item.type === 'file';
@@ -174,8 +177,17 @@ function render(value, force = false) {
   }
   else if (editing && value.mode !== 'rename' && (item.type === 'text' || native)) {
     content.classList.add('rich-document');
+    let wasEmpty = !item.body.trim();
     richEditor = PasteEditor.create(content, { html, text: item.body, allowImages: !item.rtf, onUnsupported: status,
-      onUpdate: changed => { markDirty(changed); if (richEditor) $('#previewMeta').textContent = `${[...richEditor.content().body].length} 个字符`; }, onSelection: updateTools });
+      onUpdate: changed => {
+        markDirty(changed);
+        if (richEditor) {
+          const body = richEditor.content().body, empty = !body.trim();
+          $('#previewMeta').textContent = `${[...body].length} 个字符`;
+          if (value.draft && wasEmpty && !empty) { clearTimeout(statusTimer); $('#previewStatus').hidden = true; }
+          wasEmpty = empty;
+        }
+      }, onSelection: updateTools });
     if (native && !item.html) {
       const originalContent = richEditor.content, initial = originalContent().body;
       if (item.body === `${initial}\n`) richEditor.content = () => { const value = originalContent(); return { ...value, body: `${value.body}\n` }; };
@@ -217,7 +229,7 @@ $('#savePreview').onclick = () => attempt(async () => {
   saveBusy = true; $('.preview-shell').inert = true; $('#savePreview').setAttribute('aria-busy', 'true');
   try {
     const input = $('#previewContent input, #previewContent textarea');
-    if (dirty) await api.savePreview(state.imageEdit ? {} : state.mode === 'rename' ? { title: input.value } : richEditor ? richEditor.content() : { body: input.value });
+    if (dirty || state.draft) await api.savePreview(state.imageEdit ? {} : state.mode === 'rename' ? { title: input.value } : richEditor ? richEditor.content() : { body: input.value });
     markDirty(false); await api.closePreview();
   } finally { saveBusy = false; $('.preview-shell').inert = false; $('#savePreview').setAttribute('aria-busy', 'false'); }
 });
@@ -258,6 +270,7 @@ document.addEventListener('keydown', event => {
   if (saveBusy) { event.preventDefault(); return; }
   if (!state) return;
   if (PasteModel.isComposingKey(event, composing)) return;
+  if (PasteModel.shortcutMatches(event, 'CommandOrControl+N')) { event.preventDefault(); if (!event.repeat) attempt(() => api.requestNewText()); return; }
   if (!$('#tableMenu').hidden) {
     const buttons = [...$('#tableMenu').querySelectorAll('button:not(:disabled)')], index = buttons.indexOf(document.activeElement);
     if (['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) {

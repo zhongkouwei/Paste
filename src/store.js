@@ -153,6 +153,23 @@ class ClipStore {
     });
   }
 
+  createText(changes, boardIds = []) {
+    if (!changes || typeof changes.body !== 'string' || !changes.body.trim()) throw new Error('请输入文本后再保存。');
+    const body = changes.body, html = typeof changes.html === 'string' ? changes.html : '';
+    if (Buffer.byteLength(body) > 16 * 1024 * 1024 || Buffer.byteLength(html) > 16 * 1024 * 1024) throw new Error('文本或HTML超过16 MB限制。');
+    if (!Array.isArray(boardIds) || boardIds.some(id => !this.data.boards.some(board => board.id === id))) throw new Error('目标Pinboard已删除，请取消固定或选择其他Pinboard后重试。');
+    return this.mutate(() => {
+      const signature = textSignature(body, html, ''), existing = this.data.items.find(item => item.signature === signature), now = this.now();
+      // Reusing identical content must not erase an existing label, source or
+      // memberships, nor split content identity merely because it was typed.
+      const item = existing ? this.edit(existing.id) : { id: crypto.randomUUID(), signature, type: 'text', body, html, rtf: '',
+        title: body.split('\n').find(line => line.trim())?.slice(0, 120) || '文本', preview: body.slice(0, 16000), source: null, firstCopiedAt: now, boardIds: [] };
+      item.createdAt = now; item.boardIds = [...new Set([...item.boardIds, ...boardIds])]; item.isFavorite = item.boardIds.length > 0;
+      this.data.items = prune([item, ...this.data.items.filter(entry => entry.id !== item.id)], this.data.settings, Date.parse(now), this.protectedItemId);
+      return item;
+    });
+  }
+
   getMetadata(id) { return this.data.items.find(item => item.id === id); }
   get(id) {
     const item = this.getMetadata(id); if (!item?.contentAsset) return item;

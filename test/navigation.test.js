@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { itemLocations, isComposingKey } = require('../src/model');
-const { applicationMenuTemplate, previewShortcut } = require('../src/app-menu');
+const { applicationMenuTemplate, previewShortcut, newTextShortcut } = require('../src/app-menu');
 
 test('location commands offer only other actual lists, including a global-search return to history', () => {
   const boards = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }, { id: 'c', name: 'C' }], item = { boardIds: ['b', 'a', 'missing'] };
@@ -30,4 +30,14 @@ test('native preview shortcuts bridge exact commands only, never composition, ke
     { type: 'keyUp', key: 'r', meta: true }, { type: 'keyDown', key: 'r', meta: true, isComposing: true },
     { type: 'keyDown', key: 'r', meta: true, shift: true }, { type: 'keyDown', key: 'e', control: true }
   ]) assert.equal(previewShortcut(input, 'darwin'), null);
+});
+test('new text has an actual File command and exact native shortcut without shadowing new Pinboard or composition', () => {
+  let requests = 0; const template = applicationMenuTemplate(() => {}, 'darwin', () => { requests++; });
+  const entry = template.find(item => item.role === 'fileMenu').submenu.find(item => item.id === 'new-text');
+  assert.equal(entry.accelerator, 'CommandOrControl+N'); entry.click(); assert.equal(requests, 1);
+  assert.equal(newTextShortcut({ type: 'keyDown', key: 'n', meta: true }, 'darwin'), true);
+  assert.equal(newTextShortcut({ type: 'keyDown', key: 'n', control: true }, 'linux'), true);
+  for (const change of [{ type: 'keyUp' }, { shift: true }, { alt: true }, { control: true }, { isComposing: true }]) {
+    assert.equal(newTextShortcut({ type: 'keyDown', key: 'n', meta: true, ...change }, 'darwin'), false);
+  }
 });
