@@ -55,7 +55,8 @@ let lastError = '', stackWindow, stackReady, stackOpening, stackLifecycle = 0, s
 const stackQueue = new StackQueue();
 const helper = path.join(app.getAppPath().replace(/app\.asar$/, 'app.asar.unpacked'), 'native/bin/paste-bridge');
 const pasteTargets = new PasteTargetSession({ ownPID: process.pid, read: () => native('frontmost'),
-  onError: error => console.error('Could not resolve foreground application', error.message) });
+  beforeReady: TEST_MODE ? undefined : pollBeforeShow,
+  onError: error => console.error('Could not prepare paste panel', error.message) });
 const pasteOwnership = new ClipboardOwnership({ readVersion: async () => (await native('change-count')).count,
   check: lease => nativeInput('check-pasteboard', lease), onError: error => console.error('Clipboard ownership unavailable', error.message) });
 const pasteDelivery = new PasteDelivery({ simulate: TEST_MODE, permission: () => native('permission'),
@@ -166,6 +167,30 @@ function capture(item) {
 function imageBytes(item) { return item.asset ? store.readAsset(item.asset) : nativeImage.createFromDataURL(item.body).toPNG(); }
 function queueImageText(item) { if (capabilities.textRecognition && item.type === 'image') imageText.enqueue(item.id).catch(error => console.error('Image text recognition:', error.message)); }
 async function poll() { await capturePause?.check().catch(report); return monitor.tick(); }
+async function pollBeforeShow({ retain, current }) {
+  if (retain || !monitor || quitting || !current()) return;
+  let active = true, timer;
+  const live = () => active && !quitting && current();
+  // A stalled provider must not hide existing history. Invalidate its late
+  // candidate before focus changes, then resume at a fresh version baseline.
+  const deadline = new Promise(resolve => { timer = setTimeout(() => {
+    active = false;
+    if (!quitting && current()) {
+      monitor.requireBaseline();
+      report(Error('剪贴板读取未完成，已显示已有历史。本次未记录，请重新复制；持续无响应请重启应用。'));
+    }
+    resolve();
+  }, 1000); });
+  try {
+    await Promise.race([deadline, (async () => {
+      // Drain an older read, then check again before taking source focus.
+      if (monitor.pending) await monitor.pending;
+      if (!live()) return;
+      await capturePause?.check().catch(report);
+      if (live()) await monitor.tick();
+    })()]);
+  } finally { active = false; clearTimeout(timer); }
+}
 async function finishCaptureBaseline() {
   if (!monitor.needsBaseline || capturePause.isPaused()) return;
   if (monitor.pending) await monitor.pending;
@@ -910,7 +935,7 @@ else {
       store.exportService.onChanged = state => { for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('export:changed', state); };
       importService.onChanged = state => { if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('import:changed', state); };
       if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, textSignature, imageSignature, monitor, capturePause, panelSize, isIgnored, imageProcessor, imageInspector, richTextService, selectionService, selectionComposer, applicationCatalog, imageText, searchService, mediaService, importService, thumbnail, pasteTargets, pasteOwnership, pasteDelivery, stackQueue, stackInput, requestStackPoll, showPanel, hidePanel, hotkeys, capturePreviewBlur: () => previewBlurAction(previewWindow) };
-      if (TEST_MODE) Object.assign(globalThis.__pasteTest, { itemOpener, shortcutRecorder });
+      if (TEST_MODE) Object.assign(globalThis.__pasteTest, { itemOpener, shortcutRecorder, pollBeforeShow });
       try { const warning = hotkeys.apply(store.data.settings); if (warning) report(Error(warning)); } catch (error) { report(error); }
       for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(event, () => { if (mainWindow.isVisible()) placePanel(); });
       app.on('activate', () => { if (stackQueue.active) void showStack().catch(report); else if (!mainWindow.isVisible() && !pasteTargets.pending) showPanel(); });

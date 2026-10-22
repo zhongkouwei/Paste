@@ -12,7 +12,7 @@ function targetIdentity(value, ownPID) {
 }
 
 class PasteTargetSession {
-  constructor({ ownPID, read, onError = () => {} }) { Object.assign(this, { ownPID, read, onError }); this.epoch = 0; this.pending = false; this.target = null; }
+  constructor({ ownPID, read, beforeReady, onError = () => {} }) { Object.assign(this, { ownPID, read, beforeReady, onError }); this.epoch = 0; this.pending = false; this.target = null; }
   snapshot() { return this.target; }
   cancel() { this.epoch += 1; this.pending = false; this.target = null; }
   async refresh(retain = false) {
@@ -22,8 +22,11 @@ class PasteTargetSession {
     let front;
     try { front = await this.read(); } catch (error) { this.onError(error); }
     if (epoch !== this.epoch) return false;
+    const target = front?.pid === this.ownPID ? previous : targetIdentity(front, this.ownPID);
+    try { await this.beforeReady?.({ retain, current: () => epoch === this.epoch }); } catch (error) { this.onError(error); }
+    if (epoch !== this.epoch) return false;
     this.pending = false;
-    this.target = front?.pid === this.ownPID ? previous : targetIdentity(front, this.ownPID);
+    this.target = target;
     return true;
   }
 }

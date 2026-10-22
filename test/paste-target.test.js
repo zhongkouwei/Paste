@@ -46,6 +46,22 @@ test('permission waits cannot redirect a request to a subsequently discovered ap
   const pending = delivery.deliver({ paste: true, pasteTarget: 'application', target, lease }); front = app(222); await targets.refresh(); job.resolve({ accessibility: true });
   assert.deepEqual(await pending, { ok: true, copied: true }); assert.equal(sent[0].pid, 111); assert.equal(targets.snapshot().pid, 222);
 });
+test('opening preparation keeps the target pending until clipboard refresh completes and publishes its original identity', async () => {
+  const gate = deferred(); let started = false; const front = app();
+  const targets = new PasteTargetSession({ ownPID: 999, read: async () => front, beforeReady: async ({ current, retain }) => { assert.equal(current(), true); assert.equal(retain, false); started = true; await gate.promise; } });
+  const pending = targets.refresh(); await new Promise(resolve => setImmediate(resolve)); assert.equal(started, true); assert.equal(targets.pending, true); assert.equal(targets.snapshot(), null);
+  front.pid = 222; gate.resolve(); assert.equal(await pending, true); assert.equal(targets.snapshot().pid, 111);
+});
+test('cancelling or superseding preparation cannot reveal an old target or clear a newer pending request', async () => {
+  const gates = [], contexts = [], targets = new PasteTargetSession({ ownPID: 999, read: async () => app(), beforeReady: context => { const gate = deferred(); gates.push(gate); contexts.push(context); return gate.promise; } });
+  const old = targets.refresh(); await new Promise(resolve => setImmediate(resolve)); targets.cancel(); assert.equal(contexts[0].current(), false); gates[0].resolve(); assert.equal(await old, false); assert.equal(targets.snapshot(), null);
+  const first = targets.refresh(); await new Promise(resolve => setImmediate(resolve)); const second = targets.refresh(); await new Promise(resolve => setImmediate(resolve));
+  gates[1].resolve(); assert.equal(await first, false); assert.equal(targets.pending, true); gates[2].resolve(); assert.equal(await second, true); assert.equal(targets.pending, false);
+});
+test('preparation failures still make existing history accessible and report the failed refresh without retaining a stale target', async () => {
+  const errors = [], targets = new PasteTargetSession({ ownPID: 999, read: async () => app(), beforeReady: async () => { throw Error('capture unavailable'); }, onError: error => errors.push(error) });
+  assert.equal(await targets.refresh(), true); assert.equal(targets.pending, false); assert.equal(targets.snapshot().pid, 111); assert.equal(errors[0].message, 'capture unavailable');
+});
 test('copy-only mode never probes permissions or activates an application', async () => {
   let dismissed = 0; const delivery = new PasteDelivery({ permission: () => { throw Error('Unexpected permission read'); }, activate: () => { throw Error('Unexpected paste'); }, dismiss: () => { dismissed += 1; } });
   for (const context of [{ paste: false, pasteTarget: 'application' }, { paste: true, pasteTarget: 'clipboard' }]) assert.deepEqual(await delivery.deliver(context), { ok: true, copied: true });
