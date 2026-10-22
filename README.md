@@ -63,6 +63,7 @@ node scripts/benchmark-export.js 1000
 - `test:ui`：真实 Electron + IPC。`app.spec.js` 读写系统剪贴板，使用隔离测试数据、不读取已有历史；测试前保存、结束后恢复系统剪贴板。运行该套件前退出其他剪贴板记录工具，可避免其收录测试内容。`media.spec.js`、`media-requests.spec.js`、`rich-lists.spec.js`、`rich-copy.spec.js`、`plain-paste.spec.js`、`rtf.spec.js`、`search-cache.spec.js`、`export.spec.js`、`import.spec.js`、`text-identity.spec.js` 和 `applications.spec.js` 使用隔离合成数据/IPC；应用选择套件另只读系统 TextEdit 的公开应用元数据，不启动所选应用，均不读写系统剪贴板，无需停止原版。富文本/纯文本套件的合成 ClipboardEvent 使用独立 DataTransfer，不访问系统剪贴板。可单独运行 `npm run test:ui -- test/ui/search-cache.spec.js` 或其他独立文件。
 - 隔离数据目录不隔离全机剪贴板。`app.spec.js` 启动前检查已知 Paste/Paste Easy/Paste Like 进程，存在未停止的程序或无法检查时，该套件先失败，不启动其测试应用或写剪贴板；其他名称的工具仍须人工确认已退出。可先运行 `node scripts/clipboard-test-environment.js` 检查。第八轮发现原版仍常驻，因此更早的合成测试内容可能已被它收录，未核实或直接清理原版历史；不可把恢复当前剪贴板当作恢复其他应用的历史。
 - `test:ui` 运行前自动编译原生桥和编辑器；构建产物也包含编辑器离线包，不依赖 CDN。
+- `paste-flow.spec.js` 使用真实主进程 IPC/复制队列和合成写入适配器，覆盖 Stack 连续消费、删除/重建时的迟到请求、失败重试、普通复制穿插、界面错误提示及连续开关预览的原生焦点恢复，不读写系统剪贴板。Stack 成功只移出本次实际处理的队首；重建队列取消尚未开始的旧请求，已开始的剪贴板写入不能撤回。
 - `test:packaged`：对构建产物运行同一组端到端测试。
 - UI 截图在忽略 Git 的 `test-results/`，包括 1920/1280/768/390pt 宽度。窄屏测试验证溢出与稳定尺寸，不代表已经支持 iOS。
 

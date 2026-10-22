@@ -436,6 +436,10 @@ async function activate(id = [...state.selected][0], paste = true, plain = false
   const result = await api.copy(id, { paste, plain });
   if (!result.ok) toast(result.error); else if (!paste) toast('已复制');
 }
+async function pasteStackNext() {
+  const result = await api.nextInStack();
+  if (!result.ok) toast(result.error);
+}
 function itemMenu(item, x, y) {
   const ids = state.selected.has(item.id) ? [...state.selected] : [item.id];
   menu([
@@ -600,12 +604,12 @@ $('#moreButton').onclick = () => menu([
   { label: '设置…', icon: 'settings', key: '⌘,', shortcut: 'Meta+,', action: () => api.openSettings() },
   { label: state.settings.paused ? '继续记录' : '暂停记录', icon: state.settings.paused ? 'play' : 'pause', action: async () => accept(await api.saveSettings({ paused: !state.settings.paused })) },
   { label: state.status.stackMode ? '退出 Paste Stack' : 'Paste Stack', icon: 'layers', action: () => api.toggleStack() },
-  { label: '粘贴 Stack 下一项', icon: 'clipboard-paste', disabled: !state.status.stackCount, action: () => api.nextInStack() }, null,
+  { label: '粘贴 Stack 下一项', icon: 'clipboard-paste', disabled: !state.status.stackCount, action: pasteStackNext }, null,
   { label: '导出备份…', icon: 'download', action: () => api.exportLibrary() },
   { label: '删除历史…', icon: 'trash-2', action: async () => accept(await api.clearHistory()) }, null,
   { label: '关闭', icon: 'x', key: 'Esc', shortcut: 'Escape', action: () => api.hide() }
 ], innerWidth - 230, 48);
-$('#stackButton').onclick = () => attempt(() => state.status.stackCount ? api.nextInStack() : api.toggleStack());
+$('#stackButton').onclick = () => attempt(() => state.status.stackCount ? pasteStackNext() : api.toggleStack());
 document.addEventListener('pointerdown', event => {
   if (state.editingBoard && !event.target.closest('.board-edit, #menu')) attempt(commitBoard);
   if (!event.target.closest('#menu, #moreButton')) closeMenu();

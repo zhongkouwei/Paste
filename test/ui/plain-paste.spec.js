@@ -77,6 +77,8 @@ test('nonfinite-looking plain ordinals and line-ending normalization survive act
   const opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id, { mode: 'edit' }), id);
   const reopened = await opened; await expect(reopened.getByRole('textbox', { name: '剪贴板内容' }).locator('ol,b')).toHaveCount(0);
   await expect(reopened.getByRole('textbox', { name: '剪贴板内容' })).toContainText('<b>not HTML</b>');
+  const closed = reopened.waitForEvent('close'); await page.evaluate(() => window.paste.closePreview()); await closed;
+  expect((await page.evaluate(id => window.paste.getItem(id), id)).body).toBe(expected);
 });
 test('plain paste inside a code block never replaces the code block with an inferred ordered list', async () => {
   const { id, preview, editor } = await open('<pre><code>Replace me</code></pre>');

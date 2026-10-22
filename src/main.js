@@ -34,7 +34,7 @@ let searchService, mediaService, importService, imageInspector, applicationCatal
 let quitting = false, quitAfterPreview = false, copyQueue = Promise.resolve(), settingsQueue = Promise.resolve();
 let copyRequest = 0;
 let suppressBlur = false;
-let lastError = '', stack = [], stackMode = false;
+let lastError = '', stack = [], stackMode = false, stackGeneration = 0;
 const PANEL_HEIGHT = 332;
 const helper = path.join(app.getAppPath().replace(/app\.asar$/, 'app.asar.unpacked'), 'native/bin/paste-bridge');
 
@@ -183,7 +183,12 @@ function showPreview(id, { mode = 'view', anchor, ids = [] } = {}) {
   const y = Math.max(area.y + 12, panel.y - height - 12);
   previewWindow = createWindow('preview.html', { width, height, x, y, parent: mainWindow, title: 'Paste Easy 预览',
     frame: false, transparent: true, hasShadow: true, resizable: true, minWidth: 320, minHeight: 220, show: false, alwaysOnTop: true, skipTaskbar: true });
-  previewWindow.once('ready-to-show', () => { previewWindow.show(); previewWindow.focus(); previewOpening = false; });
+  const window = previewWindow;
+  window.once('ready-to-show', () => setImmediate(() => {
+    if (previewWindow !== window || window.isDestroyed()) return;
+    window.show();
+    if (previewWindow === window && !window.isDestroyed()) { window.focus(); previewOpening = false; }
+  }));
   previewWindow.webContents.on('will-prevent-unload', event => {
     const response = dialog.showMessageBoxSync(previewWindow, { type: 'question', message: '放弃未保存的修改？', buttons: ['继续编辑', '放弃修改'], defaultId: 0, cancelId: 0 });
     if (response === 1) { previewDirty = false; event.preventDefault(); }
@@ -193,9 +198,12 @@ function showPreview(id, { mode = 'view', anchor, ids = [] } = {}) {
     cancelPreviewRich();
     imageDraft?.dispose(); imageDraft = null;
     store.protectedItemId = null;
-    previewWindow = null; previewState = null; previewDirty = false;
+    previewWindow = null; previewState = null; previewDirty = false; previewOpening = false;
     if (quitAfterPreview) { quitAfterPreview = false; app.quit(); }
-    else if (mainWindow.isVisible()) mainWindow.focus();
+    // Let Cocoa finish destroying the child before changing the key window.
+    else setImmediate(() => {
+      if (!quitting && !quitAfterPreview && !previewWindow && mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) mainWindow.focus();
+    });
   });
   previewWindow.on('blur', () => setTimeout(() => {
     if (!TEST_MODE && !previewDirty && !previewWindow?.isFocused() && !mainWindow.isFocused() && !suppressBlur) { mainWindow.hide(); closePreview(); }
@@ -280,6 +288,19 @@ function queueCopy(action) {
   copyQueue = operation.catch(() => {}); return operation;
 }
 function copy(id, options) { copyRequest += 1; return queueCopy(() => performCopy(id, options)); }
+function nextInStack() {
+  copyRequest += 1;
+  const generation = stackGeneration;
+  return queueCopy(async () => {
+    if (generation !== stackGeneration) return { ok: false, error: 'Stack 已重置，请重新粘贴。' };
+    const id = stack[0];
+    if (!id) return { ok: false, error: 'Stack 为空' };
+    const result = await performCopy(id, { paste: true });
+    // A reset or deletion during the write must not consume a different queue head.
+    if (result.ok && generation === stackGeneration && stack[0] === id) stack.shift();
+    emit(); return result;
+  });
+}
 async function recognizeItem(id, retry = false) {
   if (!capabilities.textRecognition) throw new Error('此系统不支持图片文字识别');
   const item = store.get(id); if (!item || item.type !== 'image') throw new Error('图片已被删除');
@@ -472,9 +493,9 @@ function registerIPC() {
     'settings:open': openSettings, 'permission:get': () => native('permission'),
     'permission:open': () => shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'),
     'panel:hide': () => { closePreview(); mainWindow.hide(); },
-    'stack:toggle': () => { stackMode = !stackMode; if (!stackMode) stack = []; emit(); return stackMode; },
+    'stack:toggle': () => { stackMode = !stackMode; if (!stackMode) { stack = []; stackGeneration += 1; } emit(); return stackMode; },
     'stack:add': (_event, id) => { if (!store.get(id)) throw new Error('Invalid item'); if (!stack.includes(id)) stack.push(id); emit(); return stack; },
-    'stack:next': async () => { const id = stack[0]; if (!id) return { ok: false, error: 'Stack 为空' }; const result = await copy(id, { paste: true }); if (result.ok) stack.shift(); emit(); return result; },
+    'stack:next': nextInStack,
     'library:export': async () => {
       if (applicationDialogOpen) throw new Error('请先关闭应用程序选择窗口。');
       if (importDialogOpen || importService.state().phase !== 'idle') throw new Error('请先完成或取消备份恢复。');
