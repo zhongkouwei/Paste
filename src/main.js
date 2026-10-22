@@ -22,6 +22,7 @@ const { StackInput } = require('./stack-input');
 const { SelectionService, selectionIDs } = require('./selection');
 const { SelectionComposer } = require('./selection-composer');
 const { ClipboardOwnership } = require('./clipboard-ownership');
+const { copySource, verifyCopySources } = require('./copy-sources');
 const { ImageTextIndex } = require('./image-text');
 const { SearchService } = require('./search-service');
 const { MediaService, thumbnail } = require('./media');
@@ -504,10 +505,11 @@ async function copyImageText(id) {
 async function performCopy(id, context) {
   const item = store.get(id);
   if (!item) throw new Error('此项目已被删除。');
-  if (item.type === 'file' && fileDetails(item).some(file => !file.exists)) throw new Error('原始文件已移动或删除，无法粘贴。');
-  return writeCopy(item, context);
+  const references = [copySource(item)], verify = () => verifyCopySources(store, references);
+  verify();
+  return writeCopy(item, context, verify);
 }
-async function writeCopy(item, context, verify = () => {}) {
+async function writeCopy(item, context, verify) {
   let lease;
   await monitor.suspend(async () => {
     const options = { plain: context.plain, image: item.asset ? store.readAsset(item.asset) : undefined };

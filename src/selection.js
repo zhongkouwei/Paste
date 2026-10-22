@@ -1,4 +1,5 @@
 const { fileDetails } = require('./transfers');
+const { copySource, verifyCopySources } = require('./copy-sources');
 const { nativeTextMatches } = require('./rich-text');
 const MAX_BYTES = 16 * 1024 * 1024;
 function selectionIDs(value) {
@@ -16,7 +17,7 @@ class SelectionService {
   async build(ids, { plain = false } = {}, signal) {
     if (this.closed) throw Error('内容合并已停止'); signal.throwIfAborted();
     ids = selectionIDs(ids);
-    const references = ids.map(id => { const item = this.store.getMetadata(id); if (!item) throw Error('所选项目已被删除，请重新选择。'); return { id, signature: item.signature, type: item.type }; });
+    const references = ids.map(id => { const item = this.store.getMetadata(id); if (!item) throw Error('所选项目已被删除，请重新选择。'); return copySource(item); });
     const files = references.filter(item => item.type === 'file');
     if (files.length && files.length !== references.length) throw Error('文件与文字或图片暂不能合并粘贴，请分别选择；剪贴板未修改。');
     if (plain && references.some(item => ['image', 'file'].includes(item.type))) throw Error('所选项目包含图片或文件，无法全部按纯文本粘贴；剪贴板未修改。');
@@ -67,7 +68,7 @@ class SelectionService {
   }
   async close() { this.closed = true; for (const controller of this.jobs.keys()) controller.abort(Error('内容合并已停止，剪贴板未修改。')); await Promise.allSettled([...this.jobs.values()]); }
   verify(references) {
-    if (references.some(reference => this.store.getMetadata(reference.id)?.signature !== reference.signature)) throw Error('合并期间所选内容已改变或删除，剪贴板未修改，请重新选择。');
+    verifyCopySources(this.store, references, '合并期间所选内容已改变或删除，剪贴板未修改，请重新选择。');
   }
 }
 module.exports = { SelectionService, selectionIDs };
