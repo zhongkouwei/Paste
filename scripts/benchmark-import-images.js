@@ -14,7 +14,7 @@ async function checks(app) {
   return app.evaluate(() => {
     const { store, hash } = globalThis.__pasteTest;
     return store.data.items.map(item => ({ id: item.id, current: hash(store.readAsset(item.asset)), original: hash(store.readAsset(item.originalAsset)),
-      foreground: hash(store.readAsset(item.foregroundAsset)), turns: item.imageTurns, background: item.backgroundRemoved }));
+      foreground: hash(store.readAsset(item.foregroundAsset)), signature: item.signature, turns: item.imageTurns, background: item.backgroundRemoved }));
   });
 }
 async function run() {
@@ -45,9 +45,11 @@ async function run() {
     }, { edge, file });
     const expected = await checks(app); assert.equal(expected.length, 8); await app.close(); app = null;
     const library = path.join(directory, 'restore'); app = await launch(library);
-    const result = await app.evaluate(async (_electron, file) => {
-      const { importService } = globalThis.__pasteTest;
-      const memory = () => { const m = process.memoryUsage(); return { rssMiB: +(m.rss / 1048576).toFixed(1), heapUsedMiB: +(m.heapUsed / 1048576).toFixed(1), peakRssMiB: +(process.resourceUsage().maxRSS / 1024).toFixed(1) }; };
+    const result = await app.evaluate(async ({ app }, file) => {
+      const { importService, imageInspector } = globalThis.__pasteTest;
+      const memory = () => { const m = process.memoryUsage(); return { rssMiB: +(m.rss / 1048576).toFixed(1), heapUsedMiB: +(m.heapUsed / 1048576).toFixed(1), peakRssMiB: +(process.resourceUsage().maxRSS / 1024).toFixed(1),
+        processes: app.getAppMetrics().map(value => ({ pid: value.pid, type: value.type, inspector: value.pid === imageInspector?.window?.webContents.getOSProcessId(),
+          workingSetMiB: +(value.memory.workingSetSize / 1024).toFixed(1), peakWorkingSetMiB: +(value.memory.peakWorkingSetSize / 1024).toFixed(1) })) }; };
       const before = memory(); let ticks = 0, maxGap = 0, last = performance.now();
       const timer = setInterval(() => { const now = performance.now(); ticks++; maxGap = Math.max(maxGap, now - last); last = now; }, 2);
       const gap = () => { maxGap = Math.max(maxGap, performance.now() - last); return +maxGap.toFixed(2); };
@@ -61,7 +63,7 @@ async function run() {
     assert.deepEqual(await checks(app), expected); await app.close(); app = null;
     app = await launch(library); assert.deepEqual(await checks(app), expected); await app.close(); app = null;
     console.log(JSON.stringify({ nodeDriver: process.versions.node, platform: `${process.platform}-${process.arch}`, width: edge, height: edge * 3 / 4,
-      items: 8, sourceBytes: fs.statSync(file).size, note: 'Actual packaged app; separate seed/import/restart processes. Main RSS includes Workers but not renderer/GPU/native helper peaks. Two-ms main heartbeat and longest gaps; single synthetic run, no GC/cache flush. OCR cached as none to isolate restore; no system clipboard access. Checksums of all three PNG variants and state verified after import and restart.', result }, null, 2));
+      items: 8, sourceBytes: fs.statSync(file).size, note: 'Actual packaged app; separate seed/import/restart processes. Main RSS includes Workers. Per-process working-set snapshots include the inspector renderer; shared pages are not additive and native helper peaks are not sampled. Two-ms main heartbeat and longest gaps; single synthetic run, no GC/cache flush. OCR cached as none to isolate restore; no system clipboard access. Checksums of all three PNG variants and state verified after import and restart.', result }, null, 2));
   } finally { if (app) await app.close(); fs.rmSync(directory, { recursive: true, force: true }); }
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });

@@ -2,7 +2,9 @@ const { hash, textSignature, htmlPayload } = require('./store');
 const crypto = require('node:crypto');
 
 function imageSignature(buffer, nativeImage) {
-  const image = nativeImage.createFromBuffer(buffer);
+  return decodedImageSignature(nativeImage.createFromBuffer(buffer));
+}
+function decodedImageSignature(image) {
   if (image.isEmpty()) throw new Error('图片无法解码');
   const { width, height } = image.getSize();
   // PNG encoders and NSPasteboard can change metadata without changing pixels.
@@ -71,4 +73,4 @@ class ClipboardService {
     return signature;
   }
 }
-module.exports = { ClipboardService, imageSignature };
+module.exports = { ClipboardService, imageSignature, decodedImageSignature };

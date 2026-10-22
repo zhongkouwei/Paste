@@ -18,12 +18,20 @@ class ImageProcessor {
     let finish, directory;
     this.active.set(controller, new Promise(resolve => { finish = resolve; }));
     try {
-      pngSize(buffer); signal.throwIfAborted();
+      const fileInput = !Buffer.isBuffer(buffer) && buffer?.file;
+      if (!fileInput) pngSize(buffer); signal.throwIfAborted();
       directory = await fs.mkdtemp(path.join(this.directory, 'image-edit-'));
       await fs.chmod(directory, 0o700);
       const input = path.join(directory, 'input.png'), output = path.join(directory, 'output.png');
-      await fs.writeFile(input, buffer, { mode: 0o600, flag: 'wx' });
+      let original;
+      if (fileInput) {
+        const stat = await fs.lstat(fileInput);
+        if (!stat.isFile() || stat.size > 64 * 1024 * 1024) throw new Error('图片格式不可用');
+        await fs.copyFile(fileInput, input, fs.constants.COPYFILE_EXCL); await fs.chmod(input, 0o600);
+        original = (await buffer.inspect(input, { expectedHash: path.basename(fileInput, '.png'), preview: false, signal })).size;
+      } else { await fs.writeFile(input, buffer, { mode: 0o600, flag: 'wx' }); original = pngSize(buffer); }
       await fs.writeFile(output, '', { mode: 0o600, flag: 'wx' });
+      signal.throwIfAborted();
       const result = await this.run(command, { input, output, ...parameters }, { signal });
       if (!result.ok) {
         const messages = { 'no-foreground': '未找到可分离的前景主体', 'background-removal-unavailable': '此系统不支持背景移除',
@@ -33,8 +41,14 @@ class ImageProcessor {
       }
       if (command === 'image-ocr') return result;
       if ((await fs.stat(output)).size > 64 * 1024 * 1024) throw new Error('无法保存编辑后的图片');
+      if (fileInput) {
+        const inspected = await buffer.inspect(output, { preview: false, signal });
+        const expected = parameters.turns % 2 ? { width: original.height, height: original.width } : original;
+        if (inspected.size.width !== expected.width || inspected.size.height !== expected.height) throw new Error('图片处理结果尺寸异常');
+        return inspected;
+      }
       const transformed = await fs.readFile(output), size = pngSize(transformed);
-      const original = pngSize(buffer), expected = command === 'image-rotate' && parameters.turns % 2 ? { width: original.height, height: original.width } : original;
+      const expected = command === 'image-rotate' && parameters.turns % 2 ? { width: original.height, height: original.width } : original;
       if (size.width !== expected.width || size.height !== expected.height) throw new Error('图片处理结果尺寸异常');
       return { buffer: transformed, size };
     } finally {
@@ -45,6 +59,10 @@ class ImageProcessor {
   rotate(buffer, turns, options) {
     if (![1, 2, 3].includes(turns)) return Promise.reject(new Error('Invalid rotation'));
     return this.operation('image-rotate', buffer, { turns }, options);
+  }
+  rotateFile(file, turns, inspect, options) {
+    if (![1, 2, 3].includes(turns)) return Promise.reject(new Error('Invalid rotation'));
+    return this.operation('image-rotate', { file, inspect }, { turns }, options);
   }
   cutout(buffer, options) { return this.operation('image-cutout', buffer, {}, options); }
   recognize(buffer, options) { return this.operation('image-ocr', buffer, {}, options); }

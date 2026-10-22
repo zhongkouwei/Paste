@@ -10,8 +10,9 @@ const { ClipboardService, imageSignature } = require('./clipboard');
 const { Transfers, fileDetails } = require('./transfers');
 const { GlobalHotkeys } = require('./hotkeys');
 const { ClipboardMonitor } = require('./monitor');
-const { ImageProcessor, ImageDraft, pngSize } = require('./image-editor');
+const { ImageProcessor, ImageDraft } = require('./image-editor');
 const { ImportService } = require('./import-service');
+const { ImageInspector } = require('./image-inspector');
 const { ImageTextIndex } = require('./image-text');
 const { SearchService } = require('./search-service');
 const { MediaService, thumbnail } = require('./media');
@@ -26,7 +27,7 @@ app.setPath('userData', process.env.PASTE_DATA_DIR ? path.resolve(process.env.PA
 let mainWindow, settingsWindow, previewWindow, tray, store, transfers, pollTimer, targetApp;
 let previewState = null, previewDirty = false, previewOpening = false, activeShare;
 let hotkeys, monitor, imageProcessor, imageDraft, imageText, capabilities = {}, processingClosing = false, processingStopped = false;
-let searchService, mediaService, importService, exportDialogOpen = false, importDialogOpen = false;
+let searchService, mediaService, importService, imageInspector, exportDialogOpen = false, importDialogOpen = false;
 let quitting = false, quitAfterPreview = false, copyQueue = Promise.resolve(), settingsQueue = Promise.resolve();
 let copyRequest = 0;
 let sourceCache = null, lastSourceAt = 0, suppressBlur = false;
@@ -475,15 +476,12 @@ else {
       imageText = new ImageTextIndex({ store, processor: imageProcessor, readImage: imageBytes, onChanged: emit });
       searchService = new SearchService({ directory: app.getPath('userData') });
       mediaService = new MediaService(store, nativeImage);
+      imageInspector = new ImageInspector(electron);
       importService = new ImportService(store, {
         validateImage: async (file, { turns = 0, signal } = {}) => {
-          const source = fs.readFileSync(file); pngSize(source);
-          if (`${hash(source)}.png` !== path.basename(file)) throw new Error('备份图片校验失败。');
-          const buffer = turns ? (await imageProcessor.rotate(source, turns, { signal })).buffer : source;
-          signal?.throwIfAborted();
-          const size = pngSize(buffer), image = nativeImage.createFromBuffer(buffer);
-          if (image.isEmpty() || image.getSize().width !== size.width || image.getSize().height !== size.height) throw new Error('备份图片无法完整解码。');
-          return { size, signature: imageSignature(buffer, nativeImage), ...(turns ? {} : { preview: thumbnail(image) }) };
+          const inspect = (file, options) => imageInspector.inspect(file, options);
+          return turns ? imageProcessor.rotateFile(file, turns, inspect, { signal })
+            : inspect(file, { expectedHash: path.basename(file, '.png'), signal });
         },
         beforeCommit: settings => {
           const previous = store.data.settings;
@@ -523,7 +521,7 @@ else {
       registerIPC(); applyRuntimeSettings();
       store.exportService.onChanged = state => { for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('export:changed', state); };
       importService.onChanged = state => { if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('import:changed', state); };
-      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, imageProcessor, imageText, searchService, mediaService, importService, thumbnail };
+      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, imageProcessor, imageInspector, imageText, searchService, mediaService, importService, thumbnail };
       try { hotkeys.apply(store.data.settings); } catch (error) { report(error); }
       for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(event, () => { if (mainWindow.isVisible()) placePanel(); });
       app.on('activate', () => showPanel());
@@ -541,7 +539,7 @@ app.on('before-quit', event => {
     event.preventDefault(); clearInterval(pollTimer);
     if (!processingClosing) {
       processingClosing = true;
-      Promise.allSettled([imageText?.close(), imageProcessor?.close(), searchService?.close(), store?.exportService.close(), importService?.close()]).then(() => { processingStopped = true; app.quit(); });
+      Promise.allSettled([imageText?.close(), imageProcessor?.close(), imageInspector?.close(), searchService?.close(), store?.exportService.close(), importService?.close()]).then(() => { processingStopped = true; app.quit(); });
     }
   }
 });

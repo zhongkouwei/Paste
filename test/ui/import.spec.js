@@ -163,8 +163,8 @@ test('canceling a restore aborts and waits for the in-flight image-state validat
   const backup = await editedBackup(); backup.items = [backup.items.find(value => value.id === 'image-0-1')]; fs.writeFileSync(input, JSON.stringify(backup));
   await application.evaluate(() => {
     const processor = globalThis.__pasteTest.imageProcessor;
-    globalThis.__rotationBeforeImport = processor.rotate;
-    processor.rotate = (_buffer, _turns, { signal }) => new Promise((_resolve, reject) => {
+    globalThis.__rotationBeforeImport = processor.rotateFile;
+    processor.rotateFile = (_file, _turns, _inspect, { signal }) => new Promise((_resolve, reject) => {
       globalThis.__rotationValidating = true;
       signal.addEventListener('abort', () => { setTimeout(() => { globalThis.__rotationCanceled = true; reject(signal.reason); }, 120); }, { once: true });
     });
@@ -174,4 +174,78 @@ test('canceling a restore aborts and waits for the in-flight image-state validat
   expect(await application.evaluate(() => globalThis.__rotationCanceled)).toBe(true);
   await expect(settings.locator('#importData')).toBeEnabled(); expect(fs.readdirSync(directory).some(name => name.startsWith('import-'))).toBe(false);
   expect(await application.evaluate(() => globalThis.__pasteTest.store.data.items.length)).toBe(0);
+});
+test('image restore uses identical canonical pixels and previews without reading or decoding PNGs on the main thread', async () => {
+  const backup = await editedBackup(); fs.writeFileSync(input, JSON.stringify(backup));
+  const result = await application.evaluate(async ({ nativeImage }, file) => {
+    const fs = process.getBuiltinModule('node:fs'), hooks = globalThis.__pasteTest;
+    const source = JSON.parse(fs.readFileSync(file)), expected = source.items.map(item => {
+      const buffer = Buffer.from(item.body.slice(22), 'base64'), image = nativeImage.createFromBuffer(buffer);
+      const size = image.getSize(), signature = hooks.hash(Buffer.concat([Buffer.from(`image:${size.width}x${size.height}:`), image.toBitmap()]));
+      return { id: item.id, signature, preview: hooks.thumbnail(image), size };
+    });
+    const read = fs.readFileSync, decode = nativeImage.createFromBuffer;
+    try {
+      fs.readFileSync = function(file, ...args) { if (String(file).endsWith('.png')) throw new Error('Unexpected main-thread PNG read'); return read.call(this, file, ...args); };
+      nativeImage.createFromBuffer = () => { throw new Error('Unexpected main-thread decode'); };
+      const state = await hooks.importService.prepare(file), actual = hooks.importService.preview.data.items;
+      return { phase: state.phase, actual: actual.map(({ id, signature, preview, size }) => ({ id, signature, preview, size })), expected,
+        hidden: !hooks.imageInspector.window.isVisible(), preferences: hooks.imageInspector.window.webContents.getLastWebPreferences() };
+    } finally { fs.readFileSync = read; nativeImage.createFromBuffer = decode; hooks.importService.cancel(); }
+  }, input);
+  expect(result.phase).toBe('ready'); expect(result.actual).toEqual(result.expected); expect(result.hidden).toBe(true);
+  expect(result.preferences).toMatchObject({ contextIsolation: true, nodeIntegration: false, sandbox: false });
+  expect(fs.readdirSync(directory).some(name => name.startsWith('image-edit-') || name.startsWith('import-'))).toBe(false);
+});
+test('image inspector timeout, crash and cancellation reject work, preserve history and allow a fresh verified retry', async () => {
+  const backup = await editedBackup(); backup.items = backup.items.slice(0, 1); fs.writeFileSync(input, JSON.stringify(backup));
+  const source = await application.evaluate(async (_electron, file) => {
+    const { importService } = globalThis.__pasteTest; await importService.prepare(file);
+    return process.getBuiltinModule('node:path').join(importService.preview.stage, 'assets', importService.preview.data.items[0].asset);
+  }, input);
+  for (const mode of ['timeout', 'crash', 'cancel']) {
+    const result = await application.evaluate(async (_electron, { file, mode }) => {
+      const inspector = globalThis.__pasteTest.imageInspector; await inspector.inspect(file); clearTimeout(inspector.idleTimer);
+      let beats = 0; const timer = setInterval(() => { beats++; }, 2), controller = new AbortController();
+      try {
+        inspector.timeout = 150;
+        const debuggerAPI = inspector.window.webContents.debugger;
+        debuggerAPI.attach('1.3'); await debuggerAPI.sendCommand('Debugger.enable'); await debuggerAPI.sendCommand('Debugger.pause');
+        const promise = inspector.inspect(file, { signal: controller.signal });
+        if (mode === 'crash') setTimeout(() => inspector.window.webContents.forcefullyCrashRenderer(), 20);
+        if (mode === 'cancel') setTimeout(() => controller.abort(), 20);
+        let message; try { await promise; } catch (error) { message = error.message; }
+        inspector.timeout = 30000; const next = await inspector.inspect(file);
+        return { message, beats, signature: next.signature, expected: globalThis.__pasteTest.importService.preview.data.items[0].signature };
+      } finally { inspector.timeout = 30000; clearInterval(timer); }
+    }, { file: source, mode });
+    expect(result.message, mode).toBeTruthy(); expect(result.signature).toBe(result.expected); expect(result.beats).toBeGreaterThan(0);
+    expect(await application.evaluate(() => globalThis.__pasteTest.store.data.items.length)).toBe(0);
+  }
+  await application.evaluate(() => globalThis.__pasteTest.importService.cancel());
+  expect(fs.readdirSync(directory).some(name => name.startsWith('import-') || name.startsWith('image-edit-'))).toBe(false);
+});
+test('a crashed image validator fails the real restore, cleans its staging area and preserves the previous manifest before retry', async () => {
+  const backup = await editedBackup(); fs.writeFileSync(input, JSON.stringify(backup));
+  await application.evaluate(() => globalThis.__pasteTest.store.add({ type: 'text', body: 'Protected before validator crash' }));
+  const before = fs.readFileSync(path.join(directory, 'library.json'));
+  await application.evaluate(async (_electron, file) => {
+    const { imageInspector, importService } = globalThis.__pasteTest; await imageInspector.ready();
+    const api = imageInspector.window.webContents.debugger; api.attach('1.3'); await api.sendCommand('Debugger.enable'); await api.sendCommand('Debugger.pause');
+    globalThis.__crashedRestore = importService.prepare(file).then(() => ({ accepted: true }), error => ({ error: error.message }));
+  }, input);
+  await expect.poll(() => application.evaluate(() => !!globalThis.__pasteTest.imageInspector.pending)).toBe(true);
+  const failure = await application.evaluate(async () => { globalThis.__pasteTest.imageInspector.window.webContents.forcefullyCrashRenderer(); return globalThis.__crashedRestore; });
+  expect(failure.accepted).not.toBe(true); expect(failure.error).toContain('图片校验进程');
+  expect(fs.readFileSync(path.join(directory, 'library.json'))).toEqual(before);
+  expect(fs.readdirSync(directory).some(name => name.startsWith('import-') || name.startsWith('image-edit-'))).toBe(false);
+  expect((await settings.evaluate(() => window.paste.getImportState())).phase).toBe('idle');
+  const next = await application.evaluate(async (_electron, file) => globalThis.__pasteTest.importService.prepare(file), input);
+  expect(next.phase).toBe('ready'); expect(next.summary.added).toBe(8);
+  const inspectorPID = await application.evaluate(() => {
+    const { imageInspector, importService } = globalThis.__pasteTest, pid = imageInspector.window.webContents.getOSProcessId();
+    importService.cancel(); return pid;
+  });
+  await expect.poll(() => application.evaluate(({ app }, pid) => ({ released: !globalThis.__pasteTest.imageInspector.window, present: app.getAppMetrics().some(value => value.pid === pid) }), inspectorPID), { timeout: 5000 }).toEqual({ released: true, present: false });
+  expect(fs.readFileSync(path.join(directory, 'library.json'))).toEqual(before);
 });
