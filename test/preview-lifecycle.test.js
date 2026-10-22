@@ -38,7 +38,8 @@ function harness() {
     globalThis.probe = { showPreview, hidePanel, window: () => previewWindow, panel: () => mainWindow, state: () => previewState,
       capture: () => previewBlurAction(previewWindow), newPanelSession: () => pasteTargets.cancel(),
       fields: values => { if ('dirty' in values) previewDirty = values.dirty; if ('opening' in values) previewOpening = values.opening;
-        if ('quitting' in values) quitting = values.quitting; if ('suppressed' in values) suppressBlur = values.suppressed; } };
+        if ('quitting' in values) quitting = values.quitting; if ('suppressed' in values) suppressBlur = values.suppressed;
+        if ('openingItems' in values) openingItems = values.openingItems; if ('openEpoch' in values) openEpoch = values.openEpoch; } };
   `, context);
   const p = context.probe;
   function flushImmediate() { immediates.splice(0).forEach(fn => fn()); }
@@ -79,4 +80,11 @@ test('current focus is checked at execution and destroyed windows are never quer
   }
   const h = harness(), window = h.open(), late = h.p.capture(); h.p.panel().destroyed = true;
   assert.equal(late(), false); h.p.panel().destroyed = false; window.close(); assert.equal(late(), false);
+});
+test('opening resources suppresses native blur, and a previous delayed blur cannot swallow partial failure feedback', () => {
+  const h = harness(), window = h.open(), previous = h.p.capture();
+  h.p.fields({ openingItems: 1, openEpoch: 1 }); window.emit('blur'); assert.equal(h.timers.size, 0);
+  h.p.fields({ openingItems: 0 }); assert.equal(previous(), false); h.flush();
+  assert.equal(window.closed, 0); assert.equal(h.p.panel().hidden, false);
+  window.emit('blur'); h.flush(); assert.equal(window.closed, 1);
 });

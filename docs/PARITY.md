@@ -38,6 +38,7 @@ task_id：`2026-10-21-paste-parity-01a05dea`。此文件是同一任务的持续
 | 图片 | 原图侧存、原像素 round-trip；系统旋转和 Vision 前景分割，背景恢复/撤销/重做/跨保存恢复原图，透明度、方向、主体颜色及重启已有实际测试 | 更广主体与边缘质量、高位深/广色域及大图压力、原版图像菜单实测、磁盘资产回收 |
 | 监听性能 | 系统变化计数避免未变内容重复读取；100 次未变检查只读一次的单测和 25 次真实计数检查 E2E 已通过；暂停不补录；Stack活动时另有常驻原生20ms计数观察与合并快照请求、变化跳跃警告 | 常规历史仍每650ms启动桥；Stack快速复制零遗漏、能耗/持续运行和超大图库迁移压力未验，20ms不是捕获/投递延迟保证 |
 | 文件 | 原生 NSPasteboard 多文件 round-trip、独立文件列表、失效提示、按项 Finder 路径 E2E 通过；文件拖出 payload 已验证 | Finder/其他应用的真实拖放接收，失效文件恢复策略 |
+| 打开链接 / 文件 | Command-O/原生文件菜单/右键/预览与逐文件入口，整组预检/显示顺序去重；来源和文件身份/窗口归属、确认取消/部分失败计数及失焦保护；OS端点替换的独立测试 | 原版7.0.2菜单/焦点/多选细节与像素、真实默认应用/浏览器/系统确认/缺失关联/访问权限矩阵仍待验；目前只接完整HTTP(S)，其他协议未对齐，防护限制不是原版规格或恶意文件检测，系统接受不是已显示内容 |
 | Pinboard | 内联创建/重命名、颜色、原子批量固定、拖入、标签排序和板内排序及重新加载 E2E 通过 | 原版共享流程、排序/拖放细节同样本人工核对 |
 | 搜索 | 跨 Pinboard 全局文本/OCR Worker FTS5；私有派生缓存、来源校验/损坏恢复与真实重启；侧存正文仅传引用，由 Worker 逐项校验/索引；条件/候选/原顺序/过期保护、Return/Tab/CmdG 已验证 | 原版候选几何/解析规则/模糊或排名需实测，设备筛选依赖同步；首次建索引/校验 IO 和更大数据/多语言压力、缓存隐私/容量；线上帮助不等于本机 7.0.2 已对齐 |
 | 导航 | 左右/Home/End、稳定 ID 焦点/范围锚点、多选扩展/收缩；CmdE/R/G、快速/纯文本/Pinboard 快捷键；组合输入与重复键保护；菜单命令绑定原项目，不穿透误删；虚拟列表位置语义 | 系统输入法候选窗、实际 VoiceOver、焦点/跨应用快捷键冲突、键盘布局的物理矩阵；新增语义不等于完整辅助技术验收 |
@@ -716,7 +717,31 @@ PanelSize只接受本面板主frame的开始/移动/结束，底边/整屏宽度
 
 影响14文件：src/panel-layout.js、src/panel-size.js、src/panel-resize-ui.js、src/main.js、src/model.js、src/preload.js、src/renderer.js、src/styles.css、src/index.html；test/panel-size.test.js、test/ui/panel-size.spec.js；README.md、CHANGELOG.md、本记录。无新增依赖/原生/库备份版本/原版素材变更，色彩stash不动；方法留当前项目与回归，不创建未经实际桌面验收的通用skill。完整目标继续active，不标完成/blocked，真实系统/像素、隐私同步及安装发行门槛保留。
 
+## 第三十四轮 显式打开链接和文件
+
+起始dd0b274工作区干净；上一阶段两次中断仅检查和未生效补丁，不计实现进展。重新检查权威状态后实际落地。用户主流程优先不变；[官方快捷键](https://pasteapp.io/help/keyboard-shortcuts)明确Open selected link or file为Command-O，当前源码只有Finder reveal，无系统open链路，选择该常用缺口。官方说明不替代本机7.0.2细节/像素观察，不扩展色彩/RTFD支线。
+
+新增ItemOpener，成熟URL/fileURLToPath、fs realpath/stat和Electron shell.openExternal/openPath负责协议/文件处理，无shell字符串拼接；HTTP(S)与本地文件可混选，按当前显示顺序去重，整组检查后再派发，逐文件按钮只处理明确index。请求绑定原ID/签名/类型/正文和主frame/当前clean预览；设置/子frame/未保存预览拒绝，隐藏重开或切换预览取消旧请求。原生Command-O按收到事件的窗口转发，支持不透明富文本iframe内焦点，IME/多余修饰键/自动重复、输入框/在途搜索不排队打开。双击、复制、Stack和原库不变，不选择或导入即自动启动。
+
+普通文档无需额外确认；已知应用/执行扩展名/执行权限或symlink指向这些对象、带credential URL以及超过10个资源默认取消确认，确认文本不带URL凭据/文件原内容。最多128资源、1MiB原始地址保护是独立参数，不代表原版。第一次系统调用前重新验证整组，后续每次检查当前源/文件身份（realpath/dev/ino/birthtime/mtime/size/mode）；确认期间删除/替换/编辑拒绝整组。系统派发非原子，后继失败明确已交给系统数量，不重写或假装回滚；检查后文件系统仍有竞争，不保证接收/渲染完成，也不声称检测任意恶意文件或绕过系统保护。
+
+打开期间不触发自动blur关闭，并推进openEpoch使先前100ms失焦回调无效；失败反馈留当前界面，成功只关闭仍属于请求的面板/预览，不误关新草稿/调出。测试模式的默认系统打开/确认适配器直接拒绝，测试只替换这三个端点，实际主进程/IPC/renderer/服务与真实私有文件检查仍运行，不启动外部文档或改系统剪贴板。
+
+首轮新测试6过3败：两个错误定位了不存在的#toast（实际为#status），富文本fixture只给update.html而没有body，生产store按约定不作正文变更；修正测试样本和选择器，不改变存储规则。之后iframe键盘失败仍存在，但CDP keyboard不会经过Electron before-input-event（既有app.spec.js已说明）；改为本应用webContents.sendInputEvent验证原生入口，不将CDP缺失冒充物理键盘或产品根因。单独保留DOM快捷键测试，二者不互相替代。没有解锁后的物理输入证据，不能声称真实桌面shortcut已通过。
+
+完整驱动开始后进一步代码复查复现：preview openItem以state对象引用识别请求，普通library通知重建同源state后，OS失败反馈会被错误丢弃。直接执行生产函数、替换同ID/同signature的元数据快照，实际messages=[]而预期OS rejected；改为当前ID/正文signature/view模式校验，不让无关刷新吞提示，新增实际Electron门控回归。旧驱动`/var/folders/ks/007yts0d7qg0kwy1mnq_q1qh0000gn/T/paste-item-open-final-39YzFq`构建与294Node通过、早期184源码通过；因新修复需要重建，定向SIGINT该驱动的Playwright子进程54109，产物36通过/1主动中断/148未跑，驱动确认退出130，重复阶段未执行。不是测试自行失败或观察超时，不把旧包/混合阶段当最新证据；随后重建/完整重跑。
+
+最终验证（2026-10-23 03:40 Asia/Shanghai）：v3驱动`/var/folders/ks/007yts0d7qg0kwy1mnq_q1qh0000gn/T/paste-item-open-final-v3-KZPEcS`确认退出0，四日志逐一回读。295项Node/check/build通过（30.34秒），二十一个独立文件源码185项（230.94秒）、最新实际产物185项（232.48秒）、十三条打开流程五轮65次（63.66秒）全通过。65个src文件与受测app.asar逐字节相同；最终320pt深色文件预览图已查看，工具栏/两种文件动作与名称均不互相遮挡，PNG640×900有效、非空；不当作原版像素差分。
+
+完整清单235项/22文件；50项app.spec.js系统测试仍未运行，最终前置仅检测到活动原版PID55543并拒绝。只读Info.plist仍7.0.2，本轮CUA仍Mac锁屏，未暂停原版、读写general正文、发送桌面全局输入、修改系统权限/默认应用/显示器。最新严格codesign完整性通过，release:verify在Gatekeeper拒绝时非零，有效签名身份0；公开生产audit0，构建链仍8moderate，无high/critical。未重签/启动旧撤销Paste Like、不清隔离或关系统保护；真实默认应用/系统确认/目标内容显示、物理IME/跨应用消费、同样本原版像素与同步隐私/安装发行均未验，完整目标继续active，不标complete/blocked。
+
+复查捕获协议发现classifyText按trim后的值判定link，新入口直接查原body会误拒绝带首尾空白的正常链接；打开时使用trim后的派生地址，来源签名/正文仍核对并完整保留，内部控制字符/换行仍拒绝。新增Node边界断言，Electron的常规链接fixture也改为含首尾空白，避免只测干净URL。为重建最新代码，v2驱动ASQtjo的已确认Playwright子进程67226主动SIGINT，驱动退出130；不将此主动取消记为回归失败或最终证据。最终以v3完整源码/产物与重复日志为准。
+
+影响15文件：src/item-opener.js、src/app-menu.js、src/main.js、src/preload.js、src/renderer.js、src/preview.js、src/preview.html、src/preview.css；test/item-opener.test.js、test/navigation.test.js、test/preview-lifecycle.test.js、test/ui/item-open.spec.js；README.md、CHANGELOG.md、本记录。新增12个Node测试（10服务/1菜单/1失焦）与13个独立Electron流程。无依赖/原生/库备份格式变更，色彩stash不动；项目专属方法留本记录和测试，不创建尚未实际桌面验证的通用skill。
+
 ## 继续入口
+
+第三十四轮已有显式打开链接/文件入口和受控主进程链，不重复实现。解锁后核对本机原版Command-O/右键/预览/多选与失败行为及同样本像素；在明确可清理合成文档/默认应用验证时段测试系统打开、确认取消、关联/权限失败和物理iframe焦点。HTTP(S)以外协议和128/1MiB/批量确认均不是最终原版规格，按实际证据继续补齐，不把当前防护边界重新定义为全目标。
 
 第三十三轮已具备受控上沿/键盘高度调整、记忆/显示器限高/失焦清理与动态卡片/虚拟索引，不重建同一链路。下一步在可观察原版时核对实际高度范围、紧凑阈值/标题/间距/动效，并用真实鼠标捕获、跨显示器缩放/全屏和多类内容同样本做比对；当前180..1600范围和紧凑CSS只是独立参数，不提前固定为原版规格。保护未提交名称、原件/来源归属和备份兼容约束，不能为追求某张截图改掉数据不变量。
 

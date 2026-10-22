@@ -56,7 +56,8 @@
 .preview-pinboards .board-dot { width: 9px; height: 9px; flex-basis: 9px; }
 .preview-status { position: absolute; bottom: 36px; left: 12px; right: 12px; margin: 0; padding: 8px 12px; background: var(--menu); border: 1px solid var(--line); border-radius: 5px; box-shadow: 0 4px 20px #0002; font-size: 12px; }
 .file-list { margin: 0; padding: 0; list-style: none; }
-.file-list li { padding: 12px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 26px 1fr 28px; align-items: center; gap: 8px; }
+.file-list li { padding: 12px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.file-actions { display: flex; gap: 2px; }
 .file-list strong { display: block; font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
 .file-list small { display: block; color: var(--muted); font-size: 11px; padding-top: 3px; }
 .file-list .missing { color: #e3665c; }

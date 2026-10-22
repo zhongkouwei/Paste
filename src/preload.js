@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('paste', {
   getDetail: id => invoke('item:detail', id),
   copy: (id, options) => invoke('item:copy', id, options),
   copySelection: (ids, options) => invoke('item:copySelection', ids, options),
+  openItems: (ids, options) => invoke('item:open', ids, options), onOpenCommand: callback => listen('item:openCommand', callback),
   newText: boardId => invoke('item:new', boardId), requestNewText: () => invoke('item:requestNew'),
   recognizeItem: (id, retry = false) => invoke('item:recognize', id, retry), copyImageText: id => invoke('item:copyText', id),
   getOCR: id => invoke('item:ocr', id),

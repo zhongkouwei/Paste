@@ -468,6 +468,22 @@ function menu(entries, x, y) {
 }
 
 function selectedIDs() { return visibleItems().filter(item => state.selected.has(item.id)).map(item => item.id); }
+let openBusy = false;
+async function openSelection(ids) {
+  if (openBusy || searchPending || !ids.length) return;
+  openBusy = true;
+  try {
+    if (itemRename && !await commitItemRename()) return;
+    const result = await api.openItems(ids);
+    if (!result.ok && !result.cancelled) toast(result.error);
+  } finally { openBusy = false; }
+}
+function openCommand() {
+  const focused = document.activeElement;
+  if (composing || focused?.matches('input, textarea, select') || focused?.isContentEditable) return;
+  if (!$('#menu').hidden) { $('#menu button[aria-keyshortcuts="Meta+O"]:not(:disabled)')?.click(); return; }
+  attempt(() => openSelection(selectedIDs()));
+}
 async function activate(id, paste = true, plain = false) {
   return activateSelection(id === undefined ? selectedIDs() : [id], paste, plain);
 }
@@ -488,6 +504,8 @@ function itemMenu(item, x, y) {
     { label: state.target ? `粘贴到 ${state.target}` : '粘贴到当前应用', icon: 'clipboard-paste', key: '↵', shortcut: 'Enter', action: () => activateSelection(ids) },
     { label: '以纯文本粘贴', action: () => activateSelection(ids, true, true), disabled: ids.some(id => ['image', 'file'].includes(state.items.find(value => value.id === id)?.type)) },
     { label: '复制', icon: 'copy', key: '⌘C', shortcut: 'Meta+C', action: () => activateSelection(ids, false) }, null,
+    { label: '打开', icon: 'external-link', key: '⌘O', shortcut: 'Meta+O', action: () => openSelection(ids),
+      disabled: ids.some(id => !['link', 'file'].includes(state.items.find(value => value.id === id)?.type)) },
     { label: '编辑', icon: 'pencil', key: '⌘E', shortcut: 'Meta+E', action: () => openDetail(item.id, true), disabled: ids.length !== 1 || item.type === 'file' },
     ...(item.type === 'image' && state.capabilities?.textRecognition ? [{ label: '复制图片中的文字', icon: 'scan-text', action: async () => { await api.copyImageText(item.id); toast('已复制文字'); } }] : []),
     { label: '重命名', key: '⌘R', shortcut: 'Meta+R', action: () => openDetail(item.id, 'rename'), disabled: ids.length !== 1 },
@@ -755,6 +773,7 @@ document.addEventListener('keydown', event => {
     }
   }
   const modifier = event.metaKey || event.ctrlKey;
+  if (shortcutMatches(event, 'CommandOrControl+O')) { event.preventDefault(); if (!event.repeat) openCommand(); return; }
   if (shortcutMatches(event, 'CommandOrControl+T')) { event.preventDefault(); if (!event.repeat) attempt(() => api.toggleCapture()); return; }
   if (shortcutMatches(event, 'CommandOrControl+N')) { event.preventDefault(); if (!event.repeat) attempt(newText); return; }
   document.body.classList.toggle('quick-keys', modifierPressed(event, state.settings.quickPasteModifier));
@@ -829,6 +848,7 @@ window.addEventListener('blur', () => document.body.classList.remove('quick-keys
 window.addEventListener('resize', () => { renderCards(); if (!$('#filterSuggestions').hidden) updateSuggestions(); });
 api.onChanged(accept);
 api.onNewText(() => attempt(newText));
+api.onOpenCommand(openCommand);
 api.onItemCreated(({ id, boardId }) => attempt(async () => { accept(await api.getLibrary()); showIn(id, boardId); }));
 api.onShown(({ target }) => {
   mediaEpoch += 1; mediaSkipped.clear(); mediaFailures.clear(); clearMediaWarning();

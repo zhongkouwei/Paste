@@ -30,6 +30,7 @@ const { applicationMenuTemplate, previewShortcut, newTextShortcut, pauseShortcut
 const { CapturePause } = require('./capture-pause');
 const { PanelSize } = require('./panel-size');
 const { DEFAULT_HEIGHT } = require('./panel-layout');
+const { ItemOpener } = require('./item-opener');
 const clip = new ClipboardService({ ...electron, fileBridge: process.platform === 'darwin' ? {
   read: () => native('read-files'), write: (files, options) => nativeInput('write-files', { files, ...options })
 } : undefined });
@@ -47,6 +48,7 @@ let searchService, mediaService, importService, imageInspector, applicationCatal
 let quitting = false, quitAfterPreview = false, copyQueue = Promise.resolve(), settingsQueue = Promise.resolve();
 let copyRequest = 0;
 let suppressBlur = false;
+let itemOpener, openingItems = 0, openEpoch = 0;
 let lastError = '', stackWindow, stackReady, stackOpening, stackLifecycle = 0, stackPollRequested = false, stackPolling = null;
 const stackQueue = new StackQueue();
 const helper = path.join(app.getAppPath().replace(/app\.asar$/, 'app.asar.unpacked'), 'native/bin/paste-bridge');
@@ -250,11 +252,11 @@ function closePreview() {
   if (previewWindow && !previewWindow.isDestroyed()) previewWindow.close();
 }
 function previewBlurAction(window) {
-  const session = previewState, epoch = pasteTargets.epoch;
+  const session = previewState, epoch = pasteTargets.epoch, opening = openEpoch;
   return () => {
     if (!window || previewWindow !== window || window.isDestroyed() || previewState !== session || epoch !== pasteTargets.epoch
-        || quitting || previewOpening || !mainWindow || mainWindow.isDestroyed()) return false;
-    if (previewDirty || suppressBlur || window.isFocused() || mainWindow.isFocused()) return false;
+        || opening !== openEpoch || quitting || previewOpening || !mainWindow || mainWindow.isDestroyed()) return false;
+    if (previewDirty || suppressBlur || openingItems || window.isFocused() || mainWindow.isFocused()) return false;
     hidePanel(); closePreview(); return true;
   };
 }
@@ -262,6 +264,25 @@ function cancelPreviewRich() { previewRichJob?.controller.abort(); previewRichJo
 function trustedPreview(event) { return event.sender === previewWindow?.webContents && event.senderFrame === event.sender.mainFrame; }
 function requirePanel(event) {
   if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame) throw Error('请从主面板调整窗口。');
+}
+function requestOpenItem(focused = BrowserWindow.getFocusedWindow()) {
+  if (focused === previewWindow && previewState?.mode === 'view' && !previewDirty) focused.webContents.send('preview:command', 'open');
+  else if (focused === mainWindow && mainWindow.isVisible()) mainWindow.webContents.send('item:openCommand');
+}
+async function openItems(event, ids, options = {}) {
+  const preview = trustedPreview(event);
+  if (!preview) requirePanel(event);
+  const window = preview ? previewWindow : mainWindow, session = previewState, epoch = pasteTargets.epoch;
+  if (preview && (session?.mode !== 'view' || previewDirty || ids?.length !== 1 || ids[0] !== session.id)) throw Error('请从未编辑的当前预览打开项目。');
+  if (!preview && previewWindow && (previewDirty || previewState?.mode !== 'view')) throw Error('请先保存或关闭正在编辑的预览。');
+  const current = () => !quitting && window && !window.isDestroyed() && window.isVisible() && epoch === pasteTargets.epoch
+    && previewState === session && !previewDirty && (!preview || previewState?.mode === 'view');
+  openingItems++; openEpoch++;
+  try {
+    const result = await itemOpener.open(ids, { index: options?.index, current });
+    if (result.ok && current() && !TEST_MODE) { hidePanel(); closePreview(); }
+    return result;
+  } finally { openingItems--; }
 }
 function samePreview(window, id, signature) {
   return previewWindow === window && !window.isDestroyed() && previewState?.id === id && store.getMetadata(id)?.signature === signature;
@@ -339,6 +360,7 @@ function showPreview(id, { mode = 'view', anchor, ids = [], boardId = 'history' 
   });
   previewWindow.on('blur', () => {
     cancelBlur();
+    if (openingItems) return;
     const dismiss = previewBlurAction(window);
     blurTimer = setTimeout(() => { blurTimer = undefined; if (!TEST_MODE) dismiss(); }, 100);
   });
@@ -366,6 +388,7 @@ function createWindow(file, options) {
   window.webContents.on('before-input-event', (event, input) => {
     if (pauseShortcut(input)) { event.preventDefault(); if (!input.isAutoRepeat) capturePause.toggle().catch(report); return; }
     if (newTextShortcut(input)) { event.preventDefault(); if (!input.isAutoRepeat) requestNewText(); return; }
+    if (previewShortcut(input) === 'open') { event.preventDefault(); if (!input.isAutoRepeat) requestOpenItem(window); return; }
     if (file !== 'preview.html') return;
     if (previewState?.mode !== 'view') return;
     const command = previewShortcut(input);
@@ -553,6 +576,7 @@ function registerIPC() {
     'item:detail': (_event, id) => itemDetail(id),
     'item:copy': (_event, id, options) => copy(id, options),
     'item:copySelection': (_event, ids, options) => copySelection(ids, options),
+    'item:open': openItems,
     'item:new': (event, boardId) => { if (event.sender !== mainWindow?.webContents) throw new Error('请从主面板新建文本。'); return createTextDraft(boardId); },
     'item:requestNew': () => requestNewText(),
     'item:recognize': (_event, id, retry) => recognizeItem(id, retry),
@@ -831,11 +855,22 @@ else {
         apply: bounds => mainWindow.setBounds(bounds), preference: () => store.data.settings.panelHeight, save: height => saveSettings({ panelHeight: height }) });
       mainWindow.on('resize', () => { if (!mainWindow.isDestroyed()) mainWindow.webContents.send('panel:size', panelSize.info()); });
       Menu.setApplicationMenu(Menu.buildFromTemplate(applicationMenuTemplate(openSettings, process.platform, requestNewText,
-        { toggle: () => capturePause.toggle().catch(report), pauseFor: duration => capturePause.pauseFor(duration).catch(report) })));
+        { toggle: () => capturePause.toggle().catch(report), pauseFor: duration => capturePause.pauseFor(duration).catch(report) }, (_item, window) => requestOpenItem(window || undefined))));
+      itemOpener = new ItemOpener({ store,
+        openURL: url => { if (TEST_MODE) throw Error('System opening disabled in tests'); return shell.openExternal(url); },
+        openPath: file => { if (TEST_MODE) throw Error('System opening disabled in tests'); return shell.openPath(file); },
+        confirm: async ({ count, risky }) => {
+          if (TEST_MODE) throw Error('System confirmation disabled in tests');
+          const result = await dialog.showMessageBox(BrowserWindow.getFocusedWindow() || mainWindow, { type: 'warning',
+            message: `打开${count}个项目？`, detail: risky ? '包含应用、可执行文件或带登录信息的链接。仅打开你信任的内容。' : '这会通过默认应用打开多个项目。',
+            buttons: ['取消', '打开'], defaultId: 0, cancelId: 0 });
+          return result.response === 1;
+        } });
       mainWindow.on('blur', () => {
-        const epoch = pasteTargets.epoch;
+        if (openingItems) return;
+        const epoch = pasteTargets.epoch, opening = openEpoch;
         setTimeout(() => {
-          if (!TEST_MODE && epoch === pasteTargets.epoch && !mainWindow.isFocused() && !suppressBlur && !previewOpening && !previewWindow?.isVisible() && !mainWindow.webContents.isDevToolsOpened()) hidePanel();
+          if (!TEST_MODE && opening === openEpoch && epoch === pasteTargets.epoch && !mainWindow.isFocused() && !suppressBlur && !openingItems && !previewOpening && !previewWindow?.isVisible() && !mainWindow.webContents.isDevToolsOpened()) hidePanel();
         }, 100);
       });
       hotkeys = new GlobalHotkeys(globalShortcut, {
@@ -848,6 +883,7 @@ else {
       store.exportService.onChanged = state => { for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('export:changed', state); };
       importService.onChanged = state => { if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('import:changed', state); };
       if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, textSignature, imageSignature, monitor, capturePause, panelSize, isIgnored, imageProcessor, imageInspector, richTextService, selectionService, selectionComposer, applicationCatalog, imageText, searchService, mediaService, importService, thumbnail, pasteTargets, pasteOwnership, pasteDelivery, stackQueue, stackInput, requestStackPoll, showPanel, hidePanel, hotkeys, capturePreviewBlur: () => previewBlurAction(previewWindow) };
+      if (TEST_MODE) Object.assign(globalThis.__pasteTest, { itemOpener });
       try { hotkeys.apply(store.data.settings); } catch (error) { report(error); }
       for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(event, () => { if (mainWindow.isVisible()) placePanel(); });
       app.on('activate', () => { if (stackQueue.active) void showStack().catch(report); else if (!mainWindow.isVisible() && !pasteTargets.pending) showPanel(); });

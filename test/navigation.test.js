@@ -26,10 +26,18 @@ test('native preview shortcuts bridge exact commands only, never composition, ke
   assert.equal(previewShortcut({ type: 'keyDown', key: 'r', meta: true }, 'darwin'), 'rename');
   assert.equal(previewShortcut({ type: 'keyDown', key: 'e', meta: true }, 'darwin'), 'edit');
   assert.equal(previewShortcut({ type: 'keyDown', key: 'e', control: true }, 'linux'), 'edit');
+  assert.equal(previewShortcut({ type: 'keyDown', key: 'o', meta: true }, 'darwin'), 'open');
+  assert.equal(previewShortcut({ type: 'keyDown', key: 'o', meta: true, alt: true }, 'darwin'), null);
   for (const input of [
     { type: 'keyUp', key: 'r', meta: true }, { type: 'keyDown', key: 'r', meta: true, isComposing: true },
     { type: 'keyDown', key: 'r', meta: true, shift: true }, { type: 'keyDown', key: 'e', control: true }
   ]) assert.equal(previewShortcut(input, 'darwin'), null);
+});
+test('Open is an explicit File command routed to the focused product view', () => {
+  let count = 0;
+  const entry = applicationMenuTemplate(() => {}, 'darwin', undefined, {}, () => count++)
+    .find(item => item.role === 'fileMenu').submenu.find(item => item.id === 'open-item');
+  assert.equal(entry.accelerator, 'CommandOrControl+O'); entry.click(); assert.equal(count, 1);
 });
 test('new text has an actual File command and exact native shortcut without shadowing new Pinboard or composition', () => {
   let requests = 0; const template = applicationMenuTemplate(() => {}, 'darwin', () => { requests++; });

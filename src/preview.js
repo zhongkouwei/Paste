@@ -6,6 +6,17 @@ let state, dirty = false, statusTimer, richEditor, imageBusy = false, ocrOpen = 
 let composing = false;
 let pendingCommand;
 let nativeRich;
+let openBusy = false;
+async function openItem(index) {
+  if (openBusy || !state || state.mode !== 'view' || dirty || saveBusy || composing || !['link', 'file'].includes(state.item.type)) return;
+  openBusy = true;
+  const owner = state;
+  try {
+    const result = await api.openItems([owner.id], index === undefined ? {} : { index });
+    if (state?.id === owner.id && state.mode === 'view' && state.item.signature === owner.item.signature && !result.ok && !result.cancelled) status(result.error);
+  }
+  finally { openBusy = false; }
+}
 function needsNative(item) { return ['text', 'code', 'link', 'color'].includes(item.type) && !!item.rtf; }
 function loadNative(item) {
   if (!needsNative(item)) { nativeRich = null; return; }
@@ -33,10 +44,11 @@ function status(message) {
 async function attempt(action) { try { return await action(); } catch (error) { status(error.message); return undefined; } }
 function markDirty(value) { dirty = value; api.markPreviewDirty(value); }
 function previewCommand(mode) {
-  if (!['edit', 'rename'].includes(mode)) return;
+  if (!['edit', 'rename', 'open'].includes(mode)) return;
   if (!state) { pendingCommand = mode; return; }
   if (state.mode !== 'view' || saveBusy || composing) return;
-  if (mode === 'edit') { if (!$('#editPreview').hidden && !$('#editPreview').disabled) $('#editPreview').click(); }
+  if (mode === 'open') attempt(() => openItem());
+  else if (mode === 'edit') { if (!$('#editPreview').hidden && !$('#editPreview').disabled) $('#editPreview').click(); }
   else attempt(() => api.openPreview(state.id, { mode, ids: state.ids }));
 }
 
@@ -132,8 +144,13 @@ function renderFiles(item) {
     if (!file.exists) row.className = 'missing';
     text.append(title, detail); row.append(symbol, text);
     if (file.exists) {
+      const actions = document.createElement('span'); actions.className = 'file-actions';
+      if (state.mode === 'view') {
+        const open = document.createElement('button'); open.className = 'icon-button'; open.title = '打开文件'; open.setAttribute('aria-label', '打开文件'); open.innerHTML = '<i data-lucide="external-link"></i>';
+        open.onclick = () => attempt(() => openItem(index)); actions.append(open);
+      }
       const reveal = document.createElement('button'); reveal.className = 'icon-button'; reveal.title = '在 Finder 中显示'; reveal.setAttribute('aria-label', '在 Finder 中显示'); reveal.innerHTML = '<i data-lucide="folder-search"></i>';
-      reveal.onclick = () => attempt(() => api.revealItem(item.id, index)); row.append(reveal);
+      reveal.onclick = () => attempt(() => api.revealItem(item.id, index)); actions.append(reveal); row.append(actions);
     }
     list.append(row);
   }
@@ -158,6 +175,7 @@ function render(value, force = false) {
   const supported = !reason;
   $('#previewTitle').textContent = value.draft ? '新建文本' : item.renamed ? item.title : labels[item.type];
   $('#sharePreview').hidden = !!value.draft;
+  $('#openPreviewItem').hidden = editing || !['link', 'file'].includes(item.type);
   $('#previewMeta').textContent = item.type === 'image' ? `${item.size?.width || '?'} × ${item.size?.height || '?'}`
     : item.type === 'file' ? `${item.files.length} 个文件` : `${[...item.body].length} 个字符`;
   $('#editPreview').hidden = editing || item.type === 'file';
@@ -260,6 +278,7 @@ $('#retryOCR').onclick = () => attempt(() => recognize(true));
 $('#copyOCR').onclick = () => attempt(async () => { await api.copyImageText(state.id); status('已复制文字'); });
 $('#pinPreview').onclick = () => { $('#previewPinboards').hidden = !$('#previewPinboards').hidden; };
 $('#sharePreview').onclick = () => attempt(() => api.shareItem(state.id));
+$('#openPreviewItem').onclick = () => attempt(() => openItem());
 document.addEventListener('pointerdown', event => {
   if (!event.target.closest('#previewPinboards, #pinPreview')) $('#previewPinboards').hidden = true;
   if (!event.target.closest('#tableMenu, #tableToggle')) closeTableMenu();
@@ -270,6 +289,7 @@ document.addEventListener('keydown', event => {
   if (saveBusy) { event.preventDefault(); return; }
   if (!state) return;
   if (PasteModel.isComposingKey(event, composing)) return;
+  if (PasteModel.shortcutMatches(event, 'CommandOrControl+O')) { event.preventDefault(); if (!event.repeat) previewCommand('open'); return; }
   if (PasteModel.shortcutMatches(event, 'CommandOrControl+N')) { event.preventDefault(); if (!event.repeat) attempt(() => api.requestNewText()); return; }
   if (!$('#tableMenu').hidden) {
     const buttons = [...$('#tableMenu').querySelectorAll('button:not(:disabled)')], index = buttons.indexOf(document.activeElement);
