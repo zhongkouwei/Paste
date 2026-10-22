@@ -218,6 +218,18 @@ class ClipStore {
     });
   }
 
+  rename(id, title, expected) {
+    const item = this.getMetadata(id);
+    if (!item) throw new Error('项目已被删除，名称未保存。');
+    if (typeof title !== 'string' || !title.trim() || title.length > 200) throw new Error('名称不能为空，且不能超过200个字符。');
+    if (!expected || typeof expected.title !== 'string' || typeof expected.renamed !== 'boolean') throw new Error('缺少名称基线，请重新开始重命名。');
+    if (String(item.title ?? '') !== expected.title || !!item.renamed !== expected.renamed) throw new Error('名称已改变，请取消后重新编辑；当前草稿未覆盖其他名称。');
+    if (this.protectedItemId === id) throw new Error('请先保存或关闭正在编辑的项目。');
+    const name = title.trim();
+    if (item.renamed && item.title === name) return item;
+    return this.update(id, { title: name });
+  }
+
   delete(ids) {
     const selected = new Set(ids);
     if (this.protectedItemId && selected.has(this.protectedItemId)) throw new Error('请先保存或关闭正在编辑的项目');

@@ -551,6 +551,10 @@ function registerIPC() {
     'item:copyText': (_event, id) => copyImageText(id),
     'item:ocr': (_event, id) => { const item = store.get(id); return item?.ocr && item.ocr.signature === item.signature ? item.ocr : null; },
     'item:update': (_event, id, changes) => { store.update(id, changes || {}); emit(); return snapshot(); },
+    'item:rename': (event, id, title, expected) => {
+      if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame) throw new Error('请从主面板重命名项目。');
+      store.rename(id, title, expected); emit(); return snapshot();
+    },
     'item:delete': (_event, ids) => { if (!Array.isArray(ids) || ids.length > 10000) throw new Error('Invalid selection'); store.delete(ids); emit(); return snapshot(); },
     'history:clear': async () => {
       suppressBlur = true;

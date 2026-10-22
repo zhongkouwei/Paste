@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('paste', {
   recognizeItem: (id, retry = false) => invoke('item:recognize', id, retry), copyImageText: id => invoke('item:copyText', id),
   getOCR: id => invoke('item:ocr', id),
   updateItem: (id, changes) => invoke('item:update', id, changes), deleteItems: ids => invoke('item:delete', ids),
+  renameItem: (id, title, expected) => invoke('item:rename', id, title, expected),
   clearHistory: () => invoke('history:clear'), saveBoard: board => invoke('board:save', board), deleteBoard: id => invoke('board:delete', id),
   reorderBoards: ids => invoke('board:reorder', ids), reorderBoardItems: (boardId, ids) => invoke('board:reorderItems', boardId, ids),
   pinItems: (ids, boardId, remove = false) => invoke('board:pin', ids, boardId, remove),

@@ -10,6 +10,7 @@ const icons = { text: 'text', code: 'code', link: 'link', image: 'image', color:
 let toastTimer, renderFrame, dragging = null;
 let searchRequest = 0, searchPending = false, queryMatches = new Set(), searchSelection;
 let composing = false;
+let itemRename = null;
 let calendarTimer, suggestionSignature = '', suggestionsDismissed = false;
 const imageTextCache = new Map(), imageTextPending = new Set();
 const mediaCache = new Map(), mediaPending = new Set(), mediaSkipped = new Map(), mediaFailures = new Map();
@@ -313,21 +314,34 @@ function card(item, index, total) {
   return `<article id="${optionID(item.id)}" class="clip-card ${selected ? 'selected' : ''}" role="option" draggable="true" aria-selected="${selected}" aria-posinset="${index + 1}" aria-setsize="${total}" aria-label="${escape(item.title)}" data-id="${escape(item.id)}" data-index="${index}" data-type="${escape(item.type)}" style="left:${24 + index * 264}px;--source-color:${safeColor(item.source?.color)}">
     <header class="clip-header"><span class="clip-type">${labels[item.type] || '文本'}</span><time class="clip-time">${relativeTime(item.createdAt)}</time>${sourceIcon ? `<img class="source-icon" src="${sourceIcon}" data-media-key="${escape(item.source?.iconKey)}" alt="${escape(item.source?.name)}" draggable="false">` : `<span class="source-fallback" title="${escape(item.source?.name || '')}">${icon(icons[item.type] || 'text')}</span>`}</header>
     <div class="clip-body ${kind}" ${kind === 'color-preview' ? `style="background:${escape(item.body)};color:#111"` : ''}>${body}</div>
-    <footer class="clip-footer">${item.renamed ? escape(item.title) : caption}</footer>${item.boardIds?.length ? `<span class="clip-pin">${icon('pin')}</span>` : ''}
+    <footer class="clip-footer"><button class="clip-label" data-rename="${escape(item.id)}" tabindex="-1" title="重命名" aria-label="重命名：${escape(item.title)}">${item.renamed ? escape(item.title) : caption}</button></footer>${item.boardIds?.length ? `<span class="clip-pin">${icon('pin')}</span>` : ''}
     ${['image', 'file'].includes(item.type) ? `<button class="native-drag icon-button" draggable="true" data-native-drag="${escape(item.id)}" title="拖出原始文件" aria-label="拖出原始文件">${icon('grip-vertical')}</button>` : ''}
     ${index < 9 ? `<span class="quick-key">${{ CommandOrControl: '⌘', Control: '⌃', Alt: '⌥' }[state.settings.quickPasteModifier] || '⌘'}${index + 1}</span>` : ''}</article>`;
 }
 
 function renderCards() {
   const items = visibleItems();
+  const keeper = itemRename?.card, previousScroll = $('#timeline').scrollLeft;
   const width = $('#timeline').clientWidth;
+  $('#track').style.width = `${Math.max(width, items.length * 264 + 24)}px`;
+  const renameIndex = itemRename ? items.findIndex(item => item.id === itemRename.id) : -1;
+  if (keeper?.isConnected && document.activeElement === itemRename.input && renameIndex >= 0) {
+    $('#timeline').scrollLeft = Math.max(0, previousScroll + 24 + renameIndex * 264 - parseFloat(keeper.style.left));
+  }
   const first = Math.max(0, Math.floor($('#timeline').scrollLeft / 264) - 3);
   const end = Math.min(items.length, first + Math.ceil(width / 264) + 8);
-  $('#track').style.width = `${Math.max(width, items.length * 264 + 24)}px`;
-  $('#track').innerHTML = items.slice(first, end).map((item, offset) => card(item, first + offset, items.length)).join('');
+  if (keeper?.isConnected) {
+    // Keep the live input connected: replacing/reinserting it breaks IME and
+    // selection even when the same value and focus are restored afterwards.
+    for (const node of [...$('#track').children]) if (node !== keeper) node.remove();
+    const index = renameIndex;
+    if (index >= 0) { keeper.style.left = `${24 + index * 264}px`; keeper.dataset.index = index; keeper.setAttribute('aria-posinset', index + 1); }
+    keeper.setAttribute('aria-setsize', items.length); keeper.setAttribute('aria-selected', state.selected.has(itemRename.id)); keeper.classList.toggle('selected', state.selected.has(itemRename.id));
+    $('#track').insertAdjacentHTML('beforeend', items.slice(first, end).flatMap((item, offset) => item.id === itemRename.id ? [] : [card(item, first + offset, items.length)]).join(''));
+  } else $('#track').innerHTML = items.slice(first, end).map((item, offset) => card(item, first + offset, items.length)).join('');
   const active = state.active && document.getElementById(optionID(state.active));
   if (active) $('#timeline').setAttribute('aria-activedescendant', active.id); else $('#timeline').removeAttribute('aria-activedescendant');
-  $('#emptyState').hidden = items.length > 0;
+  $('#emptyState').hidden = items.length > 0 || !!itemRename;
   $('#emptyTitle').textContent = searchPending ? '正在搜索…' : state.query || activeFilters(state).length ? '无结果'
     : state.board === 'history' ? '剪贴板为空' : 'Pinboard 为空';
   refreshIcons();
@@ -408,6 +422,7 @@ function clearSearch() {
 }
 function setBoard(id) { clearSearch(); state.board = id; closeMenu(); resetFilter(); }
 async function newText() {
+  if (itemRename && !await commitItemRename()) return;
   closeMenu(); if (state.editingBoard) await commitBoard();
   return api.newText(state.searching ? 'history' : state.board);
 }
@@ -450,6 +465,7 @@ async function activate(id, paste = true, plain = false) {
   return activateSelection(id === undefined ? selectedIDs() : [id], paste, plain);
 }
 async function activateSelection(ids, paste = true, plain = false) {
+  if (itemRename && !await commitItemRename()) return;
   if (!ids.length) return;
   if (state.status.stackMode && paste) { if (ids.length === 1) await api.addToStack(ids[0]); else await api.addSelectionToStack(ids); toast('已加入 Stack'); return; }
   const result = ids.length === 1 ? await api.copy(ids[0], { paste, plain }) : await api.copySelection(ids, { paste, plain });
@@ -497,9 +513,60 @@ async function commitBoard() {
   await api.saveBoard(board); accept(await api.getLibrary());
 }
 async function openDetail(id, mode = 'view') {
+  if (itemRename && !await commitItemRename()) return;
   const card = [...$('#track').querySelectorAll('[data-id]')].find(element => element.dataset.id === id);
   const rect = card?.getBoundingClientRect();
   return api.openPreview(id, { mode: mode === true ? 'edit' : mode, anchor: rect ? { x: rect.x + rect.width / 2 } : undefined, ids: visibleItems().map(item => item.id) });
+}
+
+async function beginItemRename(id) {
+  if (itemRename?.id === id) { itemRename.input.focus(); return; }
+  if (itemRename && !await commitItemRename()) { itemRename?.input.focus(); return; }
+  const item = state.items.find(item => item.id === id), index = visibleItems().findIndex(item => item.id === id);
+  if (!item || index < 0 || searchPending) return;
+  closeMenu(); select(index);
+  const node = document.getElementById(optionID(id)), input = document.createElement('input');
+  const draft = { id, card: node, input, expected: { title: String(item.title ?? ''), renamed: !!item.renamed }, composing: false, pending: null };
+  itemRename = draft; node.classList.add('renaming'); node.draggable = false;
+  input.className = 'clip-name-input'; input.maxLength = 200; input.value = draft.expected.title;
+  input.setAttribute('aria-label', '项目名称'); input.autocomplete = 'off'; input.spellcheck = false;
+  input.oninput = () => { input.removeAttribute('aria-invalid'); input.title = ''; };
+  input.oncompositionstart = () => { draft.composing = true; };
+  input.oncompositionend = () => { draft.composing = false; };
+  input.onkeydown = event => {
+    event.stopPropagation();
+    if (isComposingKey(event, draft.composing)) return;
+    if (['Enter', 'Escape', 'Tab'].includes(event.key)) {
+      event.preventDefault(); if (event.repeat) return;
+      if (event.key === 'Escape') { cancelItemRename(); $('#timeline').focus(); }
+      else commitItemRename().then(saved => { if (saved) $('#timeline').focus(); });
+    }
+  };
+  for (const event of ['click', 'dblclick', 'pointerdown', 'contextmenu']) input.addEventListener(event, event => event.stopPropagation());
+  input.ondragstart = event => { event.preventDefault(); event.stopPropagation(); };
+  node.querySelector('.clip-footer').replaceChildren(input); input.focus(); input.select();
+}
+function cancelItemRename() {
+  if (!itemRename || itemRename.pending) return false;
+  itemRename.card.remove(); itemRename = null; render(); return true;
+}
+function commitItemRename() {
+  const draft = itemRename;
+  if (!draft) return Promise.resolve(true);
+  if (draft.pending) return draft.pending;
+  if (draft.composing) return Promise.resolve(false);
+  if (draft.input.value === draft.expected.title) { cancelItemRename(); return Promise.resolve(true); }
+  draft.input.disabled = true;
+  draft.pending = (async () => {
+    try {
+      const library = await api.renameItem(draft.id, draft.input.value, draft.expected);
+      if (itemRename === draft) { draft.card.remove(); itemRename = null; accept(library); render(); }
+      return true;
+    } catch (error) {
+      draft.input.setAttribute('aria-invalid', 'true'); draft.input.title = error.message; toast(error.message); return false;
+    } finally { draft.pending = null; draft.input.disabled = false; }
+  })();
+  return draft.pending;
 }
 
 function payload(event) {
@@ -537,6 +604,7 @@ $('#boards').addEventListener('drop', event => {
   });
 });
 $('#timeline').addEventListener('dragstart', event => {
+  if (event.target.closest('.renaming')) { event.preventDefault(); return; }
   const native = event.target.closest('[data-native-drag]');
   if (native) { event.preventDefault(); const ids = state.selected.has(native.dataset.nativeDrag) ? [...state.selected] : [native.dataset.nativeDrag]; attempt(() => api.startDrag(ids)); return; }
   const card = event.target.closest('[data-id]'); if (!card) return;
@@ -609,10 +677,12 @@ $('#timeline').addEventListener('wheel', event => {
   if (Math.abs(event.deltaY) > Math.abs(event.deltaX) && !event.ctrlKey) { event.preventDefault(); $('#timeline').scrollLeft += event.deltaY; }
 }, { passive: false });
 $('#timeline').onclick = event => {
+  const label = event.target.closest('[data-rename]'); if (label) { attempt(() => beginItemRename(label.dataset.rename)); return; }
   const item = event.target.closest('[data-index]'); if (!item) return;
   select(Number(item.dataset.index), { extend: event.shiftKey, toggle: event.metaKey || event.ctrlKey }); $('#timeline').focus();
+  if (itemRename) commitItemRename();
 };
-$('#timeline').ondblclick = event => { const item = event.target.closest('[data-id]'); if (item) attempt(() => activateSelection(state.selected.has(item.dataset.id) ? selectedIDs() : [item.dataset.id], true, modifierPressed(event, state.settings.plainTextModifier))); };
+$('#timeline').ondblclick = event => { if (event.target.closest('.clip-label, .renaming')) return; const item = event.target.closest('[data-id]'); if (item) attempt(() => activateSelection(state.selected.has(item.dataset.id) ? selectedIDs() : [item.dataset.id], true, modifierPressed(event, state.settings.plainTextModifier))); };
 $('#timeline').oncontextmenu = event => {
   event.preventDefault(); const node = event.target.closest('[data-id]'); if (!node) return;
   const item = state.items.find(i => i.id === node.dataset.id); if (!item) return;
@@ -640,6 +710,7 @@ $('#moreButton').onclick = () => menu([
 $('#stackButton').onclick = () => attempt(() => state.status.stackCount ? pasteStackNext() : api.toggleStack());
 $('#captureButton').onclick = () => attempt(() => api.resumeCapture());
 document.addEventListener('pointerdown', event => {
+  if (itemRename && !event.target.closest('.clip-card')) commitItemRename();
   if (state.editingBoard && !event.target.closest('.board-edit, #menu')) attempt(commitBoard);
   if (!event.target.closest('#menu, #moreButton')) closeMenu();
   if (!event.target.closest('#filters, #filterToggle')) closeFilters();
@@ -697,6 +768,7 @@ document.addEventListener('keydown', event => {
   }
   if (event.key === 'Escape') {
     event.preventDefault();
+    if (itemRename) { if (cancelItemRename()) $('#timeline').focus(); return; }
     if (!$('#filters').hidden) closeFilters();
     else if (state.query) { state.query = ''; $('#searchInput').value = ''; resetFilter(); }
     else if (state.searching) toggleSearch(false);
@@ -754,7 +826,7 @@ api.onItemCreated(({ id, boardId }) => attempt(async () => { accept(await api.ge
 api.onShown(({ target }) => {
   mediaEpoch += 1; mediaSkipped.clear(); mediaFailures.clear(); clearMediaWarning();
   document.body.dataset.panelReady = 'true'; state.target = target; closeMenu(); render();
-  if (state.editingBoard) $('.board-name-edit')?.focus(); else $('#timeline').focus();
+  if (itemRename?.input.isConnected) itemRename.input.focus(); else if (state.editingBoard) $('.board-name-edit')?.focus(); else $('#timeline').focus();
 });
 attempt(async () => accept(await api.getLibrary()));
 refreshIcons();

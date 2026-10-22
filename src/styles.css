@@ -76,6 +76,10 @@ body.searching #addBoard { display: none; }
 .clip-card[data-type=code] .clip-body { background: color-mix(in srgb, var(--card) 96%, #998ac0); }
 .clip-card[data-type=link] pre { color: #5a8de5; }
 .clip-card .clip-footer { position: absolute; bottom: 0; left: 0; right: 0; height: 32px; display: flex; justify-content: center; align-items: flex-end; padding: 0 10px 10px; background: linear-gradient(transparent, var(--card) 52%); color: var(--muted); font-size: 13px; font-weight: 500; }
+.clip-label { max-width: calc(100% - 36px); min-width: 0; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: inherit; }
+.clip-card.renaming .clip-footer { padding: 0 30px 6px 12px; }
+.clip-name-input { width: 100%; min-width: 0; height: 22px; padding: 1px 4px; border-radius: 3px; background: var(--surface); color: var(--text); font-size: 13px; text-align: center; outline: 2px solid var(--selected); }
+.clip-name-input[aria-invalid=true] { outline-color: light-dark(#b3352a, #ff9984); }
 .clip-card .image-preview { padding: 0; background-color: #eee; background-image: conic-gradient(#ddd 25%,transparent 0 50%,#ddd 0 75%,transparent 0); background-size: 16px 16px; }
 @media (prefers-color-scheme: dark) { .clip-card .image-preview { background-color: #252525; background-image: conic-gradient(#202020 25%,transparent 0 50%,#202020 0 75%,transparent 0); } }
 .image-preview img { width: 100%; height: 100%; object-fit: contain; }
