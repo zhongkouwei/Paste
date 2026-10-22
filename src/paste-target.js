@@ -1,0 +1,52 @@
+const { validApplicationID } = require('./applications');
+
+function targetIdentity(value, ownPID) {
+  if (!value || !Number.isInteger(value.pid) || value.pid <= 0 || value.pid > 0x7fffffff || value.pid === ownPID
+      || !validApplicationID(value.bundleId) || !Number.isFinite(value.launchTime) || value.launchTime <= 0) return null;
+  const target = { pid: value.pid, bundleId: value.bundleId, launchTime: value.launchTime,
+    name: typeof value.name === 'string' && value.name.length && value.name.length <= 1000 ? value.name : value.bundleId };
+  if (value.windowPoint && Number.isFinite(value.windowPoint.x) && Number.isFinite(value.windowPoint.y)) {
+    target.windowPoint = Object.freeze({ x: value.windowPoint.x, y: value.windowPoint.y });
+  }
+  return Object.freeze(target);
+}
+
+class PasteTargetSession {
+  constructor({ ownPID, read, onError = () => {} }) { Object.assign(this, { ownPID, read, onError }); this.epoch = 0; this.pending = false; this.target = null; }
+  snapshot() { return this.target; }
+  cancel() { this.epoch += 1; this.pending = false; this.target = null; }
+  async refresh(retain = false) {
+    const previous = retain ? this.target : null, epoch = ++this.epoch;
+    if (!retain) this.target = null;
+    this.pending = true;
+    let front;
+    try { front = await this.read(); } catch (error) { this.onError(error); }
+    if (epoch !== this.epoch) return false;
+    this.pending = false;
+    this.target = front?.pid === this.ownPID ? previous : targetIdentity(front, this.ownPID);
+    return true;
+  }
+}
+
+class PasteDelivery {
+  constructor({ permission, activate, dismiss, recover, simulate = false, onError = () => {} }) {
+    Object.assign(this, { permission, activate, dismiss, recover, simulate, onError });
+  }
+  async deliver({ paste, pasteTarget, target }) {
+    if (this.simulate) return { ok: true, copied: true };
+    if (!paste || pasteTarget !== 'application') { this.dismiss(); return { ok: true, copied: true }; }
+    if (!target) return { ok: false, copied: true, error: '内容已复制，未能确认目标应用，请切回目标应用粘贴。' };
+    let permission;
+    try { permission = await this.permission(); }
+    catch (error) { this.onError(error); return { ok: false, copied: true, error: '内容已复制。无法检查辅助功能权限，请手动粘贴或重试。' }; }
+    if (permission?.accessibility !== true) return { ok: false, copied: true, error: '内容已复制。自动粘贴需要在系统设置中授权辅助功能。' };
+    try {
+      this.dismiss();
+      const result = await this.activate(target);
+      if (result?.ok === true) return { ok: true, copied: true };
+    } catch (error) { this.onError(error); }
+    try { await this.recover(); } catch (error) { this.onError(error); }
+    return { ok: false, copied: true, error: '目标应用不可用，内容已复制到剪贴板，请手动粘贴或重试。' };
+  }
+}
+module.exports = { targetIdentity, PasteTargetSession, PasteDelivery };

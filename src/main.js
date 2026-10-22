@@ -15,6 +15,7 @@ const { ImportService } = require('./import-service');
 const { ImageInspector } = require('./image-inspector');
 const { RichTextService, unsupportedRTF } = require('./rich-text');
 const { ApplicationCatalog, validApplicationID, captureSource } = require('./applications');
+const { PasteTargetSession, PasteDelivery } = require('./paste-target');
 const { ImageTextIndex } = require('./image-text');
 const { SearchService } = require('./search-service');
 const { MediaService, thumbnail } = require('./media');
@@ -26,7 +27,7 @@ const clip = new ClipboardService({ ...electron, fileBridge: process.platform ==
 const execute = promisify(execFile);
 const TEST_MODE = process.argv.includes('--test-mode');
 app.setPath('userData', process.env.PASTE_DATA_DIR ? path.resolve(process.env.PASTE_DATA_DIR) : path.join(app.getPath('appData'), 'Paste Easy'));
-let mainWindow, settingsWindow, previewWindow, tray, store, transfers, pollTimer, targetApp;
+let mainWindow, settingsWindow, previewWindow, tray, store, transfers, pollTimer;
 let previewState = null, previewDirty = false, previewOpening = false, activeShare;
 let richTextService, previewRichJob, previewSaveJob;
 let hotkeys, monitor, imageProcessor, imageDraft, imageText, capabilities = {}, processingClosing = false, processingStopped = false;
@@ -37,6 +38,12 @@ let suppressBlur = false;
 let lastError = '', stack = [], stackMode = false, stackGeneration = 0;
 const PANEL_HEIGHT = 332;
 const helper = path.join(app.getAppPath().replace(/app\.asar$/, 'app.asar.unpacked'), 'native/bin/paste-bridge');
+const pasteTargets = new PasteTargetSession({ ownPID: process.pid, read: () => native('frontmost'),
+  onError: error => console.error('Could not resolve foreground application', error.message) });
+const pasteDelivery = new PasteDelivery({ simulate: TEST_MODE, permission: () => native('permission'),
+  activate: target => native('paste', target.pid, target.bundleId, target.launchTime),
+  dismiss: () => { hidePanel(); closePreview(); }, recover: () => showPanel(),
+  onError: error => console.error('Paste delivery failed', error.message) });
 
 async function native(command, ...args) {
   if (process.platform !== 'darwin' || !fs.existsSync(helper)) return {};
@@ -119,17 +126,22 @@ function queueImageText(item) { if (capabilities.textRecognition && item.type ==
 async function poll() { return monitor.tick(); }
 
 function placePanel() {
-  const display = screen.getDisplayNearestPoint(targetApp?.windowPoint || screen.getCursorScreenPoint());
+  const display = screen.getDisplayNearestPoint(pasteTargets.snapshot()?.windowPoint || screen.getCursorScreenPoint());
   const { x, y, width, height } = display.bounds;
   mainWindow.setBounds({ x, y: y + height - PANEL_HEIGHT, width, height: PANEL_HEIGHT });
 }
 async function showPanel(mode) {
-  try { const front = await native('frontmost'); if (front.pid && front.pid !== process.pid) targetApp = front; }
-  catch (error) { console.error('Could not resolve foreground application', error.message); }
-  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!mainWindow || mainWindow.isDestroyed() || quitting) return false;
+  if (!await pasteTargets.refresh(mainWindow.isVisible() || !!previewWindow?.isVisible())) return false;
+  if (mainWindow.isDestroyed() || quitting) return false;
   placePanel(); mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   mainWindow.show(); mainWindow.moveTop(); mainWindow.focus();
-  mainWindow.webContents.send('panel:shown', { target: targetApp?.name || '', mode: mode || 'history' });
+  mainWindow.webContents.send('panel:shown', { target: pasteTargets.snapshot()?.name || '', mode: mode || 'history' });
+  return true;
+}
+function hidePanel() {
+  pasteTargets.cancel();
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
 }
 
 function itemDetail(id) {
@@ -206,7 +218,7 @@ function showPreview(id, { mode = 'view', anchor, ids = [] } = {}) {
     });
   });
   previewWindow.on('blur', () => setTimeout(() => {
-    if (!TEST_MODE && !previewDirty && !previewWindow?.isFocused() && !mainWindow.isFocused() && !suppressBlur) { mainWindow.hide(); closePreview(); }
+    if (!TEST_MODE && !previewDirty && !previewWindow?.isFocused() && !mainWindow.isFocused() && !suppressBlur) { hidePanel(); closePreview(); }
   }, 100));
   return true;
 }
@@ -239,7 +251,7 @@ function createWindow(file, options) {
 }
 function openSettings() {
   if (previewState?.mode !== 'view' && previewWindow) { previewWindow.focus(); return; }
-  mainWindow.hide();
+  hidePanel();
   closePreview();
   if (!settingsWindow || settingsWindow.isDestroyed()) {
     settingsWindow = createWindow('settings.html', { width: 642, height: 580, minWidth: 620, minHeight: 520,
@@ -287,15 +299,19 @@ function queueCopy(action) {
   const operation = copyQueue.then(action);
   copyQueue = operation.catch(() => {}); return operation;
 }
-function copy(id, options) { copyRequest += 1; return queueCopy(() => performCopy(id, options)); }
+function copyContext({ paste = false, plain = false } = {}) {
+  return Object.freeze({ paste, plain: plain || store.data.settings.plainText,
+    pasteTarget: store.data.settings.pasteTarget, target: pasteTargets.snapshot() });
+}
+function copy(id, options) { copyRequest += 1; const context = copyContext(options); return queueCopy(() => performCopy(id, context)); }
 function nextInStack() {
   copyRequest += 1;
-  const generation = stackGeneration;
+  const generation = stackGeneration, context = copyContext({ paste: true });
   return queueCopy(async () => {
     if (generation !== stackGeneration) return { ok: false, error: 'Stack 已重置，请重新粘贴。' };
     const id = stack[0];
     if (!id) return { ok: false, error: 'Stack 为空' };
-    const result = await performCopy(id, { paste: true });
+    const result = await performCopy(id, context);
     // A reset or deletion during the write must not consume a different queue head.
     if (result.ok && generation === stackGeneration && stack[0] === id) stack.shift();
     emit(); return result;
@@ -320,29 +336,19 @@ async function copyImageText(id) {
     const item = store.get(id), ocr = item?.ocr;
     if (!ocr?.text || ocr.signature !== item.signature) throw new Error('未识别到可复制的文字');
     await monitor.suspend(async () => monitor.remember(await clip.write({ type: 'text', body: ocr.text })));
-    if (!TEST_MODE) { mainWindow.hide(); closePreview(); }
+    if (!TEST_MODE) { hidePanel(); closePreview(); }
     return { ok: true, copied: true };
   });
 }
-async function performCopy(id, { paste = false, plain = false } = {}) {
+async function performCopy(id, context) {
   const item = store.get(id);
   if (!item) throw new Error('此项目已被删除。');
   if (item.type === 'file' && fileDetails(item).some(file => !file.exists)) throw new Error('原始文件已移动或删除，无法粘贴。');
   await monitor.suspend(async () => {
-    const signature = await clip.write(item, { plain: plain || store.data.settings.plainText, image: item.asset ? store.readAsset(item.asset) : undefined });
+    const signature = await clip.write(item, { plain: context.plain, image: item.asset ? store.readAsset(item.asset) : undefined });
     monitor.remember(signature);
   });
-  if (paste && store.data.settings.pasteTarget === 'application') {
-    if (TEST_MODE) return { ok: true, copied: true };
-    const permission = await native('permission');
-    if (!permission.accessibility || !targetApp?.pid) return { ok: false, copied: true,
-      error: !permission.accessibility ? '内容已复制。自动粘贴需要在系统设置中授权辅助功能。' : '内容已复制，请切回目标应用粘贴。' };
-    mainWindow.hide();
-    closePreview();
-    const result = await native('paste', targetApp.pid, targetApp.bundleId || '', targetApp.launchTime || 0);
-    if (!result.ok) { await showPanel(); return { ok: false, copied: true, error: '目标应用不可用，内容已复制到剪贴板。' }; }
-  } else if (!TEST_MODE) { mainWindow.hide(); closePreview(); }
-  return { ok: true, copied: true };
+  return pasteDelivery.deliver(context);
 }
 
 function registerIPC() {
@@ -492,7 +498,7 @@ function registerIPC() {
     },
     'settings:open': openSettings, 'permission:get': () => native('permission'),
     'permission:open': () => shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'),
-    'panel:hide': () => { closePreview(); mainWindow.hide(); },
+    'panel:hide': () => { closePreview(); hidePanel(); },
     'stack:toggle': () => { stackMode = !stackMode; if (!stackMode) { stack = []; stackGeneration += 1; } emit(); return stackMode; },
     'stack:add': (_event, id) => { if (!store.get(id)) throw new Error('Invalid item'); if (!stack.includes(id)) stack.push(id); emit(); return stack; },
     'stack:next': nextInStack,
@@ -590,24 +596,27 @@ else {
         fullscreenable: false, alwaysOnTop: true, skipTaskbar: true, title: 'Paste Easy', vibrancy: 'under-window' });
       mainWindow.setAlwaysOnTop(true, 'pop-up-menu');
       Menu.setApplicationMenu(Menu.buildFromTemplate(applicationMenuTemplate(openSettings)));
-      mainWindow.on('blur', () => setTimeout(() => {
-        if (!TEST_MODE && !suppressBlur && !previewOpening && !previewWindow?.isVisible() && !mainWindow.webContents.isDevToolsOpened()) mainWindow.hide();
-      }, 100));
+      mainWindow.on('blur', () => {
+        const epoch = pasteTargets.epoch;
+        setTimeout(() => {
+          if (!TEST_MODE && epoch === pasteTargets.epoch && !mainWindow.isFocused() && !suppressBlur && !previewOpening && !previewWindow?.isVisible() && !mainWindow.webContents.isDevToolsOpened()) hidePanel();
+        }, 100);
+      });
       hotkeys = new GlobalHotkeys(globalShortcut, {
-        history: () => mainWindow.isVisible() ? mainWindow.hide() : showPanel(),
+        history: () => mainWindow.isVisible() || pasteTargets.pending ? hidePanel() : showPanel(),
         stack: () => { stackMode = true; emit(); showPanel('stack'); }
       }, TEST_MODE);
       registerIPC(); applyRuntimeSettings();
       store.exportService.onChanged = state => { for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('export:changed', state); };
       importService.onChanged = state => { if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('import:changed', state); };
-      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, isIgnored, imageProcessor, imageInspector, richTextService, applicationCatalog, imageText, searchService, mediaService, importService, thumbnail };
+      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, isIgnored, imageProcessor, imageInspector, richTextService, applicationCatalog, imageText, searchService, mediaService, importService, thumbnail, pasteTargets, pasteDelivery, showPanel, hidePanel, hotkeys };
       try { hotkeys.apply(store.data.settings); } catch (error) { report(error); }
       for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(event, () => { if (mainWindow.isVisible()) placePanel(); });
-      app.on('activate', () => showPanel());
+      app.on('activate', () => { if (!mainWindow.isVisible() && !pasteTargets.pending) showPanel(); });
       mainWindow.webContents.once('did-finish-load', () => { if (process.argv.includes('--show') || TEST_MODE) showPanel(); });
       if (!TEST_MODE) pollTimer = setInterval(poll, 650);
       for (const item of store.data.items) queueImageText(item);
-      mainWindow.on('close', event => { if (!quitting) { event.preventDefault(); if (store.data.settings.background) mainWindow.hide(); else app.quit(); } });
+      mainWindow.on('close', event => { if (!quitting) { event.preventDefault(); if (store.data.settings.background) hidePanel(); else app.quit(); } });
     } catch (error) { console.error(error); dialog.showErrorBox('Paste Easy 无法加载历史', `${error.message}\n原始数据未被覆盖。`); app.quit(); }
   });
 }
