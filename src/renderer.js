@@ -1,4 +1,4 @@
-/* global lucide, PasteModel, PasteFilters */
+/* global lucide, PasteModel, PasteFilters, PastePanelLayout */
 const $ = selector => document.querySelector(selector);
 const api = window.paste;
 const { filterItems, relativeTime, imageTextMatches, COLORS, modifierPressed, shortcutMatches, isComposingKey, itemLocations } = PasteModel;
@@ -11,6 +11,7 @@ let toastTimer, renderFrame, dragging = null;
 let searchRequest = 0, searchPending = false, queryMatches = new Set(), searchSelection;
 let composing = false;
 let itemRename = null;
+let cardLayout = PastePanelLayout.panelLayout(innerHeight, innerWidth);
 let calendarTimer, suggestionSignature = '', suggestionsDismissed = false;
 const imageTextCache = new Map(), imageTextPending = new Set();
 const mediaCache = new Map(), mediaPending = new Set(), mediaSkipped = new Map(), mediaFailures = new Map();
@@ -311,7 +312,7 @@ function card(item, index, total) {
   if (item.type === 'color' && /^#[\da-f]{3,8}$/i.test(item.body)) { body = `<span>${escape(item.body)}</span>`; kind = 'color-preview'; }
   const caption = item.type === 'image' ? `${item.size?.width || '?'} × ${item.size?.height || '?'}`
     : item.type === 'file' ? '文件' : `${item.characterCount ?? [...(item.body || '')].length} 个字符`;
-  return `<article id="${optionID(item.id)}" class="clip-card ${selected ? 'selected' : ''}" role="option" draggable="true" aria-selected="${selected}" aria-posinset="${index + 1}" aria-setsize="${total}" aria-label="${escape(item.title)}" data-id="${escape(item.id)}" data-index="${index}" data-type="${escape(item.type)}" style="left:${24 + index * 264}px;--source-color:${safeColor(item.source?.color)}">
+  return `<article id="${optionID(item.id)}" class="clip-card ${selected ? 'selected' : ''}" role="option" draggable="true" aria-selected="${selected}" aria-posinset="${index + 1}" aria-setsize="${total}" aria-label="${escape(item.title)}" data-id="${escape(item.id)}" data-index="${index}" data-type="${escape(item.type)}" style="left:${24 + index * cardLayout.step}px;--source-color:${safeColor(item.source?.color)}">
     <header class="clip-header"><span class="clip-type">${labels[item.type] || '文本'}</span><time class="clip-time">${relativeTime(item.createdAt)}</time>${sourceIcon ? `<img class="source-icon" src="${sourceIcon}" data-media-key="${escape(item.source?.iconKey)}" alt="${escape(item.source?.name)}" draggable="false">` : `<span class="source-fallback" title="${escape(item.source?.name || '')}">${icon(icons[item.type] || 'text')}</span>`}</header>
     <div class="clip-body ${kind}" ${kind === 'color-preview' ? `style="background:${escape(item.body)};color:#111"` : ''}>${body}</div>
     <footer class="clip-footer"><button class="clip-label" data-rename="${escape(item.id)}" tabindex="-1" title="重命名" aria-label="重命名：${escape(item.title)}">${item.renamed ? escape(item.title) : caption}</button></footer>${item.boardIds?.length ? `<span class="clip-pin">${icon('pin')}</span>` : ''}
@@ -322,20 +323,26 @@ function card(item, index, total) {
 function renderCards() {
   const items = visibleItems();
   const keeper = itemRename?.card, previousScroll = $('#timeline').scrollLeft;
+  const previousStep = cardLayout.step;
+  cardLayout = PastePanelLayout.panelLayout(innerHeight, innerWidth);
+  for (const [name, value] of Object.entries({ 'card-width': cardLayout.cardWidth, 'card-height': cardLayout.cardHeight, 'header-height': cardLayout.headerHeight, 'track-height': cardLayout.trackHeight })) document.documentElement.style.setProperty(`--${name}`, `${value}px`);
+  document.body.classList.toggle('compact', cardLayout.compact);
   const width = $('#timeline').clientWidth;
-  $('#track').style.width = `${Math.max(width, items.length * 264 + 24)}px`;
+  $('#track').style.width = `${Math.max(width, items.length * cardLayout.step + 24)}px`;
   const renameIndex = itemRename ? items.findIndex(item => item.id === itemRename.id) : -1;
   if (keeper?.isConnected && document.activeElement === itemRename.input && renameIndex >= 0) {
-    $('#timeline').scrollLeft = Math.max(0, previousScroll + 24 + renameIndex * 264 - parseFloat(keeper.style.left));
+    $('#timeline').scrollLeft = Math.max(0, previousScroll + 24 + renameIndex * cardLayout.step - parseFloat(keeper.style.left));
+  } else if (previousStep !== cardLayout.step) {
+    $('#timeline').scrollLeft = previousScroll / previousStep * cardLayout.step;
   }
-  const first = Math.max(0, Math.floor($('#timeline').scrollLeft / 264) - 3);
-  const end = Math.min(items.length, first + Math.ceil(width / 264) + 8);
+  const first = Math.max(0, Math.floor($('#timeline').scrollLeft / cardLayout.step) - 3);
+  const end = Math.min(items.length, first + Math.ceil(width / cardLayout.step) + 8);
   if (keeper?.isConnected) {
     // Keep the live input connected: replacing/reinserting it breaks IME and
     // selection even when the same value and focus are restored afterwards.
     for (const node of [...$('#track').children]) if (node !== keeper) node.remove();
     const index = renameIndex;
-    if (index >= 0) { keeper.style.left = `${24 + index * 264}px`; keeper.dataset.index = index; keeper.setAttribute('aria-posinset', index + 1); }
+    if (index >= 0) { keeper.style.left = `${24 + index * cardLayout.step}px`; keeper.dataset.index = index; keeper.setAttribute('aria-posinset', index + 1); }
     keeper.setAttribute('aria-setsize', items.length); keeper.setAttribute('aria-selected', state.selected.has(itemRename.id)); keeper.classList.toggle('selected', state.selected.has(itemRename.id));
     $('#track').insertAdjacentHTML('beforeend', items.slice(first, end).flatMap((item, offset) => item.id === itemRename.id ? [] : [card(item, first + offset, items.length)]).join(''));
   } else $('#track').innerHTML = items.slice(first, end).map((item, offset) => card(item, first + offset, items.length)).join('');
@@ -394,10 +401,10 @@ function render() {
   renderBoards(); renderFilterUI(); renderCards(); renderCapture();
 }
 function scrollToIndex(index) {
-  const left = 24 + index * 264;
+  const left = 24 + index * cardLayout.step;
   const viewport = $('#timeline');
   if (left < viewport.scrollLeft + 8) viewport.scrollLeft = Math.max(0, left - 12);
-  else if (left + 248 > viewport.scrollLeft + viewport.clientWidth) viewport.scrollLeft = left + 248 - viewport.clientWidth;
+  else if (left + cardLayout.cardWidth + 8 > viewport.scrollLeft + viewport.clientWidth) viewport.scrollLeft = left + cardLayout.cardWidth + 8 - viewport.clientWidth;
 }
 function select(index, { extend = false, toggle = false } = {}) {
   const items = visibleItems();

@@ -3,6 +3,7 @@
   --panel: rgba(239,239,239,.96); --text: #222; --muted: #898989;
   --selected: #427af3; --card: #fff; --surface: #fff; --line: rgba(0,0,0,.1);
   --hover: rgba(0,0,0,.07); --field: rgba(0,0,0,.055); --menu: #f4f4f4;
+  --card-width: 240px; --card-height: 240px; --header-height: 52px; --track-height: 272px;
 }
 @media (prefers-color-scheme: dark) {
   :root { --panel: rgba(49,49,49,.98); --text: #e8e8e8; --muted: #989898; --card: #141414; --surface: #282828; --line: rgba(255,255,255,.1); --hover: rgba(255,255,255,.1); --field: rgba(255,255,255,.08); --menu: #393939; }
@@ -19,6 +20,9 @@ input, textarea, select { background: var(--field); border: 1px solid var(--line
 button svg { pointer-events: none; }
 svg { width: 18px; height: 18px; stroke-width: 1.7; flex-shrink: 0; }
 .panel { position: relative; height: 100%; background: var(--panel); }
+.panel-resize { position: absolute; z-index: 25; inset: 0 0 auto; height: 6px; cursor: ns-resize; touch-action: none; outline: none; }
+.panel-resize:hover, .panel-resize:focus-visible, body.resizing .panel-resize { border-top: 2px solid var(--selected); }
+body.resizing { cursor: ns-resize; }
 .toolbar { position: relative; height: 60px; display: flex; align-items: flex-start; justify-content: center; padding: 16px 24px 0; }
 .navigation { display: flex; align-items: center; justify-content: center; gap: 10px; min-width: 0; max-width: calc(100% - 110px); height: 28px; }
 .boards { display: flex; align-items: center; gap: 8px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
@@ -61,16 +65,16 @@ body.searching #addBoard { display: none; }
 .timeline:hover { scrollbar-color: #8886 transparent; }
 .timeline::-webkit-scrollbar { height: 5px; }
 .timeline::-webkit-scrollbar-thumb { background: #8886; border-radius: 5px; }
-.track { position: relative; height: 272px; min-width: 100%; }
-.clip-card { position: absolute; top: 8px; width: 240px; height: 240px; background: var(--card); border-radius: 10px; overflow: hidden; outline: none; box-shadow: 0 1px 2px #00000012; }
+.track { position: relative; height: var(--track-height); min-width: 100%; }
+.clip-card { position: absolute; top: 8px; width: var(--card-width); height: var(--card-height); background: var(--card); border-radius: 10px; overflow: hidden; outline: none; box-shadow: 0 1px 2px #00000012; }
 .clip-card.selected { box-shadow: 0 0 0 4px var(--selected), 0 1px 4px #0002; }
-.clip-header { height: 52px; background: var(--source-color, #77808a); color: white; padding: 9px 12px; position: relative; overflow: hidden; }
+.clip-header { height: var(--header-height); background: var(--source-color, #77808a); color: white; padding: 9px 12px; position: relative; overflow: hidden; }
 .clip-type { display: block; font-size: 16px; line-height: 19px; font-weight: 600; }
 .clip-time { display: block; font-size: 12px; line-height: 16px; opacity: .8; font-weight: 500; }
 .source-icon { width: 58px; height: 58px; object-fit: contain; position: absolute; right: -2px; top: -3px; }
 .source-fallback { position: absolute; right: 9px; top: 12px; opacity: .85; }
 .source-fallback svg { width: 28px; height: 28px; }
-.clip-body { height: 188px; padding: 10px 12px 22px; overflow: hidden; position: relative; }
+.clip-body { height: calc(var(--card-height) - var(--header-height)); padding: 10px 12px 22px; overflow: hidden; position: relative; }
 .clip-body pre { margin: 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/16px -apple-system, BlinkMacSystemFont, sans-serif; }
 .clip-card[data-type=code] pre { font: 13px/18px 'SFMono-Regular', Menlo, monospace; }
 .clip-card[data-type=code] .clip-body { background: color-mix(in srgb, var(--card) 96%, #998ac0); }
@@ -80,6 +84,17 @@ body.searching #addBoard { display: none; }
 .clip-card.renaming .clip-footer { padding: 0 30px 6px 12px; }
 .clip-name-input { width: 100%; min-width: 0; height: 22px; padding: 1px 4px; border-radius: 3px; background: var(--surface); color: var(--text); font-size: 13px; text-align: center; outline: 2px solid var(--selected); }
 .clip-name-input[aria-invalid=true] { outline-color: light-dark(#b3352a, #ff9984); }
+.compact .clip-header { padding: 4px 8px; }
+.compact .clip-type { font-size: 13px; line-height: 16px; }
+.compact .clip-time { font-size: 10px; line-height: 12px; }
+.compact .source-icon { width: 36px; height: 36px; top: 0; right: 0; }
+.compact .source-fallback { top: 8px; right: 8px; }
+.compact .source-fallback svg { width: 20px; height: 20px; }
+.compact .clip-body { padding: 6px 8px 22px; }
+.compact .clip-body pre { font-size: 12px; line-height: 14px; }
+.compact .clip-footer { height: 24px; padding-bottom: 6px; font-size: 11px; }
+.compact .clip-card.renaming .clip-footer { padding: 0 27px 4px 8px; }
+.compact .clip-name-input { height: 20px; font-size: 12px; }
 .clip-card .image-preview { padding: 0; background-color: #eee; background-image: conic-gradient(#ddd 25%,transparent 0 50%,#ddd 0 75%,transparent 0); background-size: 16px 16px; }
 @media (prefers-color-scheme: dark) { .clip-card .image-preview { background-color: #252525; background-image: conic-gradient(#202020 25%,transparent 0 50%,#202020 0 75%,transparent 0); } }
 .image-preview img { width: 100%; height: 100%; object-fit: contain; }

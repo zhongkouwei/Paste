@@ -28,6 +28,8 @@ const { SearchService } = require('./search-service');
 const { MediaService, thumbnail } = require('./media');
 const { applicationMenuTemplate, previewShortcut, newTextShortcut, pauseShortcut } = require('./app-menu');
 const { CapturePause } = require('./capture-pause');
+const { PanelSize } = require('./panel-size');
+const { DEFAULT_HEIGHT } = require('./panel-layout');
 const clip = new ClipboardService({ ...electron, fileBridge: process.platform === 'darwin' ? {
   read: () => native('read-files'), write: (files, options) => nativeInput('write-files', { files, ...options })
 } : undefined });
@@ -39,7 +41,7 @@ let mainWindow, settingsWindow, previewWindow, tray, store, transfers, pollTimer
 let previewState = null, previewDirty = false, previewOpening = false, activeShare;
 let richTextService, previewRichJob, previewSaveJob;
 let selectionService, selectionComposer;
-let capturePause;
+let capturePause, panelSize;
 let hotkeys, monitor, imageProcessor, imageDraft, imageText, capabilities = {}, processingClosing = false, processingStopped = false;
 let searchService, mediaService, importService, imageInspector, applicationCatalog, exportDialogOpen = false, importDialogOpen = false, applicationDialogOpen = false;
 let quitting = false, quitAfterPreview = false, copyQueue = Promise.resolve(), settingsQueue = Promise.resolve();
@@ -47,7 +49,6 @@ let copyRequest = 0;
 let suppressBlur = false;
 let lastError = '', stackWindow, stackReady, stackOpening, stackLifecycle = 0, stackPollRequested = false, stackPolling = null;
 const stackQueue = new StackQueue();
-const PANEL_HEIGHT = 332;
 const helper = path.join(app.getAppPath().replace(/app\.asar$/, 'app.asar.unpacked'), 'native/bin/paste-bridge');
 const pasteTargets = new PasteTargetSession({ ownPID: process.pid, read: () => native('frontmost'),
   onError: error => console.error('Could not resolve foreground application', error.message) });
@@ -217,8 +218,7 @@ async function stopStack() {
 
 function placePanel() {
   const display = screen.getDisplayNearestPoint(pasteTargets.snapshot()?.windowPoint || screen.getCursorScreenPoint());
-  const { x, y, width, height } = display.bounds;
-  mainWindow.setBounds({ x, y: y + height - PANEL_HEIGHT, width, height: PANEL_HEIGHT });
+  panelSize.place(display);
 }
 async function showPanel(mode) {
   if (!mainWindow || mainWindow.isDestroyed() || quitting) return false;
@@ -230,6 +230,7 @@ async function showPanel(mode) {
   return true;
 }
 function hidePanel() {
+  try { panelSize?.cancel(); } catch (error) { console.error('Could not cancel panel resize', error.message); }
   pasteTargets.cancel();
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
 }
@@ -259,6 +260,9 @@ function previewBlurAction(window) {
 }
 function cancelPreviewRich() { previewRichJob?.controller.abort(); previewRichJob = null; previewSaveJob?.abort(); }
 function trustedPreview(event) { return event.sender === previewWindow?.webContents && event.senderFrame === event.sender.mainFrame; }
+function requirePanel(event) {
+  if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame) throw Error('请从主面板调整窗口。');
+}
 function samePreview(window, id, signature) {
   return previewWindow === window && !window.isDestroyed() && previewState?.id === id && store.getMetadata(id)?.signature === signature;
 }
@@ -538,6 +542,10 @@ function registerIPC() {
     } catch (error) { event.returnValue = { error: error.message }; }
   });
   const handlers = {
+    'panel:size': event => { requirePanel(event); return panelSize.info(); },
+    'panel:resizeStart': (event, y) => { requirePanel(event); if (quitting || !mainWindow.isVisible()) return null; return panelSize.begin(y); },
+    'panel:resizeMove': (event, id, y) => { requirePanel(event); return panelSize.move(id, y); },
+    'panel:resizeEnd': (event, id, y, cancel) => { requirePanel(event); return panelSize.end(id, y, cancel === true); },
     'library:get': () => snapshot(),
     'library:search': (_event, query) => searchService.search(store.data.items, store.revision, query),
     'item:media': (_event, requests) => mediaService.read(requests),
@@ -815,10 +823,13 @@ else {
         const seed = JSON.parse(fs.readFileSync(process.env.PASTE_TEST_SEED, 'utf8'));
         for (const item of seed) store.add(item);
       }
-      mainWindow = createWindow('index.html', { width: 1200, height: PANEL_HEIGHT, minWidth: 320, show: false,
+      mainWindow = createWindow('index.html', { width: 1200, height: DEFAULT_HEIGHT, minWidth: 320, show: false,
         frame: false, transparent: true, resizable: false, movable: false, minimizable: false, maximizable: false,
         fullscreenable: false, alwaysOnTop: true, skipTaskbar: true, title: 'Paste Easy', vibrancy: 'under-window' });
       mainWindow.setAlwaysOnTop(true, 'pop-up-menu');
+      panelSize = new PanelSize({ getBounds: () => mainWindow.getBounds(), display: () => screen.getDisplayMatching(mainWindow.getBounds()),
+        apply: bounds => mainWindow.setBounds(bounds), preference: () => store.data.settings.panelHeight, save: height => saveSettings({ panelHeight: height }) });
+      mainWindow.on('resize', () => { if (!mainWindow.isDestroyed()) mainWindow.webContents.send('panel:size', panelSize.info()); });
       Menu.setApplicationMenu(Menu.buildFromTemplate(applicationMenuTemplate(openSettings, process.platform, requestNewText,
         { toggle: () => capturePause.toggle().catch(report), pauseFor: duration => capturePause.pauseFor(duration).catch(report) })));
       mainWindow.on('blur', () => {
@@ -836,7 +847,7 @@ else {
       if (!TEST_MODE) powerMonitor.on('resume', () => capturePause.check().catch(report));
       store.exportService.onChanged = state => { for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('export:changed', state); };
       importService.onChanged = state => { if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('import:changed', state); };
-      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, textSignature, monitor, capturePause, isIgnored, imageProcessor, imageInspector, richTextService, selectionService, selectionComposer, applicationCatalog, imageText, searchService, mediaService, importService, thumbnail, pasteTargets, pasteOwnership, pasteDelivery, stackQueue, stackInput, requestStackPoll, showPanel, hidePanel, hotkeys, capturePreviewBlur: () => previewBlurAction(previewWindow) };
+      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, textSignature, imageSignature, monitor, capturePause, panelSize, isIgnored, imageProcessor, imageInspector, richTextService, selectionService, selectionComposer, applicationCatalog, imageText, searchService, mediaService, importService, thumbnail, pasteTargets, pasteOwnership, pasteDelivery, stackQueue, stackInput, requestStackPoll, showPanel, hidePanel, hotkeys, capturePreviewBlur: () => previewBlurAction(previewWindow) };
       try { hotkeys.apply(store.data.settings); } catch (error) { report(error); }
       for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(event, () => { if (mainWindow.isVisible()) placePanel(); });
       app.on('activate', () => { if (stackQueue.active) void showStack().catch(report); else if (!mainWindow.isVisible() && !pasteTargets.pending) showPanel(); });
@@ -850,6 +861,7 @@ else {
 app.on('before-quit', event => {
   if (previewWindow && !previewWindow.isDestroyed()) { event.preventDefault(); quitAfterPreview = true; closePreview(); return; }
   quitting = true;
+  panelSize?.cancel(false);
   capturePause?.close();
   if (!processingStopped) {
     event.preventDefault(); clearInterval(pollTimer);

@@ -9,6 +9,7 @@
 </head>
 <body>
   <main class="panel">
+    <div id="panelResize" class="panel-resize" role="separator" aria-orientation="horizontal" aria-label="调整剪贴板高度" title="调整剪贴板高度" tabindex="0" aria-valuemin="180" aria-valuemax="1600" aria-valuenow="332"></div>
     <header class="toolbar">
       <div class="navigation">
         <button id="searchToggle" class="icon-button" title="搜索" aria-label="搜索"><i data-lucide="search"></i></button>
@@ -43,7 +44,9 @@
   </main>
   <script src="../node_modules/lucide/dist/umd/lucide.js"></script>
   <script src="model.js"></script>
+  <script src="panel-layout.js"></script>
   <script src="search-filters.js"></script>
   <script src="renderer.js"></script>
+  <script src="panel-resize-ui.js"></script>
 </body>
 </html>

@@ -8,7 +8,7 @@
   const PAUSE_DURATIONS = [5 * 60000, 15 * 60000, 60 * 60000];
   const DEFAULT_SETTINGS = {
     launchAtLogin: false, background: true, showInMenuBar: true, pasteTarget: 'application', plainText: false,
-    retentionDays: 30, maxItems: 10000, paused: false, pausedUntil: null, sound: false,
+    retentionDays: 30, maxItems: 10000, paused: false, pausedUntil: null, panelHeight: 332, sound: false,
     ignoreConfidential: true, ignoreTransient: true, excludedApps: ['com.apple.keychainaccess'],
     hotkey: 'CommandOrControl+Shift+V', stackHotkey: 'CommandOrControl+Shift+C',
     nextBoardHotkey: 'CommandOrControl+Right', previousBoardHotkey: 'CommandOrControl+Left',
@@ -99,6 +99,7 @@
     if (['application', 'clipboard'].includes(input.pasteTarget)) result.pasteTarget = input.pasteTarget;
     if ([0, 1, 7, 30, 365].includes(input.retentionDays)) result.retentionDays = input.retentionDays;
     if (Number.isInteger(input.maxItems) && input.maxItems >= 100 && input.maxItems <= 100000) result.maxItems = input.maxItems;
+    if (Number.isInteger(input.panelHeight) && input.panelHeight >= 180 && input.panelHeight <= 1600) result.panelHeight = input.panelHeight;
     if (['system', 'light', 'dark'].includes(input.theme)) result.theme = input.theme;
     if (['zh-CN', 'en'].includes(input.language)) result.language = input.language;
     for (const key of ['hotkey', 'stackHotkey', 'nextBoardHotkey', 'previousBoardHotkey']) {

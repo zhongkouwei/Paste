@@ -17,6 +17,9 @@ const listen = (channel, callback) => {
 };
 contextBridge.exposeInMainWorld('paste', {
   getLibrary: () => invoke('library:get'), getItem: id => invoke('item:get', id),
+  getPanelSize: () => invoke('panel:size'), beginPanelResize: y => invoke('panel:resizeStart', y),
+  movePanelResize: (id, y) => invoke('panel:resizeMove', id, y), endPanelResize: (id, y, cancel = false) => invoke('panel:resizeEnd', id, y, cancel),
+  onPanelSize: callback => listen('panel:size', callback),
   search: query => invoke('library:search', query), dragText: ids => ipcRenderer.sendSync('item:dragText', ids),
   getMedia: requests => invoke('item:media', requests),
   getDetail: id => invoke('item:detail', id),
