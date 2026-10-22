@@ -42,6 +42,8 @@ contextBridge.exposeInMainWorld('paste', {
   editImage: action => invoke('preview:image', action),
   startDrag: ids => invoke('item:drag', ids), shareItem: id => invoke('item:share', id), revealItem: (id, index = 0) => invoke('item:reveal', id, index),
   saveSettings: changes => invoke('settings:save', changes), openSettings: () => invoke('settings:open'),
+  beginShortcut: key => invoke('settings:shortcutBegin', key), cancelShortcut: id => invoke('settings:shortcutCancel', id),
+  finishShortcut: (id, accelerator) => invoke('settings:shortcutFinish', id, accelerator), onShortcutRecording: callback => listen('shortcut:recording', callback),
   toggleCapture: () => invoke('capture:toggle'), pauseCapture: duration => invoke('capture:pause', duration), resumeCapture: () => invoke('capture:resume'),
   getExcludedApplications: ids => invoke('settings:excludedApplications', ids), chooseExcludedApplications: () => invoke('settings:chooseExcludedApplications'),
   changeExcludedApplication: (id, remove = false) => invoke('settings:changeExcludedApplication', id, remove),

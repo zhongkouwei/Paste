@@ -31,6 +31,7 @@ const { CapturePause } = require('./capture-pause');
 const { PanelSize } = require('./panel-size');
 const { DEFAULT_HEIGHT } = require('./panel-layout');
 const { ItemOpener } = require('./item-opener');
+const { ShortcutRecorder } = require('./shortcut-recorder');
 const clip = new ClipboardService({ ...electron, fileBridge: process.platform === 'darwin' ? {
   read: () => native('read-files'), write: (files, options) => nativeInput('write-files', { files, ...options })
 } : undefined });
@@ -49,6 +50,7 @@ let quitting = false, quitAfterPreview = false, copyQueue = Promise.resolve(), s
 let copyRequest = 0;
 let suppressBlur = false;
 let itemOpener, openingItems = 0, openEpoch = 0;
+const shortcutRecorder = new ShortcutRecorder({ getWindow: () => settingsWindow, getSettings: () => store.data.settings, save: saveSettings, onError: report });
 let lastError = '', stackWindow, stackReady, stackOpening, stackLifecycle = 0, stackPollRequested = false, stackPolling = null;
 const stackQueue = new StackQueue();
 const helper = path.join(app.getAppPath().replace(/app\.asar$/, 'app.asar.unpacked'), 'native/bin/paste-bridge');
@@ -265,6 +267,10 @@ function trustedPreview(event) { return event.sender === previewWindow?.webConte
 function requirePanel(event) {
   if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame) throw Error('请从主面板调整窗口。');
 }
+function requireSettings(event) {
+  if (!settingsWindow || settingsWindow.isDestroyed() || event.sender !== settingsWindow.webContents || event.senderFrame !== event.sender.mainFrame) throw Error('请从设置窗口录制快捷键。');
+  return settingsWindow;
+}
 function requestOpenItem(focused = BrowserWindow.getFocusedWindow()) {
   if (focused === previewWindow && previewState?.mode === 'view' && !previewDirty) focused.webContents.send('preview:command', 'open');
   else if (focused === mainWindow && mainWindow.isVisible()) mainWindow.webContents.send('item:openCommand');
@@ -386,6 +392,7 @@ function createWindow(file, options) {
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.on('will-attach-webview', event => event.preventDefault());
   window.webContents.on('before-input-event', (event, input) => {
+    if (shortcutRecorder.mode(window)) return;
     if (pauseShortcut(input)) { event.preventDefault(); if (!input.isAutoRepeat) capturePause.toggle().catch(report); return; }
     if (newTextShortcut(input)) { event.preventDefault(); if (!input.isAutoRepeat) requestNewText(); return; }
     if (previewShortcut(input) === 'open') { event.preventDefault(); if (!input.isAutoRepeat) requestOpenItem(window); return; }
@@ -405,6 +412,10 @@ function openSettings() {
     settingsWindow = createWindow('settings.html', { width: 642, height: 580, minWidth: 620, minHeight: 520,
       title: 'Paste Easy', titleBarStyle: 'hiddenInset', backgroundColor: nativeTheme.shouldUseDarkColors ? '#282828' : '#f4f4f4', show: false });
     settingsWindow.once('ready-to-show', () => settingsWindow.show());
+    const owner = settingsWindow;
+    for (const event of ['blur', 'hide', 'close', 'closed']) owner.on(event, () => shortcutRecorder.cancel(owner));
+    owner.on('closed', () => { if (settingsWindow === owner) settingsWindow = null; });
+    for (const event of ['did-start-navigation', 'render-process-gone', 'destroyed']) owner.webContents.on(event, () => shortcutRecorder.cancel(owner));
   } else { settingsWindow.show(); settingsWindow.focus(); }
 }
 function createTray() {
@@ -705,6 +716,9 @@ function registerIPC() {
       if (!TEST_MODE) shell.showItemInFolder(files[index].path); return files[index].path;
     },
     'settings:save': (_event, changes) => saveSettings(changes),
+    'settings:shortcutBegin': (event, key) => shortcutRecorder.begin(requireSettings(event), key),
+    'settings:shortcutCancel': (event, id) => { const owner = requireSettings(event); if (typeof id !== 'string') throw Error('录制会话无效。'); return shortcutRecorder.cancel(owner, id); },
+    'settings:shortcutFinish': (event, id, accelerator) => shortcutRecorder.finish(requireSettings(event), id, accelerator),
     'capture:toggle': () => capturePause.toggle(),
     'capture:pause': (_event, duration) => capturePause.pauseFor(duration),
     'capture:resume': () => capturePause.resume(),
@@ -793,7 +807,8 @@ function registerIPC() {
     'library:revealImportBackup': () => { const file = importService.lastCheckpoint; if (!file || !fs.existsSync(file)) throw new Error('尚无恢复前备份。'); if (!TEST_MODE) shell.showItemInFolder(file); return file; }
   };
   for (const [channel, handler] of Object.entries(handlers)) ipcMain.handle(channel, (event, ...args) => {
-    if (![mainWindow?.webContents, settingsWindow?.webContents, previewWindow?.webContents, stackWindow?.webContents].includes(event.sender) || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted IPC sender');
+    const senders = [mainWindow, settingsWindow, previewWindow, stackWindow].filter(window => window && !window.isDestroyed()).map(window => window.webContents);
+    if (!senders.includes(event.sender) || event.sender.isDestroyed() || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted IPC sender');
     return handler(event, ...args);
   });
 }
@@ -888,14 +903,14 @@ else {
       hotkeys = new GlobalHotkeys(globalShortcut, {
         history: () => mainWindow.isVisible() || pasteTargets.pending ? hidePanel() : showPanel(),
         stack: () => activateStack().catch(report)
-      }, TEST_MODE);
+      }, TEST_MODE, accelerator => shortcutRecorder.interceptGlobal(accelerator));
       registerIPC(); applyRuntimeSettings();
       capturePause.sync();
       if (!TEST_MODE) powerMonitor.on('resume', () => capturePause.check().catch(report));
       store.exportService.onChanged = state => { for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('export:changed', state); };
       importService.onChanged = state => { if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('import:changed', state); };
       if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, textSignature, imageSignature, monitor, capturePause, panelSize, isIgnored, imageProcessor, imageInspector, richTextService, selectionService, selectionComposer, applicationCatalog, imageText, searchService, mediaService, importService, thumbnail, pasteTargets, pasteOwnership, pasteDelivery, stackQueue, stackInput, requestStackPoll, showPanel, hidePanel, hotkeys, capturePreviewBlur: () => previewBlurAction(previewWindow) };
-      if (TEST_MODE) Object.assign(globalThis.__pasteTest, { itemOpener });
+      if (TEST_MODE) Object.assign(globalThis.__pasteTest, { itemOpener, shortcutRecorder });
       try { const warning = hotkeys.apply(store.data.settings); if (warning) report(Error(warning)); } catch (error) { report(error); }
       for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(event, () => { if (mainWindow.isVisible()) placePanel(); });
       app.on('activate', () => { if (stackQueue.active) void showStack().catch(report); else if (!mainWindow.isVisible() && !pasteTargets.pending) showPanel(); });

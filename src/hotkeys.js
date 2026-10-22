@@ -1,6 +1,6 @@
 class GlobalHotkeys {
-  constructor(registry, callbacks, disabled = false) {
-    this.registry = registry; this.callbacks = callbacks; this.disabled = disabled; this.current = []; this.bindings = new Map(); this.pending = null;
+  constructor(registry, callbacks, disabled = false, intercept = () => false) {
+    this.registry = registry; this.callbacks = callbacks; this.disabled = disabled; this.intercept = intercept; this.current = []; this.bindings = new Map(); this.pending = null;
   }
 
   release(keys) {
@@ -28,7 +28,7 @@ class GlobalHotkeys {
         if (this.bindings.has(accelerator)) continue;
         // A staged key is inert until its settings commit. Existing keys keep
         // their dispatcher even when history and Stack swap combinations.
-        const dispatch = () => this.current.find(([key]) => key === accelerator)?.[1]();
+        const dispatch = () => { const action = this.current.find(([key]) => key === accelerator)?.[1]; if (action && !this.intercept(accelerator)) action(); };
         if (!this.registry.register(accelerator, dispatch)) throw Error(`快捷键 ${accelerator} 已被占用，请更换。`);
         this.bindings.set(accelerator, dispatch); acquired.push(accelerator);
       }

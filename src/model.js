@@ -151,5 +151,13 @@
     return { Home: 'first', End: 'last', ArrowLeft: -1, ArrowRight: 1 }[event.key] ?? null;
   }
 
-  return { TYPES, COLORS, PAUSE_DURATIONS, DEFAULT_SETTINGS, classifyText, filterItems, searchText, relativeTime, imageTextMatches, prune, sanitizeSettings, modifierPressed, shortcutMatches, isComposingKey, itemLocations, itemNavigation };
+  function shortcutCandidate(event, composing = false) {
+    if (typeof event.key !== 'string' || !event.key || isComposingKey(event, composing) || event.repeat || ['Dead', 'Unidentified', 'Meta', 'Control', 'Alt', 'AltGraph', 'Shift', 'CapsLock', 'Fn'].includes(event.key)
+      || (!event.metaKey && !event.ctrlKey && !event.altKey)) return null;
+    const key = /^Digit[0-9]$/.test(event.code) ? event.code.slice(-1) : /^Key[A-Z]$/.test(event.code) ? event.code.slice(-1)
+      : event.key === ' ' ? 'Space' : event.key === '+' ? 'Plus' : event.key.replace(/^Arrow/, '');
+    return [event.metaKey ? 'CommandOrControl' : '', event.ctrlKey ? 'Control' : '', event.altKey ? 'Alt' : '', event.shiftKey ? 'Shift' : '', key.length === 1 ? key.toUpperCase() : key].filter(Boolean).join('+');
+  }
+
+  return { TYPES, COLORS, PAUSE_DURATIONS, DEFAULT_SETTINGS, classifyText, filterItems, searchText, relativeTime, imageTextMatches, prune, sanitizeSettings, modifierPressed, shortcutMatches, isComposingKey, itemLocations, itemNavigation, shortcutCandidate };
 });

@@ -777,9 +777,31 @@ PanelSize只接受本面板主frame的开始/移动/结束，底边/整屏宽度
 
 另一个独立未完成点：createWindow的原生CmdN/T/O处理在settings的renderer录制之前运行，尚未以本窗口sendInputEvent验证并修复录制冲突；本轮注册表事务成功不等于任意组合录制完整可用。下一步应先核实该路径和焦点/IME，而不是新造快捷键页面或宣称所有快捷键已验收。
 
+## 第三十七轮 快捷键录制与命令优先级
+
+起始9ffb5b7已推且干净，核实INDEX/README/脚本/最近变更，通用MEMORY无相关命中；原版CUA仍Mac锁屏。按上一轮明确缺口追查设置录制，不另造页面或恢复色彩实验。旧createWindow对全部窗口先拦Command-T/N/O，renderer录制尚未收到keydown便已执行暂停/新建或吞掉打开；自己窗口原生sendInputEvent三条红测均失败。此前普通renderer键盘测试绕过此主进程入口，不能覆盖该根因。
+
+新增ShortcutRecorder，以当前存活设置窗口、主frame、白名单字段和随机token绑定会话。活动会话优先于固定命令，通过setIgnoreMenuShortcuts仅屏蔽该窗口的菜单快捷键；已有全局调度器先查会话及真实isFocused，再转发候选，不解除原注册、不执行产品动作。失焦则取消并恢复正常全局动作；旧token/旧异步回复不能取消新会话。结束恢复菜单处理，blur/hide/导航/renderer退出/关闭释放归属。该路径不是任意系统保留键、真实OS注册/权限/布局已通过的证明。
+
+renderer显式读取原生KeyboardEvent访问器，保留Meta与Control，规范箭头/Space/Plus；忽略重复、IME/Dead和纯修饰键。首候选显示但等全部修饰键松开才调用完成；开始IPC在途也可缓冲输入/松开，不靠固定等待。Escape、Tab、外部点击/焦点、切页、清除重置及生命周期取消；finish经现有串行设置队列惰性检查token、窗口和原字段，尚在队列等待可取消，已经提交不假撤回。同字段期间改变则明确拒绝覆盖；别的背景快照保留录制状态，提交警告沿用上一轮边界。
+
+新增15条UI首次14过1败，实际关闭后主面板IPC抛Object has been destroyed：旧来源列表使用window?.webContents，非空但已销毁的BrowserWindow getter仍抛错。改为先筛存活窗口再取webContents，并仅在当前owner关闭时清settingsWindow引用；真实关闭/重开回归通过。补第16条将finish排在恢复基线之后，原生Escape取消再释放基线，验证字段未写入；允许finishing态DOM取消，不把固定命令防护误做成阻止所有输入。测试清理释放门控并还原合成聚焦，防失败拖累后续套件。
+
+影响11文件：src/shortcut-recorder.js、model.js、hotkeys.js、main.js、preload.js、settings.js；test/shortcut-recorder.test.js、test/ui/shortcut-recording.spec.js；README.md、CHANGELOG.md、本记录。新增9项Node、16条独立Electron，相关Node19项通过；源码新16条加快捷键设置/暂停/新建相关回归已通过。原生输入仅发自己webContents；Copy/Paste菜单替换为无害探针，clip.read/write禁止。已有全局转发测试用假OS注册表/合成isFocused，blur也是自己窗口事件；不向桌面发送按键、不碰general正文、不停原版、不扩大发行授权。无新增依赖/原生/库备份版本或原版素材，色彩stash保留。
+
+首轮316Node/check/build、源码/包各218及五轮80全绿后，再复查发现潜在交叉缺口，增强既有全局转发用例：compositionstart后送一次真实调度回调，等待renderer确实接到并忽略；compositionend后再送六次，旧forwarded锁使按钮仍停“按下快捷键”，红测失败。删除主进程过早的一次性去重，由renderer按composition/首候选/finishing决定接受；测试要求共7次到达、全部松开仅1次revision且零注册操作/产品动作。输入送达不是候选已接受，不用加定时等待或重注册绕过。以下最终验证均须在此修正后重新执行。
+
+最终验证（2026-10-23 05:25 Asia/Shanghai）：修正后的驱动`/var/folders/ks/007yts0d7qg0kwy1mnq_q1qh0000gn/T/paste-shortcut-recorder-verified-a0LqG3`确认退出0，四日志逐一回读。316项Node/check/build（31.223秒）、二十四独立文件源码218项（266.830秒）、最新实际产物218项（268.309秒）、十六流程五轮80次（77.596秒）全通过。66个src与受测app.asar逐字节同；最终1284×1160录制中截图已查看，候选/焦点环/控件无重叠，整图全不透明且内容非空，不当原版像素差分。
+
+完整清单268项/25文件，app.spec.js的50系统项仍未运行；最后前置只见活动原版PID55543而拒绝，原版Info.plist仍7.0.2，提交前CUA仍Mac锁屏。未暂停原版、改general正文、向桌面发全局按键、改系统权限/显示器/默认应用，不启动/重签旧撤销Paste Like或绕过保护。最新严格codesign完整性通过，release:verify在Gatekeeper拒绝处退出1，有效签名身份0。本次公开registry生产与完整audit均返回0，日志已保存；与此前8moderate历史快照不同，没有依赖变更，不能归因本轮修复，也非永久无漏洞保证。
+
+完整目标仍active，真实原版像素/物理焦点/跨应用消费、同步隐私及签名发行未完成。项目专属方法留测试与本记录，不把合成验证提升为通用桌面skill。
+
 ## 继续入口
 
-第三十六轮已有注册prepare/commit/rollback、同设置释放重试，以及普通设置/导入的真实提交边界，清除重置会终止录制，不重复实现。后续先核实原版访问，再用自己窗口原生输入验证设置录制CmdN/T/O与固定命令优先级，保护未提交草稿与IME；保持现有原键保留/暂存惰性/提交后不假回滚不变量。原版还需同样本快捷键页面/清除、真实OS冲突/权限/抢占与主流程投递及像素，不把假注册表当真实桌面。
+第三十七轮已修设置录制与原生Command-T/N/O/菜单优先级、松开提交/排队取消及关闭设置后的存活IPC来源，不重复重建。解锁后先核对本机原版快捷键录制/取消/菜单及同样本像素；经确认的剪贴板独占时段再做实际全局键、物理焦点/输入法/系统保留组合与复制调出搜索粘贴闭环，假注册表和sendInputEvent不替代这些验收。当前原绑定事务、会话归属、提交后警告与未保存草稿保护保持有效。
+
+第三十六轮已有注册prepare/commit/rollback、同设置释放重试，以及普通设置/导入的真实提交边界，清除重置会终止录制，不重复实现。其后提出的设置录制CmdN/T/O优先级已在第三十七轮以自己窗口原生输入修复验证；保持原键保留/暂存惰性/提交后不假回滚不变量。原版还需同样本快捷键页面/清除、真实OS冲突/权限/抢占与主流程投递及像素，不把假注册表当真实桌面。
 
 第三十五轮已有CmdUp/Down首尾、第二次CmdF筛选、Quick Paste重复保护与列表聚焦变窄时的当前项定位，不重复实现。后续解锁后观察同样本原版首尾/范围、二次CmdF/筛选焦点及Undo实际覆盖范围；Undo存在不直接等于永久删除可恢复，不凭本地化文案直接改变用户数据删除。保持仍有效主流程/权限/像素/发行优先级，不恢复边缘色彩实验。
 

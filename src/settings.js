@@ -1,8 +1,9 @@
-/* global lucide */
+/* global lucide, PasteModel */
 const $ = selector => document.querySelector(selector);
 let library, recording = null, timer, exportSelecting = false, exportState = { running: false, revision: -1 };
 let importSelecting = false, importState = { phase: 'idle', revision: -1 };
 let excludedKey = '', excludedEpoch = 0, choosingApplications = false;
+let shortcutComposing = false;
 const excludedRows = new Map(), excludedMetadata = new Map();
 const retention = [1, 7, 30, 365, 0];
 function status(message) { $('#settingsStatus').textContent = message; $('#settingsStatus').hidden = false; clearTimeout(timer); timer = setTimeout(() => { $('#settingsStatus').hidden = true; }, 5000); }
@@ -12,6 +13,7 @@ async function save(changes) {
   try { const value = await window.paste.saveSettings(changes); render(value); if (value.settingsWarning) status(value.settingsWarning); else clearStatus(); }
   catch (error) { render(library); throw error; }
 }
+function shortcutLabel(value) { return value.replace(/CommandOrControl/g, '⌘').replace(/Shift/g, '⇧').replace(/Alt/g, '⌥').replace(/Control/g, '⌃').replace(/Right/g, '→').replace(/Left/g, '←').replace(/\+/g, '') || '未设置'; }
 function render(value) {
   if (library && value.revision < library.revision) return;
   library = value;
@@ -23,7 +25,7 @@ function render(value) {
   $('#retention').value = retention.indexOf(value.settings.retentionDays);
   document.querySelectorAll('[data-shortcut]').forEach(button => {
     if (recording?.button === button) return;
-    button.textContent = value.settings[button.dataset.shortcut].replace(/CommandOrControl/g, '⌘').replace(/Shift/g, '⇧').replace(/Alt/g, '⌥').replace(/Control/g, '⌃').replace(/Right/g, '→').replace(/Left/g, '←').replace(/\+/g, '') || '未设置';
+    button.textContent = shortcutLabel(value.settings[button.dataset.shortcut]);
   });
   renderExcludedApplications(value.settings.excludedApps);
   $('#itemCount').textContent = value.items.length; $('#boardCount').textContent = value.boards.length;
@@ -59,6 +61,7 @@ function renderExcludedApplications(ids) {
   })().catch(error => { if (epoch === excludedEpoch) status(error.message); });
 }
 document.querySelectorAll('[data-page]').forEach(button => { button.onclick = () => {
+  stopRecording(); if (library) render(library);
   document.querySelectorAll('[data-page]').forEach(tab => tab.classList.toggle('active', tab === button));
   document.querySelectorAll('[data-section]').forEach(section => { section.hidden = section.dataset.section !== button.dataset.page; });
   $('#pageTitle').textContent = button.textContent;
@@ -72,22 +75,65 @@ $('#chooseExcludedApps').onclick = () => attempt(async () => {
   try { const value = await window.paste.chooseExcludedApplications(); if (value) { excludedKey = ''; render(library && value.revision < library.revision ? library : value); clearStatus(); } }
   finally { choosingApplications = false; $('#chooseExcludedApps').disabled = false; }
 });
-function stopRecording() { if (recording) { recording.button.classList.remove('recording'); recording = null; } }
+function clearRecording(entry) {
+  if (recording !== entry) return;
+  entry.button.classList.remove('recording'); entry.button.setAttribute('aria-busy', 'false'); recording = null;
+}
+function stopRecording() {
+  const entry = recording; if (!entry) return;
+  clearRecording(entry);
+  if (entry.id) window.paste.cancelShortcut(entry.id).catch(error => { if (!recording) status(error.message); });
+}
+function chooseShortcut(entry, accelerator) {
+  if (recording !== entry || entry.finishing || entry.candidate || shortcutComposing) return;
+  entry.candidate = accelerator; entry.released = false; entry.button.textContent = shortcutLabel(accelerator);
+}
+async function finishRecording(entry) {
+  if (recording !== entry || entry.finishing || !entry.id || !entry.candidate) return;
+  entry.finishing = true; entry.button.setAttribute('aria-busy', 'true');
+  try {
+    const value = await window.paste.finishShortcut(entry.id, entry.candidate);
+    if (recording === entry) clearRecording(entry);
+    render(value); if (value.settingsWarning) status(value.settingsWarning); else if (!recording) clearStatus();
+  } catch (error) {
+    if (recording === entry) { clearRecording(entry); render(library); status(error.message); }
+  }
+}
 document.querySelectorAll('[data-shortcut]').forEach(button => { button.onclick = () => {
   if (!library) return;
   stopRecording(); render(library);
-  recording = { key: button.dataset.shortcut, button }; button.textContent = '按下快捷键'; button.classList.add('recording');
+  const entry = { key: button.dataset.shortcut, button, id: null, candidate: null, finishing: false }; recording = entry;
+  button.textContent = '…'; button.setAttribute('aria-busy', 'true');
+  window.paste.beginShortcut(entry.key).then(value => {
+    if (recording !== entry) { window.paste.cancelShortcut(value.id).catch(() => {}); return; }
+    entry.id = value.id; button.textContent = entry.candidate ? shortcutLabel(entry.candidate) : '按下快捷键'; button.classList.add('recording'); button.setAttribute('aria-busy', 'false');
+    if (entry.released) void finishRecording(entry);
+  }).catch(error => { if (recording === entry) { clearRecording(entry); render(library); status(error.message); } });
 }; });
 document.querySelectorAll('[data-clear-shortcut]').forEach(button => { button.onclick = () => { if (!library) return; stopRecording(); render(library); attempt(() => save({ [button.dataset.clearShortcut]: '' })); }; });
 document.addEventListener('keydown', event => {
-  if (!recording) return;
+  const entry = recording; if (!entry || PasteModel.isComposingKey(event, shortcutComposing) || event.key === 'Dead') return;
+  if (event.key === 'Tab' && !event.metaKey && !event.ctrlKey && !event.altKey) { stopRecording(); render(library); return; }
   event.preventDefault();
-  if (['Meta', 'Control', 'Shift', 'Alt'].includes(event.key)) return;
   if (event.key === 'Escape') { stopRecording(); render(library); return; }
-  if (!event.metaKey && !event.ctrlKey && !event.altKey) return;
-  const key = /^Digit[0-9]$/.test(event.code) ? event.code.slice(-1) : /^Key[A-Z]$/.test(event.code) ? event.code.slice(-1) : event.key;
-  const accelerator = [event.metaKey ? 'CommandOrControl' : event.ctrlKey ? 'Control' : '', event.altKey ? 'Alt' : '', event.shiftKey ? 'Shift' : '', key.length === 1 ? key.toUpperCase() : key.replace('Arrow', '')].filter(Boolean).join('+');
-  const setting = recording.key; stopRecording(); attempt(() => save({ [setting]: accelerator }));
+  if (entry.finishing) return;
+  const accelerator = PasteModel.shortcutCandidate(event); if (accelerator) chooseShortcut(entry, accelerator);
+});
+document.addEventListener('keyup', event => {
+  if (!recording || PasteModel.isComposingKey(event, shortcutComposing) || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+  event.preventDefault(); recording.released = true; void finishRecording(recording);
+});
+document.addEventListener('compositionstart', () => { shortcutComposing = true; if (recording && !recording.finishing) { recording.candidate = null; recording.button.textContent = '按下快捷键'; } });
+document.addEventListener('compositionend', () => { shortcutComposing = false; });
+document.addEventListener('pointerdown', event => { if (recording && !recording.button.contains(event.target)) { stopRecording(); render(library); } }, true);
+document.addEventListener('focusout', event => { if (recording && event.target === recording.button) { stopRecording(); render(library); } });
+window.addEventListener('blur', () => { stopRecording(); if (library) render(library); });
+window.addEventListener('beforeunload', stopRecording);
+document.addEventListener('visibilitychange', () => { if (document.hidden) { stopRecording(); if (library) render(library); } });
+window.paste.onShortcutRecording(value => {
+  const entry = recording; if (!entry || entry.id !== value.id) return;
+  if (value.cancelled) { clearRecording(entry); render(library); }
+  else if (typeof value.accelerator === 'string') chooseShortcut(entry, value.accelerator);
 });
 $('#resetHotkey').onclick = () => { if (!library) return; stopRecording(); render(library); attempt(() => save({ hotkey: 'CommandOrControl+Shift+V', stackHotkey: 'CommandOrControl+Shift+C', nextBoardHotkey: 'CommandOrControl+Right', previousBoardHotkey: 'CommandOrControl+Left', quickPasteModifier: 'CommandOrControl', plainTextModifier: 'Shift' })); };
 $('#openPermission').onclick = () => attempt(() => window.paste.openPermission());
