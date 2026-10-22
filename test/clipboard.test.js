@@ -11,6 +11,15 @@ test('read ownership metadata is bounded, validated and excluded from payload id
   const value = await service.read(); assert.equal(value.clipboardWriteID, token); assert.equal(value.signature, textSignature('Body'));
   for (const malformed of ['x'.repeat(36), token + 'extra', '']) { identity = malformed; assert.equal((await service.read()).clipboardWriteID, undefined); }
 });
+test('combined RTFD, HTML and text use one ClipboardItem with the same ownership identity; plain strips attachments', async () => {
+  let entries;
+  const service = new ClipboardService({ clipboard: { write: async values => { entries = values; } }, ClipboardItem: class { constructor(values) { this.values = values; } } });
+  const type = 'electron application/osclipboard;format="com.apple.flat-rtfd"', item = { type: 'text', body: 'Mixed', html: '<b>Mixed</b>', rtfd: Buffer.from('RTFD fixture').toString('base64') };
+  await service.write(item, { writeID: '22222222-2222-4222-8222-222222222222' }); assert.equal(entries.length, 1); assert.equal(await entries[0].values[type].text(), 'RTFD fixture');
+  assert.equal(entries[0].values['text/html'], item.html); assert.equal(await entries[0].values[WRITE_ID_MIME].text(), '22222222-2222-4222-8222-222222222222');
+  await service.write(item, { plain: true }); assert.equal(entries[0].values[type], undefined); assert.equal(entries[0].values['text/html'], undefined);
+  await assert.rejects(service.write({ ...item, rtfd: 'not base64!' }), /附件格式无效/);
+});
 test('reads every native file item in order rather than only the first entry', async () => {
   const clipboard = { read: async () => [entry({ 'text/uri-list': 'file:///tmp/first.txt' }), entry({ 'electron application/osclipboard;format="public.file-url"': 'file:///tmp/second.txt' }), entry({ 'text/uri-list': 'file:///tmp/first.txt' })] };
   const service = new ClipboardService({ clipboard });

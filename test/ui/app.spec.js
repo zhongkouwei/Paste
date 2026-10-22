@@ -128,6 +128,25 @@ test('real guarded native multi-file clipboard preserves URL items and one-write
   });
   expect(result).toEqual({ verified: { ok: true }, files: ['file:///tmp/guarded%20a.txt', 'file:///tmp/guarded-b.txt'] });
 });
+test('real merged selection writes RTFD attachments and HTML in one guarded Electron ClipboardItem', async () => {
+  const result = await application.evaluate(async ({ clipboard, nativeImage }) => {
+    const hooks = globalThis.__pasteTest, ids = [];
+    try {
+      ids.push(hooks.store.add({ type: 'text', body: 'Selection 中文', html: '<b>Selection 中文</b>', title: 'Synthetic batch' }).id);
+      for (const [i, pixel] of [[0, [0, 0, 255, 255]], [1, [255, 0, 0, 255]]]) {
+        const png = nativeImage.createFromBitmap(Buffer.from(pixel), { width: 1, height: 1 }).toPNG(), asset = hooks.store.putAsset(png);
+        ids.push(hooks.store.add({ type: 'image', body: asset, asset, title: `Synthetic image ${i}`, size: { width: 1, height: 1 } }).id);
+      }
+      const { item, references } = await hooks.selectionService.prepare(ids); hooks.selectionService.verify(references);
+      const receipt = await hooks.pasteOwnership.write(writeID => hooks.clip.write(item, { writeID }));
+      const entries = await clipboard.read(), type = 'electron application/osclipboard;format="com.apple.flat-rtfd"';
+      const data = await entries[0].getType(type), read = await hooks.clip.read();
+      return { count: entries.length, rtfd: Buffer.from(await data.arrayBuffer()).toString('base64') === item.rtfd,
+        text: read.text, htmlImages: (read.html.match(/<img\b/g) || []).length, owned: await hooks.pasteOwnership.verify(receipt.lease) };
+    } finally { hooks.store.delete(ids); hooks.imageText.onChanged(); }
+  });
+  expect(result).toEqual({ count: 1, rtfd: true, text: 'Selection 中文\nSynthetic image 0\nSynthetic image 1', htmlImages: 2, owned: { ok: true } });
+});
 
 test('real clipboard rich payloads with embedded field delimiters keep separate pinned identities and recopy correctly', async () => {
   const previous = await page.evaluate(() => window.paste.getLibrary()).then(value => value.settings); let cleanup;

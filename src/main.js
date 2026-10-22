@@ -19,6 +19,8 @@ const { ApplicationCatalog, validApplicationID, captureSource } = require('./app
 const { PasteTargetSession, PasteDelivery, targetIdentity } = require('./paste-target');
 const { StackQueue } = require('./stack-queue');
 const { StackInput } = require('./stack-input');
+const { SelectionService, selectionIDs } = require('./selection');
+const { SelectionComposer } = require('./selection-composer');
 const { ClipboardOwnership } = require('./clipboard-ownership');
 const { ImageTextIndex } = require('./image-text');
 const { SearchService } = require('./search-service');
@@ -34,6 +36,7 @@ app.setPath('userData', process.env.PASTE_DATA_DIR ? path.resolve(process.env.PA
 let mainWindow, settingsWindow, previewWindow, tray, store, transfers, pollTimer;
 let previewState = null, previewDirty = false, previewOpening = false, activeShare;
 let richTextService, previewRichJob, previewSaveJob;
+let selectionService, selectionComposer;
 let hotkeys, monitor, imageProcessor, imageDraft, imageText, capabilities = {}, processingClosing = false, processingStopped = false;
 let searchService, mediaService, importService, imageInspector, applicationCatalog, exportDialogOpen = false, importDialogOpen = false, applicationDialogOpen = false;
 let quitting = false, quitAfterPreview = false, copyQueue = Promise.resolve(), settingsQueue = Promise.resolve();
@@ -72,7 +75,7 @@ async function native(command, ...args) {
 }
 async function nativeInput(command, data, timeout = 4000, options = {}) {
   if (!fs.existsSync(helper)) throw new Error('缺少原生辅助程序，请先构建应用。');
-  const operation = execute(helper, [command], { timeout, maxBuffer: command === 'image-ocr' ? 8 * 1024 * 1024 : 2 * 1024 * 1024, signal: options.signal });
+  const operation = execute(helper, [command], { timeout, maxBuffer: command === 'selection-rich' ? 96 * 1024 * 1024 : command === 'image-ocr' ? 8 * 1024 * 1024 : 2 * 1024 * 1024, signal: options.signal });
   operation.child.stdin.end(JSON.stringify(data));
   try { const { stdout } = await operation; return JSON.parse(stdout); }
   catch (error) {
@@ -412,6 +415,15 @@ function copyContext({ paste = false, plain = false } = {}) {
     pasteTarget: store.data.settings.pasteTarget, target: pasteTargets.snapshot() });
 }
 function copy(id, options) { copyRequest += 1; const context = copyContext(options); return queueCopy(() => performCopy(id, context)); }
+function copySelection(value, options) {
+  const ids = selectionIDs(value); if (ids.length === 1) return copy(ids[0], options);
+  copyRequest += 1; const context = copyContext(options);
+  return queueCopy(async () => {
+    const { item, references } = await selectionService.prepare(ids, context);
+    selectionService.verify(references);
+    return writeCopy(item, context, () => selectionService.verify(references));
+  });
+}
 function nextInStack({ target, nativeEpoch, background = false, readTarget } = {}) {
   copyRequest += 1;
   const token = stackQueue.reserve(nativeEpoch === undefined ? 'manual' : 'native', nativeEpoch);
@@ -474,13 +486,16 @@ async function performCopy(id, context) {
   const item = store.get(id);
   if (!item) throw new Error('此项目已被删除。');
   if (item.type === 'file' && fileDetails(item).some(file => !file.exists)) throw new Error('原始文件已移动或删除，无法粘贴。');
+  return writeCopy(item, context);
+}
+async function writeCopy(item, context, verify = () => {}) {
   let lease;
   await monitor.suspend(async () => {
     const options = { plain: context.plain, image: item.asset ? store.readAsset(item.asset) : undefined };
     if ((context.paste && context.pasteTarget === 'application' && context.target && !pasteDelivery.simulate) || (stackQueue.active && !stackInput.simulate)) {
-      const receipt = await pasteOwnership.write(writeID => clip.write(item, { ...options, writeID }));
+      const receipt = await pasteOwnership.write(writeID => { verify(); return clip.write(item, { ...options, writeID }); });
       lease = receipt.lease; monitor.remember(receipt.signature, lease || { token: receipt.token });
-    } else monitor.remember(await clip.write(item, options));
+    } else { verify(); monitor.remember(await clip.write(item, options)); }
   });
   return pasteDelivery.deliver({ ...context, lease });
 }
@@ -508,6 +523,7 @@ function registerIPC() {
     'item:get': (_event, id) => { const item = store.get(id); return item?.asset ? { ...item, body: `data:image/png;base64,${store.readAsset(item.asset).toString('base64')}` } : item; },
     'item:detail': (_event, id) => itemDetail(id),
     'item:copy': (_event, id, options) => copy(id, options),
+    'item:copySelection': (_event, ids, options) => copySelection(ids, options),
     'item:new': (event, boardId) => { if (event.sender !== mainWindow?.webContents) throw new Error('请从主面板新建文本。'); return createTextDraft(boardId); },
     'item:requestNew': () => requestNewText(),
     'item:recognize': (_event, id, retry) => recognizeItem(id, retry),
@@ -649,6 +665,14 @@ function registerIPC() {
     'panel:hide': () => { closePreview(); hidePanel(); },
     'stack:toggle': () => stackQueue.active || stackOpening ? stopStack() : activateStack(),
     'stack:add': async (_event, id) => { if (!store.getMetadata(id)) throw new Error('Invalid item'); if (!await activateStack()) return []; stackQueue.add(id); emit(); return stackQueue.ordered().map(entry => entry.itemId); },
+    'stack:addSelection': async (_event, value) => {
+      const ids = selectionIDs(value);
+      const validate = () => { if (ids.some(id => !store.getMetadata(id))) throw Error('所选项目已被删除，Stack未添加项目。'); };
+      validate(); if (!await activateStack()) return []; validate();
+      const additions = ids.filter(id => !stackQueue.entries.some(entry => entry.itemId === id));
+      if (stackQueue.entries.length + additions.length > 1000) throw Error('所选项目超出Stack的1000项容量，未添加项目。');
+      additions.forEach(id => stackQueue.add(id)); emit(); return stackQueue.ordered().map(entry => entry.itemId);
+    },
     'stack:get': () => stackSnapshot(),
     'stack:reverse': () => { stackQueue.reverse(); emit(); return stackSnapshot(); },
     'stack:remove': (_event, id) => { stackQueue.remove(id); emit(); return stackSnapshot(); },
@@ -720,6 +744,9 @@ else {
       mediaService = new MediaService(store, nativeImage);
       imageInspector = new ImageInspector(electron);
       richTextService = new RichTextService();
+      selectionComposer = new SelectionComposer(electron);
+      selectionService = new SelectionService({ store, readImage: imageBytes, richText: richTextService,
+        composeHTML: (parts, options) => selectionComposer.compose(parts, options), composeNative: (segments, options) => nativeInput('selection-rich', { segments }, 10000, options) });
       applicationCatalog = new ApplicationCatalog(request => nativeInput('application-info', request, 10000));
       importService = new ImportService(store, {
         validateImage: async (file, { turns = 0, signal } = {}) => {
@@ -773,7 +800,7 @@ else {
       registerIPC(); applyRuntimeSettings();
       store.exportService.onChanged = state => { for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('export:changed', state); };
       importService.onChanged = state => { if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('import:changed', state); };
-      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, textSignature, monitor, isIgnored, imageProcessor, imageInspector, richTextService, applicationCatalog, imageText, searchService, mediaService, importService, thumbnail, pasteTargets, pasteOwnership, pasteDelivery, stackQueue, stackInput, requestStackPoll, showPanel, hidePanel, hotkeys, capturePreviewBlur: () => previewBlurAction(previewWindow) };
+      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, textSignature, monitor, isIgnored, imageProcessor, imageInspector, richTextService, selectionService, selectionComposer, applicationCatalog, imageText, searchService, mediaService, importService, thumbnail, pasteTargets, pasteOwnership, pasteDelivery, stackQueue, stackInput, requestStackPoll, showPanel, hidePanel, hotkeys, capturePreviewBlur: () => previewBlurAction(previewWindow) };
       try { hotkeys.apply(store.data.settings); } catch (error) { report(error); }
       for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(event, () => { if (mainWindow.isVisible()) placePanel(); });
       app.on('activate', () => { if (stackQueue.active) void showStack().catch(report); else if (!mainWindow.isVisible() && !pasteTargets.pending) showPanel(); });
@@ -791,7 +818,7 @@ app.on('before-quit', event => {
     event.preventDefault(); clearInterval(pollTimer);
     if (!processingClosing) {
       processingClosing = true;
-      Promise.allSettled([stopStack(), imageText?.close(), imageProcessor?.close(), imageInspector?.close(), richTextService?.close(), searchService?.close(), store?.exportService.close(), importService?.close()]).then(() => { processingStopped = true; app.quit(); });
+      Promise.allSettled([stopStack(), imageText?.close(), imageProcessor?.close(), imageInspector?.close(), richTextService?.close(), selectionService?.close(), selectionComposer?.close(), searchService?.close(), store?.exportService.close(), importService?.close()]).then(() => { processingStopped = true; app.quit(); });
     }
   }
 });

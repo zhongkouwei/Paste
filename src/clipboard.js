@@ -75,6 +75,10 @@ class ClipboardService {
       const rtf = !plain && typeof item.rtf === 'string' ? item.rtf.toWellFormed() : '';
       contents = { 'text/plain': body };
       if (html) contents['text/html'] = html; if (rtf) contents['text/rtf'] = rtf;
+      if (!plain && item.rtfd) {
+        if (typeof item.rtfd !== 'string' || item.rtfd.length > 90 * 1024 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(item.rtfd)) throw Error('合并附件格式无效，剪贴板未修改。');
+        contents['electron application/osclipboard;format="com.apple.flat-rtfd"'] = new Blob([Buffer.from(item.rtfd, 'base64')]);
+      }
       signature = textSignature(body, html, rtf);
     }
     if (writeID) contents[WRITE_ID_MIME] = new Blob([writeID]);

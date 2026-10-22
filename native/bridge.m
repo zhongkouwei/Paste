@@ -3,6 +3,7 @@
 #import "images.h"
 #import "pasteboard.h"
 #import "stack-events.h"
+#import "selection.h"
 
 static void output(NSDictionary *value) {
     NSData *data = [NSJSONSerialization dataWithJSONObject:value options:NSJSONWritingSortedKeys error:nil];
@@ -119,6 +120,16 @@ static NSDictionary *preparePaste(id target) {
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSString *command = argc > 1 ? @(argv[1]) : @"";
+        if ([command isEqualToString:@"selection-rich"]) {
+            @try {
+                NSMutableData *input = [NSMutableData data];
+                for (;;) { NSData *chunk = [NSFileHandle.fileHandleWithStandardInput readDataOfLength:65536]; if (!chunk.length) break;
+                    if (input.length + chunk.length > 64 * 1024 * 1024) { output(@{ @"ok": @NO, @"error": @"selection-too-large" }); return 1; } [input appendData:chunk]; }
+                id request = [NSJSONSerialization JSONObjectWithData:input options:0 error:nil];
+                NSDictionary *result = PasteComposeSelection([request isKindOfClass:NSDictionary.class] ? request[@"segments"] : nil);
+                output(result); return [result[@"ok"] boolValue] ? 0 : 1;
+            } @catch (NSException *exception) { output(@{ @"ok": @NO, @"error": @"selection-conversion-failed" }); return 1; }
+        }
         if ([command isEqualToString:@"stack-events"]) return PasteRunStackEvents(NSPasteboard.generalPasteboard, YES, getppid());
         if ([command isEqualToString:@"frontmost"]) { frontmost(); return 0; }
         if ([command isEqualToString:@"application-info"]) {

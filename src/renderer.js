@@ -434,10 +434,14 @@ function menu(entries, x, y) {
   element.querySelector('button:not(:disabled)')?.focus();
 }
 
-async function activate(id = [...state.selected][0], paste = true, plain = false) {
-  if (!id) return;
-  if (state.status.stackMode && paste) { await api.addToStack(id); toast('已加入 Stack'); return; }
-  const result = await api.copy(id, { paste, plain });
+function selectedIDs() { return visibleItems().filter(item => state.selected.has(item.id)).map(item => item.id); }
+async function activate(id, paste = true, plain = false) {
+  return activateSelection(id === undefined ? selectedIDs() : [id], paste, plain);
+}
+async function activateSelection(ids, paste = true, plain = false) {
+  if (!ids.length) return;
+  if (state.status.stackMode && paste) { if (ids.length === 1) await api.addToStack(ids[0]); else await api.addSelectionToStack(ids); toast('已加入 Stack'); return; }
+  const result = ids.length === 1 ? await api.copy(ids[0], { paste, plain }) : await api.copySelection(ids, { paste, plain });
   if (!result.ok) toast(result.error); else if (!paste) toast('已复制');
 }
 async function pasteStackNext() {
@@ -445,11 +449,11 @@ async function pasteStackNext() {
   if (!result.ok) toast(result.error);
 }
 function itemMenu(item, x, y) {
-  const ids = state.selected.has(item.id) ? [...state.selected] : [item.id];
+  const ids = state.selected.has(item.id) ? selectedIDs() : [item.id];
   menu([
-    { label: state.target ? `粘贴到 ${state.target}` : '粘贴到当前应用', icon: 'clipboard-paste', key: '↵', shortcut: 'Enter', action: () => activate(item.id) },
-    { label: '以纯文本粘贴', action: () => activate(item.id, true, true), disabled: ['image', 'file'].includes(item.type) },
-    { label: '复制', icon: 'copy', key: '⌘C', shortcut: 'Meta+C', action: () => activate(item.id, false) }, null,
+    { label: state.target ? `粘贴到 ${state.target}` : '粘贴到当前应用', icon: 'clipboard-paste', key: '↵', shortcut: 'Enter', action: () => activateSelection(ids) },
+    { label: '以纯文本粘贴', action: () => activateSelection(ids, true, true), disabled: ids.some(id => ['image', 'file'].includes(state.items.find(value => value.id === id)?.type)) },
+    { label: '复制', icon: 'copy', key: '⌘C', shortcut: 'Meta+C', action: () => activateSelection(ids, false) }, null,
     { label: '编辑', icon: 'pencil', key: '⌘E', shortcut: 'Meta+E', action: () => openDetail(item.id, true), disabled: ids.length !== 1 || item.type === 'file' },
     ...(item.type === 'image' && state.capabilities?.textRecognition ? [{ label: '复制图片中的文字', icon: 'scan-text', action: async () => { await api.copyImageText(item.id); toast('已复制文字'); } }] : []),
     { label: '重命名', key: '⌘R', shortcut: 'Meta+R', action: () => openDetail(item.id, 'rename'), disabled: ids.length !== 1 },
@@ -597,7 +601,7 @@ $('#timeline').onclick = event => {
   const item = event.target.closest('[data-index]'); if (!item) return;
   select(Number(item.dataset.index), { extend: event.shiftKey, toggle: event.metaKey || event.ctrlKey }); $('#timeline').focus();
 };
-$('#timeline').ondblclick = event => { const item = event.target.closest('[data-id]'); if (item) attempt(() => activate(item.dataset.id, true, modifierPressed(event, state.settings.plainTextModifier))); };
+$('#timeline').ondblclick = event => { const item = event.target.closest('[data-id]'); if (item) attempt(() => activateSelection(state.selected.has(item.dataset.id) ? selectedIDs() : [item.dataset.id], true, modifierPressed(event, state.settings.plainTextModifier))); };
 $('#timeline').oncontextmenu = event => {
   event.preventDefault(); const node = event.target.closest('[data-id]'); if (!node) return;
   const item = state.items.find(i => i.id === node.dataset.id); if (!item) return;
@@ -710,7 +714,7 @@ document.addEventListener('keydown', event => {
   const quickDigit = /^Digit[1-9]$/.test(event.code) ? Number(event.code.slice(-1)) : /^[1-9]$/.test(event.key) ? Number(event.key) : 0;
   if (modifierPressed(event, state.settings.quickPasteModifier) && quickDigit) { event.preventDefault(); const item = visibleItems()[quickDigit - 1]; if (item) attempt(() => activate(item.id, true, modifierPressed(event, state.settings.plainTextModifier))); return; }
   if (modifier && event.key.toLowerCase() === 'a') { event.preventDefault(); state.selected = new Set(visibleItems().map(i => i.id)); renderCards(); return; }
-  if (modifier && event.key.toLowerCase() === 'c') { event.preventDefault(); attempt(() => activate(undefined, false)); return; }
+  if (modifier && event.key.toLowerCase() === 'c') { event.preventDefault(); if (!event.repeat && !searchPending) attempt(() => activate(undefined, false)); return; }
   if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
     event.preventDefault(); const items = visibleItems(); const current = items.findIndex(i => i.id === state.active);
     select(event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : current + (event.key === 'ArrowRight' ? 1 : -1), { extend: event.shiftKey }); return;
