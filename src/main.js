@@ -162,6 +162,15 @@ function getPreviewState() {
 function closePreview() {
   if (previewWindow && !previewWindow.isDestroyed()) previewWindow.close();
 }
+function previewBlurAction(window) {
+  const session = previewState, epoch = pasteTargets.epoch;
+  return () => {
+    if (!window || previewWindow !== window || window.isDestroyed() || previewState !== session || epoch !== pasteTargets.epoch
+        || quitting || previewOpening || !mainWindow || mainWindow.isDestroyed()) return false;
+    if (previewDirty || suppressBlur || window.isFocused() || mainWindow.isFocused()) return false;
+    hidePanel(); closePreview(); return true;
+  };
+}
 function cancelPreviewRich() { previewRichJob?.controller.abort(); previewRichJob = null; previewSaveJob?.abort(); }
 function trustedPreview(event) { return event.sender === previewWindow?.webContents && event.senderFrame === event.sender.mainFrame; }
 function samePreview(window, id, signature) {
@@ -200,6 +209,9 @@ function showPreview(id, { mode = 'view', anchor, ids = [] } = {}) {
   previewWindow = createWindow('preview.html', { width, height, x, y, parent: mainWindow, title: 'Paste Easy 预览',
     frame: false, transparent: true, hasShadow: true, resizable: true, minWidth: 320, minHeight: 220, show: false, alwaysOnTop: true, skipTaskbar: true });
   const window = previewWindow;
+  let blurTimer;
+  const cancelBlur = () => { clearTimeout(blurTimer); blurTimer = undefined; };
+  window.on('focus', cancelBlur);
   window.once('ready-to-show', () => setImmediate(() => {
     if (previewWindow !== window || window.isDestroyed()) return;
     window.show();
@@ -211,6 +223,8 @@ function showPreview(id, { mode = 'view', anchor, ids = [] } = {}) {
     else { quitAfterPreview = false; quitting = false; }
   });
   previewWindow.on('closed', () => {
+    cancelBlur();
+    if (previewWindow !== window) return;
     cancelPreviewRich();
     imageDraft?.dispose(); imageDraft = null;
     store.protectedItemId = null;
@@ -221,9 +235,11 @@ function showPreview(id, { mode = 'view', anchor, ids = [] } = {}) {
       if (!quitting && !quitAfterPreview && !previewWindow && mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) mainWindow.focus();
     });
   });
-  previewWindow.on('blur', () => setTimeout(() => {
-    if (!TEST_MODE && !previewDirty && !previewWindow?.isFocused() && !mainWindow.isFocused() && !suppressBlur) { hidePanel(); closePreview(); }
-  }, 100));
+  previewWindow.on('blur', () => {
+    cancelBlur();
+    const dismiss = previewBlurAction(window);
+    blurTimer = setTimeout(() => { blurTimer = undefined; if (!TEST_MODE) dismiss(); }, 100);
+  });
   return true;
 }
 
@@ -617,7 +633,7 @@ else {
       registerIPC(); applyRuntimeSettings();
       store.exportService.onChanged = state => { for (const window of [mainWindow, settingsWindow]) if (window && !window.isDestroyed()) window.webContents.send('export:changed', state); };
       importService.onChanged = state => { if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('import:changed', state); };
-      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, isIgnored, imageProcessor, imageInspector, richTextService, applicationCatalog, imageText, searchService, mediaService, importService, thumbnail, pasteTargets, pasteOwnership, pasteDelivery, showPanel, hidePanel, hotkeys };
+      if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, monitor, isIgnored, imageProcessor, imageInspector, richTextService, applicationCatalog, imageText, searchService, mediaService, importService, thumbnail, pasteTargets, pasteOwnership, pasteDelivery, showPanel, hidePanel, hotkeys, capturePreviewBlur: () => previewBlurAction(previewWindow) };
       try { hotkeys.apply(store.data.settings); } catch (error) { report(error); }
       for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(event, () => { if (mainWindow.isVisible()) placePanel(); });
       app.on('activate', () => { if (!mainWindow.isVisible() && !pasteTargets.pending) showPanel(); });

@@ -31,7 +31,7 @@ test.beforeEach(async () => {
 });
 test.afterEach(async () => {
   if (application) {
-    await application.evaluate(() => globalThis.__releaseCopy?.()).catch(() => {});
+    await application.evaluate(() => { globalThis.__releaseCopy?.(); globalThis.__restorePreviewFocus?.(); }).catch(() => {});
     await application.close();
   }
   fs.rmSync(directory, { recursive: true, force: true }); application = page = directory = ids = null;
@@ -41,6 +41,57 @@ const count = () => page.evaluate(() => window.paste.getLibrary()).then(value =>
 async function hold() { await application.evaluate(() => { globalThis.__holdCopy = true; }); }
 async function started() { await expect.poll(() => application.evaluate(() => typeof globalThis.__releaseCopy)).toBe('function'); }
 async function release() { await application.evaluate(() => { globalThis.__releaseCopy(); delete globalThis.__releaseCopy; }); }
+async function openView(id) {
+  const opened = application.waitForEvent('window'); await page.evaluate(id => window.paste.openPreview(id), id);
+  const preview = await opened; await preview.waitForFunction(() => document.body.dataset.previewReady === 'true');
+  await expect.poll(() => application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some(window => window.webContents.getURL().endsWith('/preview.html') && window.isVisible()))).toBe(true);
+  return preview;
+}
+async function captureUnfocusedBlur() {
+  await application.evaluate(({ BrowserWindow }) => {
+    // The exact production dismissal action runs; only desktop focus and elapsed
+    // time are controlled. TEST_MODE still prevents general clipboard/hotkey use.
+    const restores = [];
+    for (const window of BrowserWindow.getAllWindows()) {
+      const focused = window.isFocused; restores.push(() => { window.isFocused = focused; }); window.isFocused = () => false;
+    }
+    const previous = globalThis.__restorePreviewFocus;
+    globalThis.__restorePreviewFocus = () => { previous?.(); restores.forEach(restore => restore()); };
+    globalThis.__latePreviewBlur = globalThis.__pasteTest.capturePreviewBlur();
+  });
+}
+
+test('a late blur from the previous item cannot close the reused preview, while a fresh blur still dismisses it', async () => {
+  const originals = await page.evaluate(ids => Promise.all(ids.map(id => window.paste.getItem(id))), ids);
+  const preview = await openView(ids[0]); await captureUnfocusedBlur();
+  expect(await page.evaluate(id => window.paste.openPreview(id), ids[1])).toBe(true);
+  await expect(preview.locator('#previewContent')).toContainText('Second workflow item');
+  expect(await application.evaluate(() => globalThis.__latePreviewBlur())).toBe(false);
+  await expect(preview.locator('#previewContent')).toContainText('Second workflow item');
+  const closed = preview.waitForEvent('close');
+  expect(await application.evaluate(() => globalThis.__pasteTest.capturePreviewBlur()())).toBe(true); await closed;
+  expect(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/index.html')).isVisible())).toBe(false);
+  expect(await page.evaluate(ids => Promise.all(ids.map(id => window.paste.getItem(id))), ids)).toEqual(originals); expect(await writes()).toEqual([]);
+});
+test('a delayed action belonging to a closed native preview cannot dismiss its replacement', async () => {
+  const old = await openView(ids[0]); await captureUnfocusedBlur();
+  const closed = old.waitForEvent('close'); await page.evaluate(() => window.paste.closePreview()); await closed;
+  const preview = await openView(ids[1]); await expect(preview.locator('#previewContent')).toContainText('Second workflow item');
+  expect(await application.evaluate(() => globalThis.__latePreviewBlur())).toBe(false);
+  expect(preview.isClosed()).toBe(false); expect(await page.evaluate(() => window.paste.getLibrary()).then(value => value.items.length)).toBe(3); expect(await writes()).toEqual([]);
+});
+test('opening a new panel session invalidates the old preview dismissal without suppressing a current one', async () => {
+  const preview = await openView(ids[0]); await captureUnfocusedBlur();
+  await application.evaluate(async () => {
+    const hooks = globalThis.__pasteTest;
+    hooks.pasteTargets.read = async () => ({ pid: 111, bundleId: 'test.preview.target', launchTime: 123, name: 'Synthetic target' });
+    await hooks.showPanel();
+  });
+  expect(await application.evaluate(() => globalThis.__latePreviewBlur())).toBe(false);
+  await expect(preview.locator('#previewContent')).toContainText('First workflow item');
+  const closed = preview.waitForEvent('close');
+  expect(await application.evaluate(() => globalThis.__pasteTest.capturePreviewBlur()())).toBe(true); await closed; expect(await writes()).toEqual([]);
+});
 
 test('the normal preview-close flow returns to the panel repeatedly without rewriting the item', async () => {
   const original = await page.evaluate(id => window.paste.getItem(id), ids[0]);
