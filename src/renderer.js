@@ -1,7 +1,7 @@
 /* global lucide, PasteModel, PasteFilters, PastePanelLayout */
 const $ = selector => document.querySelector(selector);
 const api = window.paste;
-const { filterItems, relativeTime, imageTextMatches, COLORS, modifierPressed, shortcutMatches, isComposingKey, itemLocations } = PasteModel;
+const { filterItems, relativeTime, imageTextMatches, COLORS, modifierPressed, shortcutMatches, isComposingKey, itemLocations, itemNavigation } = PasteModel;
 const { dateRange, nextMidnight, activeFilters, suggestions, applySuggestion } = PasteFilters;
 const state = { items: [], boards: [], settings: {}, status: {}, board: 'history', query: '', type: 'all', source: '', date: '', pinboard: '', sourceName: '', pinboardName: '',
   selected: new Set(), anchor: null, active: null, searching: false, target: '', editingBoard: null, detail: null };
@@ -118,6 +118,11 @@ function sources() {
     { ...item.source, name: typeof item.source.name === 'string' && item.source.name ? item.source.name : item.source.bundleId }])).values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 function closeFilters() { $('#filters').hidden = true; $('#filterToggle').setAttribute('aria-expanded', 'false'); }
+function openFilters(focus = false) {
+  hideSuggestions(); suggestionsDismissed = true; renderFilterUI();
+  $('#filters').hidden = false; $('#filterToggle').setAttribute('aria-expanded', 'true');
+  if (focus) $('#typeFilters [aria-pressed="true"]')?.focus();
+}
 function hideSuggestions() { $('#filterSuggestions').hidden = true; }
 function syncOptions(select, entries, value) {
   // Preserve native controls across background library snapshots.
@@ -681,7 +686,7 @@ $('#boards').oncontextmenu = event => {
 $('#addBoard').onclick = () => attempt(() => boardDialog());
 $('#filterToggle').onclick = () => {
   const open = $('#filters').hidden; closeFilters(); hideSuggestions(); suggestionsDismissed = true;
-  if (open) { renderFilterUI(); $('#filters').hidden = false; $('#filterToggle').setAttribute('aria-expanded', 'true'); }
+  if (open) openFilters();
 };
 $('#typeFilters').onclick = event => { if (event.target.dataset.type) setFilter('type', event.target.dataset.type); };
 $('#sourceFilter').onchange = event => setFilter('source', event.target.value);
@@ -748,6 +753,11 @@ document.addEventListener('keydown', event => {
     if (!typing && !composing && (event.key === 'Process' || event.key === 'Dead' || event.keyCode === 229) && $('#menu').hidden) toggleSearch(true);
     return;
   }
+  if (shortcutMatches(event, 'CommandOrControl+F')) {
+    event.preventDefault();
+    if (!event.repeat) { closeMenu(); if (state.searching) openFilters(true); else toggleSearch(true); }
+    return;
+  }
   if (event.target.closest('#filterTokens')) return;
   if (event.target.closest('#filters')) {
     if (event.key === 'Escape') { event.preventDefault(); closeFilters(); $('#filterToggle').focus(); }
@@ -801,7 +811,6 @@ document.addEventListener('keydown', event => {
     else api.hide();
     return;
   }
-  if (modifier && event.key.toLowerCase() === 'f') { event.preventDefault(); toggleSearch(true); return; }
   if (modifier && event.key === ',') { event.preventDefault(); api.openSettings(); return; }
   if (modifier && event.shiftKey && event.key.toLowerCase() === 'n') { event.preventDefault(); attempt(() => boardDialog()); return; }
   if (state.searching && !modifier && !event.altKey && event.key === 'Tab'
@@ -831,12 +840,17 @@ document.addEventListener('keydown', event => {
     event.preventDefault(); const ids = ['history', ...state.boards.map(b => b.id)]; const next = (ids.indexOf(state.board) + (nextBoard ? 1 : -1) + ids.length) % ids.length; setBoard(ids[next]); return;
   }
   const quickDigit = /^Digit[1-9]$/.test(event.code) ? Number(event.code.slice(-1)) : /^[1-9]$/.test(event.key) ? Number(event.key) : 0;
-  if (modifierPressed(event, state.settings.quickPasteModifier) && quickDigit) { event.preventDefault(); const item = visibleItems()[quickDigit - 1]; if (item) attempt(() => activate(item.id, true, modifierPressed(event, state.settings.plainTextModifier))); return; }
+  if (modifierPressed(event, state.settings.quickPasteModifier) && quickDigit) {
+    event.preventDefault(); if (event.repeat || searchPending) return;
+    const item = visibleItems()[quickDigit - 1]; if (item) attempt(() => activate(item.id, true, modifierPressed(event, state.settings.plainTextModifier))); return;
+  }
   if (modifier && event.key.toLowerCase() === 'a') { event.preventDefault(); state.selected = new Set(visibleItems().map(i => i.id)); renderCards(); return; }
   if (modifier && event.key.toLowerCase() === 'c') { event.preventDefault(); if (!event.repeat && !searchPending) attempt(() => activate(undefined, false)); return; }
-  if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
-    event.preventDefault(); const items = visibleItems(); const current = items.findIndex(i => i.id === state.active);
-    select(event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : current + (event.key === 'ArrowRight' ? 1 : -1), { extend: event.shiftKey }); return;
+  const navigation = itemNavigation(event);
+  if (navigation !== null) {
+    event.preventDefault(); if (searchPending) return;
+    const items = visibleItems(), current = items.findIndex(i => i.id === state.active);
+    select(navigation === 'first' ? 0 : navigation === 'last' ? items.length - 1 : current + navigation, { extend: event.shiftKey }); return;
   }
   if (event.key === 'Enter') { event.preventDefault(); if (!event.repeat && !searchPending) attempt(() => activate(undefined, !event.altKey || state.settings.plainTextModifier === 'Alt', modifierPressed(event, state.settings.plainTextModifier))); return; }
   if (event.key === ' ') { event.preventDefault(); const id = [...state.selected][0]; if (!event.repeat && !searchPending && id) attempt(() => openDetail(id)); return; }
@@ -845,7 +859,15 @@ document.addEventListener('keydown', event => {
 });
 document.addEventListener('keyup', event => document.body.classList.toggle('quick-keys', modifierPressed(event, state.settings.quickPasteModifier)));
 window.addEventListener('blur', () => document.body.classList.remove('quick-keys'));
-window.addEventListener('resize', () => { renderCards(); if (!$('#filterSuggestions').hidden) updateSuggestions(); });
+window.addEventListener('resize', () => {
+  renderCards();
+  if (document.activeElement === $('#timeline') && state.active && !itemRename) {
+    const index = visibleItems().findIndex(item => item.id === state.active), previous = $('#timeline').scrollLeft;
+    if (index >= 0) scrollToIndex(index);
+    if ($('#timeline').scrollLeft !== previous) renderCards();
+  }
+  if (!$('#filterSuggestions').hidden) updateSuggestions();
+});
 api.onChanged(accept);
 api.onNewText(() => attempt(newText));
 api.onOpenCommand(openCommand);

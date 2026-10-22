@@ -739,7 +739,27 @@ PanelSize只接受本面板主frame的开始/移动/结束，底边/整屏宽度
 
 影响15文件：src/item-opener.js、src/app-menu.js、src/main.js、src/preload.js、src/renderer.js、src/preview.js、src/preview.html、src/preview.css；test/item-opener.test.js、test/navigation.test.js、test/preview-lifecycle.test.js、test/ui/item-open.spec.js；README.md、CHANGELOG.md、本记录。新增12个Node测试（10服务/1菜单/1失焦）与13个独立Electron流程。无依赖/原生/库备份格式变更，色彩stash不动；项目专属方法留本记录和测试，不创建尚未实际桌面验证的通用skill。
 
+## 第三十五轮 键盘搜索与列表主导航
+
+起始e9ef611干净，上一轮为已推送的实质进展；重新核实INDEX/README/脚本/最近提交，通用MEMORY无相关命中。原版CUA仍Mac锁屏。只读本机英文通用本地化含Pinboard/历史清理不可撤销提示，但不能从通用键推断Mac实际交互；[官方快捷键](https://pasteapp.io/help/keyboard-shortcuts)列Undo，尚不足证明删除可撤销，故未擅自增加整库回滚或改变删除语义。保留该未验项，选有明确官方依据的CmdUp/Down首尾与第二次CmdF筛选缺口，并处理其主流程中实测重复投递。
+
+旧renderer只有Home/End选首尾，CmdF无条件toggleSearch(true)，Quick Paste分支未查repeat。真实独立Electron旧实现首尾/板内定位失败；单独三项红测确认二次CmdF筛选仍hidden、repeat/额外修饰键会误开搜索、8次repeat Digit2+一次新Digit1最终9次写入而非1次。范围测试起初错误拼aria ID，修为稳定data-id断言，不改变产品编码；异步虚拟节点读取改用同一DOM快照的矩形轮询，不用固定等待或放宽可见性要求。
+
+新增itemNavigation统一首尾/原方向键判定，复用select与scrollToIndex、当前filtered显示顺序/Pinboard自定义排序和稳定anchor；Shift可扩展/收缩，输入/IME/筛选/不匹配修饰键不执行，搜索在途不积压命令。初版展开KeyboardEvent丢掉非枚举key/meta访问器，普通对象单测绿而实际窗口仍失败；补继承getter红测后改显式读取。CmdF提前在受控区域处理，首次搜索、后续显示全部条件并聚焦当前类型，已展开时幂等、保留query/条件；鼠标筛选复用openFilters，Escape回筛选按钮。Quick Paste显式拒repeat/searchPending，真实copyQueue门控验证未开始重复请求不再写入，正常新键仍可投递；不接管系统级快捷键。
+
+390pt测试另外暴露真实问题：原生首尾已选最后一项，但随后窗口缩小没有按新宽度重新滚动，active落出虚拟切片，DOM与aria焦点引用消失。resize后仅当document.activeElement为timeline、没有就地改名时，按新几何scrollToIndex并更新变化后的切片，不对搜索/改名输入抢焦点。过滤测试原词组也命中链接的Item标题，改为显式文本类型过滤，不修改全文匹配规则迎合样本。源码相关26项（新8、panel-size9、rename9）通过；既有打开/多选24项在相关运行中也通过。
+
+影响7文件：src/model.js、src/renderer.js；test/navigation.test.js、test/ui/keyboard-navigation.spec.js；README.md、CHANGELOG.md、本记录。新增3Node和8独立Electron，覆盖60项虚拟首尾/可见性、多选锚点与实际合成复制、板内自定义顺序/空板、筛选幂等/文字保留/IME与重复、Quick Paste排队、过滤/在途搜索、自己窗口原生sendInputEvent与390pt深浅色。OS剪贴板端点替换为受控适配器，实际BrowserWindow/IPC/存储/搜索服务运行，不向其他应用投递。README默认Shift-Return按偏好与权限处理，不固定仅复制；实现本身未在本轮改变。
+
+最终验证（2026-10-23 04:06 Asia/Shanghai）：`/var/folders/ks/007yts0d7qg0kwy1mnq_q1qh0000gn/T/paste-keyboard-nav-final-rolOtk`驱动确认退出0，四日志逐一回读。298项Node/check/build通过（31.81秒），二十二独立文件源码193项（243.15秒）、最新实际产物193项（245.34秒）、八键盘流程五轮40次（56.16秒）全通过；65个src文件与受测app.asar逐字节相同。最终390pt浅深两图已查看，当前类型及焦点环、搜索文字/条件和弹层宽度在视口内，较低的条件沿用内部滚动，不将此截图当原版像素差分。
+
+完整清单243项/23文件，app.spec.js的50系统项仍未运行，最终前置只检测到原版PID55543并拒绝；原版CUA提交前仍Mac锁屏，Info.plist仍7.0.2。没有暂停原版、读写general正文、发送桌面全局输入或修改系统权限/显示器/默认应用。最新严格codesign完整性通过，release:verify在Gatekeeper拒绝时非零，有效签名身份0；公开生产audit0、完整仍8moderate，无high/critical，未发行。不启动/重签旧撤销Paste Like、不清隔离或关系统保护。
+
+没有新增依赖/原生/库备份格式或原版素材，色彩stash保留。快捷键能力依据官方文档，不将独立的Shift边界扩展/焦点策略或截图称作本机7.0.2精确复刻。真实物理按键/系统输入法/VoiceOver、多屏/目标消费、原版像素、共享同步与签名发行门槛继续保留，完整目标active，不标complete/blocked；项目专属方法留此记录和回归，不创建未经真实桌面验证的通用skill。
+
 ## 继续入口
+
+第三十五轮已有CmdUp/Down首尾、第二次CmdF筛选、Quick Paste重复保护与列表聚焦变窄时的当前项定位，不重复实现。后续解锁后观察同样本原版首尾/范围、二次CmdF/筛选焦点及Undo实际覆盖范围；Undo存在不直接等于永久删除可恢复，不凭本地化文案直接改变用户数据删除。保持仍有效主流程/权限/像素/发行优先级，不恢复边缘色彩实验。
 
 第三十四轮已有显式打开链接/文件入口和受控主进程链，不重复实现。解锁后核对本机原版Command-O/右键/预览/多选与失败行为及同样本像素；在明确可清理合成文档/默认应用验证时段测试系统打开、确认取消、关联/权限失败和物理iframe焦点。HTTP(S)以外协议和128/1MiB/批量确认均不是最终原版规格，按实际证据继续补齐，不把当前防护边界重新定义为全目标。
 

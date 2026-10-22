@@ -142,5 +142,14 @@
     return (aliases[key] || key).toLowerCase() === event.key.toLowerCase();
   }
 
-  return { TYPES, COLORS, PAUSE_DURATIONS, DEFAULT_SETTINGS, classifyText, filterItems, searchText, relativeTime, imageTextMatches, prune, sanitizeSettings, modifierPressed, shortcutMatches, isComposingKey, itemLocations };
+  function itemNavigation(event, platform = 'darwin') {
+    if (isComposingKey(event)) return null;
+    const boundary = { key: event.key, metaKey: event.metaKey, ctrlKey: event.ctrlKey, altKey: event.altKey, shiftKey: false };
+    if (shortcutMatches(boundary, 'CommandOrControl+Up', platform)) return 'first';
+    if (shortcutMatches(boundary, 'CommandOrControl+Down', platform)) return 'last';
+    if (event.metaKey || event.ctrlKey || event.altKey) return null;
+    return { Home: 'first', End: 'last', ArrowLeft: -1, ArrowRight: 1 }[event.key] ?? null;
+  }
+
+  return { TYPES, COLORS, PAUSE_DURATIONS, DEFAULT_SETTINGS, classifyText, filterItems, searchText, relativeTime, imageTextMatches, prune, sanitizeSettings, modifierPressed, shortcutMatches, isComposingKey, itemLocations, itemNavigation };
 });

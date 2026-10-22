@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { itemLocations, isComposingKey } = require('../src/model');
+const { itemLocations, isComposingKey, itemNavigation } = require('../src/model');
 const { applicationMenuTemplate, previewShortcut, newTextShortcut } = require('../src/app-menu');
 
 test('location commands offer only other actual lists, including a global-search return to history', () => {
@@ -13,6 +13,24 @@ test('location commands offer only other actual lists, including a global-search
 test('IME guards recognize composition state, Chromium process keys and the legacy 229 signal', () => {
   for (const event of [{ isComposing: true }, { key: 'Process' }, { keyCode: 229 }]) assert.equal(isComposingKey(event), true);
   assert.equal(isComposingKey({ key: 'Enter' }, true), true); assert.equal(isComposingKey({ key: 'Enter' }), false);
+});
+test('list navigation recognizes exact Command boundaries plus existing arrows and Home/End, with range selection independent', () => {
+  for (const shiftKey of [false, true]) {
+    for (const [key, expected] of [['ArrowUp', 'first'], ['ArrowDown', 'last']]) {
+      assert.equal(itemNavigation({ key, metaKey: true, shiftKey }), expected);
+      assert.equal(itemNavigation({ key, ctrlKey: true, shiftKey }, 'linux'), expected);
+    }
+    for (const [key, expected] of [['Home', 'first'], ['End', 'last'], ['ArrowLeft', -1], ['ArrowRight', 1]]) assert.equal(itemNavigation({ key, shiftKey }), expected);
+  }
+});
+test('list commands never interpret text-cursor, additional modifiers or IME keys as item boundary navigation', () => {
+  for (const event of [{ key: 'ArrowUp' }, { key: 'ArrowDown', ctrlKey: true }, { key: 'ArrowUp', metaKey: true, altKey: true },
+    { key: 'ArrowDown', metaKey: true, ctrlKey: true }, { key: 'ArrowUp', metaKey: true, isComposing: true }, { key: 'ArrowDown', metaKey: true, keyCode: 229 },
+    { key: 'ArrowRight', altKey: true }, { key: 'End', metaKey: true }, { key: 'f', metaKey: true }]) assert.equal(itemNavigation(event), null);
+});
+test('boundary commands read native KeyboardEvent accessors rather than enumerable object properties', () => {
+  const event = Object.create({ get key() { return 'ArrowDown'; }, get metaKey() { return true; }, get ctrlKey() { return false; }, get altKey() { return false; }, get shiftKey() { return true; } });
+  assert.equal(itemNavigation(event), 'last');
 });
 test('product menus preserve native editing and window roles without browser reload or developer accelerators', () => {
   const openSettings = () => {}, template = applicationMenuTemplate(openSettings, 'darwin');
