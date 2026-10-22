@@ -76,7 +76,15 @@ class ImportService {
       try {
         for (const [key, summary] of preview.summaries) this.store.contents.summaries.set(key, summary);
         this.store.mutate(() => { this.store.data = plan.data; });
-      } catch (error) { if (this.store.revision === revision) { rollback?.(); throw error; } warning = error.message; }
+      } catch (error) {
+        if (this.store.revision === revision) {
+          const cleanup = rollback?.();
+          if (typeof cleanup === 'string' && cleanup) throw Error(`${error.message} ${cleanup}`, { cause: error });
+          throw error;
+        }
+        warning = error.message;
+      }
+      warning = [warning, rollback?.commit?.()].filter(Boolean).join(' ');
       this.store.counts.clear();
       try { this.afterCommit(); } catch (error) { warning = [warning, `数据已恢复，运行设置更新失败：${error.message}`].filter(Boolean).join(' '); }
       try { this.discard(); } catch (error) { warning = [warning, `数据已恢复，暂存目录清理失败：${error.message}`].filter(Boolean).join(' '); }

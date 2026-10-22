@@ -116,6 +116,23 @@ test('post-commit durability/runtime failures report restored data instead of fa
     const result = await f.service.apply(state.token, { mode: 'replace' }); assert.equal(result.ok, true); assert.match(result.warning, /已提交.*runtime/); assert.equal(f.store.get('a').body, 'a');
   } finally { fs.fsyncSync = sync; }
 });
+test('staged runtime hooks commit only after the manifest, including a committed directory-sync warning', async t => {
+  const events = [], f = fixture(t, { beforeCommit: () => {
+    events.push('prepare'); assert.equal(f.store.data.items[0].body, 'old');
+    return Object.assign(() => { events.push('rollback'); }, { commit: () => { events.push('commit'); assert.equal(f.store.get('a').body, 'a'); return 'release warning'; } });
+  }, afterCommit: () => events.push('runtime') });
+  f.store.add({ type: 'text', body: 'old' }); const state = await f.service.prepare(f.write({ version: 2, items: [item('a')] })), sync = fs.fsyncSync;
+  fs.fsyncSync = fd => { if (fs.fstatSync(fd).isDirectory()) throw Error('Injected directory sync'); return sync(fd); };
+  try { const result = await f.service.apply(state.token, { mode: 'replace' }); assert.equal(result.ok, true); assert.match(result.warning, /已提交.*release warning/); assert.deepEqual(events, ['prepare', 'commit', 'runtime']); }
+  finally { fs.fsyncSync = sync; }
+});
+test('pre-commit runtime cleanup warnings do not hide the manifest failure or call the commit hook', async t => {
+  const events = [], f = fixture(t, { beforeCommit: () => Object.assign(() => { events.push('rollback'); return 'cleanup warning'; }, { commit: () => events.push('commit') }) });
+  f.store.add({ type: 'text', body: 'old' }); const state = await f.service.prepare(f.write({ version: 2, items: [item('a')] }));
+  const persist = f.store.persist; f.store.persist = () => { throw Error('Manifest failed'); };
+  try { await assert.rejects(f.service.apply(state.token, { mode: 'replace' }), /Manifest failed.*cleanup warning/); assert.deepEqual(events, ['rollback']); assert.equal(f.store.data.items[0].body, 'old'); }
+  finally { f.store.persist = persist; }
+});
 test('cancel, close and worker termination clean only owned staging directories and preserve the library', async t => {
   const f = fixture(t); f.store.add({ type: 'text', body: 'old' }); const before = fs.readFileSync(f.store.file);
   const file = f.write({ version: 2, items: Array.from({ length: 100 }, (_, i) => item(String(i), 'x'.repeat(40000))) });

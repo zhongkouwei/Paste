@@ -438,19 +438,28 @@ function saveSettings(changes) {
 async function performSaveSettings(changes, ticket) {
   const settings = sanitizeSettings(changes || {}, store.data.settings), previous = store.data.settings;
   const shortcutsChanged = settings.hotkey !== previous.hotkey || settings.stackHotkey !== previous.stackHotkey;
-  if (shortcutsChanged) hotkeys.apply(settings);
+  const registration = shortcutsChanged || hotkeys.needsCleanup ? hotkeys.prepare(settings) : null, revision = store.revision;
+  let warning = '';
   try {
     capturePause?.beforeCommit(ticket);
     if (!ticket && settings.paused !== previous.paused) { monitor.invalidate(); if (!settings.paused) monitor.requireBaseline(); }
     store.settings(settings);
-  } catch (error) { if (shortcutsChanged) hotkeys.apply(previous); throw error; }
+  } catch (error) {
+    if (store.revision === revision) {
+      const cleanup = registration?.rollback();
+      if (cleanup) throw Error(`${error.message} ${cleanup}`, { cause: error });
+      throw error;
+    }
+    warning = error.message;
+  }
+  warning = [warning, registration?.commit()].filter(Boolean).join(' ');
   applyRuntimeSettings();
   capturePause?.committed(ticket);
   if (capturePause) await finishCaptureBaseline();
   if (settings.paused !== previous.paused && stackQueue.active) stackQueue.version = monitor.version;
   if (settings.pasteTarget !== previous.pasteTarget) { stackQueue.cancelPending(); stackInput.reset(); }
   if (!TEST_MODE) app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin });
-  emit(); return snapshot();
+  emit(); return warning ? { ...snapshot(), settingsWarning: warning } : snapshot();
 }
 
 function queueCopy(action) {
@@ -819,7 +828,10 @@ else {
         },
         beforeCommit: settings => {
           const previous = store.data.settings;
-          if (settings.hotkey !== previous.hotkey || settings.stackHotkey !== previous.stackHotkey) { hotkeys.apply(settings); return () => hotkeys.apply(previous); }
+          if (settings.hotkey !== previous.hotkey || settings.stackHotkey !== previous.stackHotkey || hotkeys.needsCleanup) {
+            const registration = hotkeys.prepare(settings);
+            return Object.assign(() => registration.rollback(), { commit: () => registration.commit() });
+          }
           return () => {};
         },
         afterCommit: () => {
@@ -884,7 +896,7 @@ else {
       importService.onChanged = state => { if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.webContents.send('import:changed', state); };
       if (TEST_MODE) globalThis.__pasteTest = { poll, store, clip, hash, textSignature, imageSignature, monitor, capturePause, panelSize, isIgnored, imageProcessor, imageInspector, richTextService, selectionService, selectionComposer, applicationCatalog, imageText, searchService, mediaService, importService, thumbnail, pasteTargets, pasteOwnership, pasteDelivery, stackQueue, stackInput, requestStackPoll, showPanel, hidePanel, hotkeys, capturePreviewBlur: () => previewBlurAction(previewWindow) };
       if (TEST_MODE) Object.assign(globalThis.__pasteTest, { itemOpener });
-      try { hotkeys.apply(store.data.settings); } catch (error) { report(error); }
+      try { const warning = hotkeys.apply(store.data.settings); if (warning) report(Error(warning)); } catch (error) { report(error); }
       for (const event of ['display-metrics-changed', 'display-added', 'display-removed']) screen.on(event, () => { if (mainWindow.isVisible()) placePanel(); });
       app.on('activate', () => { if (stackQueue.active) void showStack().catch(report); else if (!mainWindow.isVisible() && !pasteTargets.pending) showPanel(); });
       mainWindow.webContents.once('did-finish-load', () => { if (process.argv.includes('--show') || TEST_MODE) showPanel(); });

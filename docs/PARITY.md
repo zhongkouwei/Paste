@@ -757,7 +757,29 @@ PanelSize只接受本面板主frame的开始/移动/结束，底边/整屏宽度
 
 没有新增依赖/原生/库备份格式或原版素材，色彩stash保留。快捷键能力依据官方文档，不将独立的Shift边界扩展/焦点策略或截图称作本机7.0.2精确复刻。真实物理按键/系统输入法/VoiceOver、多屏/目标消费、原版像素、共享同步与签名发行门槛继续保留，完整目标active，不标complete/blocked；项目专属方法留此记录和回归，不创建未经真实桌面验证的通用skill。
 
+## 第三十六轮 快捷键设置的提交与失败恢复
+
+起始52fd933干净，上一轮为已推送实质进展；核实INDEX/README/脚本/最近变更，通用MEMORY无相关命中，原版CUA仍Mac锁屏。[官方说明](https://pasteapp.io/help/stop-paste-popping-up)明确启动/Stack可更改或清除，当前模型和两个清除按钮已具备，不重复实现已有功能。改查实际注册/保存链，发现GlobalHotkeys.apply无条件unregisterAll，再失败重注册；受控原注册一释放就无法重新占用的探针实际reported=['Old']、actual=[]。补红测复现，不向系统注册或临停原版。原实现“原子”测试只模拟旧键始终可抢回，不能证明这个窗口不存在。
+
+新prepare先申请新增键且保留旧键，固定dispatcher查当前已提交动作，暂存键无动作；写盘成功才commit发布并释放不再需要的自有键，失败rollback只释放本次新增，不重新抢原键。未变键与启动/Stack交换复用调度器，拒重叠暂存与失效commit。释放失败保留已提交配置、废弃wrapper无动作、明确警告；后续同设置重试按needsCleanup清理，不假装已经释放，也不调用unregisterAll影响无关拥有者。退出原有系统清理仍在，不因此称OS跨进程原子或权限永不失效；任意别名/键盘布局未由raw accelerator字符串去重证明。
+
+普通performSaveSettings以前在任何persist抛错后hotkeys.apply(previous)，即使ClipStore已rename并增加revision、保留了新数据。现在准备后按revision判断：提交前失败rollback；已提交目录sync失败继续commit新绑定及运行时，返回临时settingsWarning，不把磁盘/内存/动作分裂为新旧两套。ImportService保留原有beforeCommit返回rollback函数兼容，增加可选commit回调，在清单提交或已提交警告后调用；提交前清理警告合并原失败，提交后释放警告和既有runtime/清理警告都保留。主进程导入与普通设置同用prepare，不在导入写前释放原键。
+
+设置save显示提交/释放警告，成功重试清旧提示；清除或重置先取消录制、移除recording状态，再保存，防后续组合又改回；首个库快照未就绪时不执行这些修改。初UI7过1败是测试直接调用preload API后期待renderer.save清除提示，改为真实设置按钮录制同组合重试，不改产品定时器迎合断言。使用真实root目录fsync故障而非persist成功后抛普通异常，保留CommittedWriteError和ClipStore的实际提交语义。真实私有目录重启仅证明已写文件可重读，不是断电耐久性证明。
+
+新增7个GlobalHotkeys Node及2个ImportService Node，相关31单测通过；新9个独立Electron与8暂停、12导入合计29回归通过。实际BrowserWindow/设置renderer/IPC/ClipStore/导入Worker运行，只把globalShortcut注册表和回调动作目标替换为受控适配器，clipboard read/write禁止；不按真实全局组合、不改系统权限。覆盖原键保留/注册失败、暂存键惰性、互换/不变零原生调用、提交前失败与重试、提交后sync警告/重启、清除重置退出录制、释放失败同设置清理、导入前失败及提交后警告；不是实际macOS注册/抢占/全局焦点验收。
+
+影响10文件：src/hotkeys.js、src/main.js、src/import-service.js、src/settings.js；test/hotkeys.test.js、test/import.test.js、test/ui/hotkey-settings.spec.js；README.md、CHANGELOG.md、本记录。无依赖/原生/库备份版本/原版素材变更，色彩stash保持，项目专属方法保留测试/记录，不新建未经实际桌面验证的通用skill。
+
+最终验证（2026-10-23 04:34 Asia/Shanghai）：`/var/folders/ks/007yts0d7qg0kwy1mnq_q1qh0000gn/T/paste-hotkey-transaction-final-AN1pgT`驱动确认退出0，四日志逐一回读。307项Node/check/build（31.89秒）、二十三个独立文件源码202项（251.41秒）、最新实际产物202项（253.92秒）、九条新流程五轮45次（50.58秒）全通过。65个src文件与受测app.asar逐字节相同；最终1284×1160提交警告截图已查看，文本分行/新快捷键与重置按钮不遮挡，非空有效PNG；不是原版像素比对。
+
+完整清单252项/24文件，app.spec.js 50系统项仍未运行，最终前置只见活动原版PID55543并拒绝；CUA提交前仍Mac锁屏，Info.plist仍7.0.2。没有暂停原版、读写general正文、发桌面全局输入或改系统权限/显示器/默认应用。最新严格codesign完整性通过，release:verify在Gatekeeper拒绝时非零，有效签名身份0；公开生产audit0/完整8moderate，无high/critical，未发行。不启动/重签旧撤销Paste Like、不清隔离或关闭系统保护。完整目标继续active，不标complete/blocked，物理输入/全局权限、原版像素、同步隐私及安装发行门槛不删。
+
+另一个独立未完成点：createWindow的原生CmdN/T/O处理在settings的renderer录制之前运行，尚未以本窗口sendInputEvent验证并修复录制冲突；本轮注册表事务成功不等于任意组合录制完整可用。下一步应先核实该路径和焦点/IME，而不是新造快捷键页面或宣称所有快捷键已验收。
+
 ## 继续入口
+
+第三十六轮已有注册prepare/commit/rollback、同设置释放重试，以及普通设置/导入的真实提交边界，清除重置会终止录制，不重复实现。后续先核实原版访问，再用自己窗口原生输入验证设置录制CmdN/T/O与固定命令优先级，保护未提交草稿与IME；保持现有原键保留/暂存惰性/提交后不假回滚不变量。原版还需同样本快捷键页面/清除、真实OS冲突/权限/抢占与主流程投递及像素，不把假注册表当真实桌面。
 
 第三十五轮已有CmdUp/Down首尾、第二次CmdF筛选、Quick Paste重复保护与列表聚焦变窄时的当前项定位，不重复实现。后续解锁后观察同样本原版首尾/范围、二次CmdF/筛选焦点及Undo实际覆盖范围；Undo存在不直接等于永久删除可恢复，不凭本地化文案直接改变用户数据删除。保持仍有效主流程/权限/像素/发行优先级，不恢复边缘色彩实验。
 

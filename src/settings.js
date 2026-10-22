@@ -9,7 +9,7 @@ function status(message) { $('#settingsStatus').textContent = message; $('#setti
 function clearStatus() { clearTimeout(timer); $('#settingsStatus').hidden = true; }
 async function attempt(task) { try { return await task(); } catch (error) { status(error.message); return undefined; } }
 async function save(changes) {
-  try { render(await window.paste.saveSettings(changes)); }
+  try { const value = await window.paste.saveSettings(changes); render(value); if (value.settingsWarning) status(value.settingsWarning); else clearStatus(); }
   catch (error) { render(library); throw error; }
 }
 function render(value) {
@@ -72,22 +72,24 @@ $('#chooseExcludedApps').onclick = () => attempt(async () => {
   try { const value = await window.paste.chooseExcludedApplications(); if (value) { excludedKey = ''; render(library && value.revision < library.revision ? library : value); clearStatus(); } }
   finally { choosingApplications = false; $('#chooseExcludedApps').disabled = false; }
 });
+function stopRecording() { if (recording) { recording.button.classList.remove('recording'); recording = null; } }
 document.querySelectorAll('[data-shortcut]').forEach(button => { button.onclick = () => {
-  if (recording) { recording.button.classList.remove('recording'); recording = null; render(library); }
+  if (!library) return;
+  stopRecording(); render(library);
   recording = { key: button.dataset.shortcut, button }; button.textContent = '按下快捷键'; button.classList.add('recording');
 }; });
-document.querySelectorAll('[data-clear-shortcut]').forEach(button => { button.onclick = () => attempt(() => save({ [button.dataset.clearShortcut]: '' })); });
+document.querySelectorAll('[data-clear-shortcut]').forEach(button => { button.onclick = () => { if (!library) return; stopRecording(); render(library); attempt(() => save({ [button.dataset.clearShortcut]: '' })); }; });
 document.addEventListener('keydown', event => {
   if (!recording) return;
   event.preventDefault();
   if (['Meta', 'Control', 'Shift', 'Alt'].includes(event.key)) return;
-  if (event.key === 'Escape') { recording.button.classList.remove('recording'); recording = null; render(library); return; }
+  if (event.key === 'Escape') { stopRecording(); render(library); return; }
   if (!event.metaKey && !event.ctrlKey && !event.altKey) return;
   const key = /^Digit[0-9]$/.test(event.code) ? event.code.slice(-1) : /^Key[A-Z]$/.test(event.code) ? event.code.slice(-1) : event.key;
   const accelerator = [event.metaKey ? 'CommandOrControl' : event.ctrlKey ? 'Control' : '', event.altKey ? 'Alt' : '', event.shiftKey ? 'Shift' : '', key.length === 1 ? key.toUpperCase() : key.replace('Arrow', '')].filter(Boolean).join('+');
-  const setting = recording.key; recording.button.classList.remove('recording'); recording = null; attempt(() => save({ [setting]: accelerator }));
+  const setting = recording.key; stopRecording(); attempt(() => save({ [setting]: accelerator }));
 });
-$('#resetHotkey').onclick = () => attempt(() => save({ hotkey: 'CommandOrControl+Shift+V', stackHotkey: 'CommandOrControl+Shift+C', nextBoardHotkey: 'CommandOrControl+Right', previousBoardHotkey: 'CommandOrControl+Left', quickPasteModifier: 'CommandOrControl', plainTextModifier: 'Shift' }));
+$('#resetHotkey').onclick = () => { if (!library) return; stopRecording(); render(library); attempt(() => save({ hotkey: 'CommandOrControl+Shift+V', stackHotkey: 'CommandOrControl+Shift+C', nextBoardHotkey: 'CommandOrControl+Right', previousBoardHotkey: 'CommandOrControl+Left', quickPasteModifier: 'CommandOrControl', plainTextModifier: 'Shift' })); };
 $('#openPermission').onclick = () => attempt(() => window.paste.openPermission());
 function renderExport(value) {
   if (value.revision < exportState.revision) return;
