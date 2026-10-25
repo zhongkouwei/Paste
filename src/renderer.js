@@ -1,7 +1,7 @@
 /* global lucide, PasteModel, PasteFilters, PastePanelLayout */
 const $ = selector => document.querySelector(selector);
 const api = window.paste;
-const { filterItems, relativeTime, imageTextMatches, COLORS, modifierPressed, shortcutMatches, isComposingKey, itemLocations, itemNavigation } = PasteModel;
+const { filterItems, relativeTime, imageTextMatches, COLORS, modifierPressed, shortcutMatches, isComposingKey, itemLocations, itemNavigation, PAUSE_OPTIONS } = PasteModel;
 const { dateRange, nextMidnight, activeFilters, suggestions, applySuggestion } = PasteFilters;
 const state = { items: [], boards: [], settings: {}, status: {}, board: 'history', query: '', type: 'all', source: '', date: '', pinboard: '', sourceName: '', pinboardName: '',
   selected: new Set(), anchor: null, active: null, searching: false, target: '', editingBoard: null, detail: null };
@@ -724,7 +724,7 @@ function pauseMenuEntries() {
   return [
     { label: paused ? '继续记录' : '暂停记录', icon: paused ? 'play' : 'pause', key: '⌘T', shortcut: 'Meta+T', action: () => api.toggleCapture() },
     { heading: '暂停时长' },
-    ...[[300000, '5分钟'], [900000, '15分钟'], [3600000, '1小时'], [null, '直到手动恢复']].map(([duration, label]) => ({ label, icon: 'clock', action: () => api.pauseCapture(duration) }))
+    ...PAUSE_OPTIONS.map(([duration, label]) => ({ label, icon: 'clock', action: () => api.pauseCapture(duration) }))
   ];
 }
 $('#moreButton').onclick = () => menu([

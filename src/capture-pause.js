@@ -48,7 +48,9 @@ class CapturePause {
     } else this.sync();
   }
   pauseFor(duration = null) {
-    if (duration !== null && !PAUSE_DURATIONS.includes(duration)) return Promise.reject(Error('请选择有效的暂停时长。'));
+    // Keep the previous five-minute IPC option compatible, without advertising
+    // it in menus. Persisted pauses already use absolute, unchanged deadlines.
+    if (duration !== null && duration !== 300000 && !PAUSE_DURATIONS.includes(duration)) return Promise.reject(Error('请选择有效的暂停时长。'));
     return this.save({ paused: true, pausedUntil: duration === null ? null : this.now() + duration });
   }
   resume() { return this.save({ paused: false, pausedUntil: null }); }

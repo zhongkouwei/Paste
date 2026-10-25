@@ -6,7 +6,7 @@ const { randomUUID } = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { ClipStore, hash, textSignature } = require('./store');
-const { classifyText, sanitizeSettings } = require('./model');
+const { classifyText, sanitizeSettings, PAUSE_OPTIONS } = require('./model');
 const { ClipboardService, imageSignature } = require('./clipboard');
 const { Transfers, fileDetails } = require('./transfers');
 const { GlobalHotkeys } = require('./hotkeys');
@@ -452,9 +452,7 @@ function createTray() {
   tray.on('right-click', () => tray.popUpContextMenu(Menu.buildFromTemplate([
     { label: '显示剪贴板', click: () => showPanel() },
     { label: capturePause.isPaused() ? '继续记录' : '暂停记录', click: () => capturePause.toggle().catch(report) },
-    { label: '暂停时长', submenu: [
-      ...[[300000, '5分钟'], [900000, '15分钟'], [3600000, '1小时'], [null, '直到手动恢复']].map(([duration, label]) => ({ label, click: () => capturePause.pauseFor(duration).catch(report) }))
-    ] },
+    { label: '暂停时长', submenu: PAUSE_OPTIONS.map(([duration, label]) => ({ label, click: () => capturePause.pauseFor(duration).catch(report) })) },
     { type: 'separator' }, { label: '设置…', click: openSettings }, { label: '退出 Paste Easy', role: 'quit' }
   ])));
 }

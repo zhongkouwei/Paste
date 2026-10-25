@@ -22,7 +22,7 @@ async function launch() {
 }
 test.beforeEach(async () => { directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paste-capture-pause-')); await launch(); });
 test.afterEach(async () => {
-  if (application) { await application.evaluate(() => globalThis.__releaseSnapshot?.()).catch(() => {}); await application.close(); }
+  if (application) { await application.evaluate(() => { globalThis.__releaseSnapshot?.(); globalThis.__restoreTray?.(); }).catch(() => {}); await application.close(); }
   fs.rmSync(directory, { recursive: true, force: true }); application = page = directory = null;
 });
 const library = () => page.evaluate(() => window.paste.getLibrary());
@@ -55,12 +55,47 @@ test('Command-T toggles once, native menu shares the action, and auto-repeat can
 });
 test('duration menu persists a deadline, expiry skips the paused clipboard and Stack only collects subsequent copies', async () => {
   await page.evaluate(() => window.paste.toggleStack());
-  await page.locator('#moreButton').click(); await page.getByRole('menuitem', { name: '5分钟', exact: true }).click();
-  const until = (await library()).settings.pausedUntil; expect(until).toBe(await application.evaluate(() => globalThis.__pauseNow + 300000));
+  await page.locator('#moreButton').click(); await page.getByRole('menuitem', { name: '15分钟', exact: true }).click();
+  const until = (await library()).settings.pausedUntil; expect(until).toBe(await application.evaluate(() => globalThis.__pauseNow + 900000));
   await collect('Private during timed pause'); expect((await page.evaluate(() => window.paste.getStack())).entries).toEqual([]);
-  await application.evaluate(async () => { globalThis.__pauseNow += 300001; await globalThis.__pasteTest.capturePause.check(); });
+  await application.evaluate(async () => { globalThis.__pauseNow += 900001; await globalThis.__pasteTest.capturePause.check(); });
   expect((await library()).settings.paused).toBe(false); expect(await captured()).toEqual(['Existing history']);
   await collect('Public Stack'); expect((await page.evaluate(() => window.paste.getStack())).entries.map(entry => entry.item.body)).toEqual(['Public Stack']);
+});
+for (const [label, duration] of [['30分钟', 1800000], ['3小时', 10800000], ['8小时', 28800000]]) test(`observed ${label} preset is available in the panel and native menus with the same exact deadline`, async () => {
+  if (label === '8小时') await application.evaluate(({ BrowserWindow, nativeTheme }) => {
+    nativeTheme.themeSource = 'light'; BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/index.html')).setSize(390, 332);
+  });
+  await page.locator('#moreButton').click(); await expect(page.getByRole('menuitem', { name: '5分钟', exact: true })).toHaveCount(0);
+  const option = page.getByRole('menuitem', { name: label, exact: true }); await option.scrollIntoViewIfNeeded();
+  if (label === '8小时') {
+    expect(await option.evaluate(node => { const r = node.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight; })).toBe(true);
+    await page.screenshot({ path: 'test-results/capture-pause-presets-narrow.png' });
+  }
+  await option.click();
+  let until = (await library()).settings.pausedUntil; expect(until).toBe(await application.evaluate((_electron, duration) => globalThis.__pauseNow + duration, duration));
+  await collect('Private in observed pause'); expect(await captured()).toEqual(['Existing history']);
+  await application.evaluate(async (_electron, until) => { globalThis.__pauseNow = until; await globalThis.__pasteTest.capturePause.check(); }, until);
+  expect((await library()).status.capture.paused).toBe(false); expect(await application.evaluate(() => globalThis.__reads)).toBe(0);
+  await application.evaluate(({ Menu }, label) => Menu.getApplicationMenu().items[0].submenu.items.find(item => item.label === '暂停时长').submenu.items.find(item => item.label === label).click(), label);
+  until = (await library()).settings.pausedUntil; expect(until).toBe(await application.evaluate((_electron, duration) => globalThis.__pauseNow + duration, duration));
+});
+test('the tray context menu uses the same observed presets and routes them through the real pause controller', async () => {
+  await page.evaluate(() => window.paste.saveSettings({ showInMenuBar: false }));
+  await application.evaluate(({ Tray }) => {
+    const on = Tray.prototype.on, popup = Tray.prototype.popUpContextMenu;
+    Tray.prototype.on = function(event, listener) { if (event === 'right-click') globalThis.__observedTray = this; return on.call(this, event, listener); };
+    Tray.prototype.popUpContextMenu = function(menu) { globalThis.__observedTrayMenu = menu; };
+    globalThis.__restoreTray = () => { Tray.prototype.on = on; Tray.prototype.popUpContextMenu = popup; };
+  });
+  await page.evaluate(() => window.paste.saveSettings({ showInMenuBar: true }));
+  const labels = await application.evaluate(() => {
+    globalThis.__observedTray.emit('right-click');
+    const menu = globalThis.__observedTrayMenu.items.find(item => item.label === '暂停时长').submenu;
+    menu.items.find(item => item.label === '8小时').click(); return menu.items.map(item => item.label);
+  });
+  expect(labels).toEqual(['15分钟', '30分钟', '1小时', '3小时', '8小时', '直到手动恢复']);
+  await expect.poll(async () => (await library()).settings.pausedUntil).toBe(await application.evaluate(() => globalThis.__pauseNow + 28800000));
 });
 test('an in-flight snapshot invalidated by pause cannot enter history or later reappear on resume', async () => {
   await application.evaluate(() => {

@@ -1,4 +1,4 @@
-const { shortcutMatches } = require('./model');
+const { shortcutMatches, PAUSE_OPTIONS } = require('./model');
 
 function applicationMenuTemplate(openSettings, platform = process.platform, newText = () => {}, capture = {}, openItem = () => {}) {
   return [
@@ -6,10 +6,7 @@ function applicationMenuTemplate(openSettings, platform = process.platform, newT
       { role: 'about' }, { type: 'separator' },
       { label: '设置…', accelerator: 'CommandOrControl+,', click: openSettings },
       { id: 'capture-toggle', label: '暂停记录', accelerator: 'CommandOrControl+T', click: capture.toggle || (() => {}) },
-      { label: '暂停时长', submenu: [
-        { label: '5分钟', click: () => capture.pauseFor?.(300000) }, { label: '15分钟', click: () => capture.pauseFor?.(900000) },
-        { label: '1小时', click: () => capture.pauseFor?.(3600000) }, { label: '直到手动恢复', click: () => capture.pauseFor?.(null) }
-      ] },
+      { label: '暂停时长', submenu: PAUSE_OPTIONS.map(([duration, label]) => ({ label, click: () => capture.pauseFor?.(duration) })) },
       { type: 'separator' }, { role: 'services' }, { type: 'separator' },
       { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }
     ] }] : []),

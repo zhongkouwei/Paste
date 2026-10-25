@@ -84,7 +84,17 @@ test('native pause menu and exact local accelerator do not register a system-wid
   let toggles = 0; const durations = [];
   const template = applicationMenuTemplate(() => {}, 'darwin', () => {}, { toggle: () => { toggles++; }, pauseFor: duration => durations.push(duration) });
   const entry = template[0].submenu.find(entry => entry.id === 'capture-toggle'); assert.equal(entry.accelerator, 'CommandOrControl+T'); entry.click(); assert.equal(toggles, 1);
-  template[0].submenu.find(entry => entry.label === '暂停时长').submenu.forEach(entry => entry.click()); assert.deepEqual(durations, [300000, 900000, 3600000, null]);
+  template[0].submenu.find(entry => entry.label === '暂停时长').submenu.forEach(entry => entry.click()); assert.deepEqual(durations, [900000, 1800000, 3600000, 10800000, 28800000, null]);
   assert.equal(pauseShortcut({ type: 'keyDown', key: 't', meta: true }, 'darwin'), true);
   for (const value of [{ type: 'keyUp' }, { isComposing: true }, { shift: true }, { alt: true }, { control: true }]) assert.equal(pauseShortcut({ type: 'keyDown', key: 't', meta: true, ...value }, 'darwin'), false);
+});
+test('observed fifteen/thirty minute and one/three/eight hour presets persist exact deadlines without replaying paused content', async () => {
+  for (const duration of [900000, 1800000, 3600000, 10800000, 28800000]) {
+    const { state, controller, monitor } = fixture(); await controller.pauseFor(duration);
+    const until = state.now + duration; assert.equal(state.settings.pausedUntil, until); assert.equal([...state.timers.values()][0].ms, 60000);
+    state.now = until - 1; await controller.check(); assert.equal(state.settings.paused, true);
+    state.now = until; await controller.check(); assert.equal(state.settings.paused, false); await monitor.tick(); assert.equal(state.reads, 0);
+    state.version++; state.value = { signature: 'after pause' }; await monitor.tick(); assert.deepEqual(state.captures, [{ signature: 'after pause' }]);
+    controller.close();
+  }
 });

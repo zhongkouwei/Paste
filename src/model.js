@@ -5,7 +5,9 @@
 })(typeof globalThis === 'object' ? globalThis : this, function () {
   const TYPES = ['text', 'link', 'code', 'image', 'color', 'file'];
   const COLORS = ['#ef6259', '#f3ad43', '#62c68d', '#4f80ed', '#af78d3', '#dc79b0', '#8e9299'];
-  const PAUSE_DURATIONS = [5 * 60000, 15 * 60000, 60 * 60000];
+  const PAUSE_OPTIONS = [[15 * 60000, '15分钟'], [30 * 60000, '30分钟'], [60 * 60000, '1小时'],
+    [180 * 60000, '3小时'], [480 * 60000, '8小时'], [null, '直到手动恢复']];
+  const PAUSE_DURATIONS = PAUSE_OPTIONS.filter(([duration]) => duration !== null).map(([duration]) => duration);
   const DEFAULT_SETTINGS = {
     launchAtLogin: false, background: true, showInMenuBar: true, pasteTarget: 'application', plainText: false,
     retentionDays: 30, maxItems: 10000, paused: false, pausedUntil: null, panelHeight: 332, sound: false,
@@ -159,5 +161,5 @@
     return [event.metaKey ? 'CommandOrControl' : '', event.ctrlKey ? 'Control' : '', event.altKey ? 'Alt' : '', event.shiftKey ? 'Shift' : '', key.length === 1 ? key.toUpperCase() : key].filter(Boolean).join('+');
   }
 
-  return { TYPES, COLORS, PAUSE_DURATIONS, DEFAULT_SETTINGS, classifyText, filterItems, searchText, relativeTime, imageTextMatches, prune, sanitizeSettings, modifierPressed, shortcutMatches, isComposingKey, itemLocations, itemNavigation, shortcutCandidate };
+  return { TYPES, COLORS, PAUSE_OPTIONS, PAUSE_DURATIONS, DEFAULT_SETTINGS, classifyText, filterItems, searchText, relativeTime, imageTextMatches, prune, sanitizeSettings, modifierPressed, shortcutMatches, isComposingKey, itemLocations, itemNavigation, shortcutCandidate };
 });
