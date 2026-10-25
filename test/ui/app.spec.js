@@ -3,7 +3,8 @@ const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
 const { assertClipboardIsolation } = require('../../scripts/clipboard-test-environment');
-let application, page, directory, originalClipboard, originalFiles = [], canRestoreClipboard = false;
+const { preserveClipboard } = require('../../scripts/pasteboard-snapshot');
+let application, page, directory, originalClipboard;
 test.describe.configure({ mode: 'serial' });
 
 async function launchApplication() {
@@ -51,6 +52,7 @@ async function nativePreviewKey(key, repeat = false) {
 test.beforeAll(async () => {
   assertClipboardIsolation();
   directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paste-ui-'));
+  originalClipboard = preserveClipboard(directory);
   const seed = path.join(directory, 'seed.json');
   const source = (name, bundleId, color) => ({ name, bundleId, color });
   fs.writeFileSync(seed, JSON.stringify([
@@ -65,38 +67,19 @@ test.beforeAll(async () => {
   await page.waitForSelector('.clip-card');
   await page.waitForFunction(() => document.body.dataset.panelReady === 'true');
   await page.evaluate(() => window.paste.saveSettings({ theme: 'light' }));
-  originalClipboard = await application.evaluate(async ({ clipboard }) => {
-    const entries = await clipboard.read();
-    return Promise.all(entries.map(async entry => {
-      const result = {};
-      for (const type of entry.types) {
-        const value = await entry.getType(type);
-        if (value instanceof Blob) result[type] = { base64: Buffer.from(await value.arrayBuffer()).toString('base64') };
-        else result[type] = { value };
-      }
-      return result;
-    }));
-  });
-  originalFiles = await application.evaluate(async () => (await globalThis.__pasteTest.clip.read()).files);
-  if (originalClipboard.length > 1 && !originalFiles.length) throw new Error('Existing multi-item clipboard cannot be restored losslessly; tests stopped before modifying it.');
-  canRestoreClipboard = true;
 });
 test.afterAll(async () => {
-  if (application) {
-    if (canRestoreClipboard && originalFiles.length) {
-      await application.evaluate(async (_electron, files) => globalThis.__pasteTest.clip.write({ type: 'file', body: files.join('\n') }), originalFiles);
-    } else if (canRestoreClipboard && originalClipboard) await application.evaluate(async ({ clipboard, ClipboardItem }, saved) => {
-      if (!saved.length) { clipboard.clear(); return; }
-      await clipboard.write(saved.map(entry => new ClipboardItem(Object.fromEntries(Object.entries(entry).map(([type, data]) => [type,
-        data.base64 !== undefined ? new Blob([Buffer.from(data.base64, 'base64')]) : data.value])))));
-    }, originalClipboard);
-    // Failed editor tests must not leave a native unsaved-draft dialog blocking teardown.
-    await application.evaluate(({ BrowserWindow }) => {
-      for (const window of BrowserWindow.getAllWindows()) if (window.webContents.getURL().endsWith('/preview.html')) window.destroy();
-    });
-    await application.close();
+  try {
+    if (application) {
+      // Failed editor tests must not leave a native unsaved-draft dialog blocking teardown.
+      try { await application.evaluate(({ BrowserWindow }) => {
+        for (const window of BrowserWindow.getAllWindows()) if (window.webContents.getURL().endsWith('/preview.html')) window.destroy();
+      }); } finally { await application.close(); }
+    }
+  } finally {
+    originalClipboard?.restore();
+    if (directory) fs.rmSync(directory, { recursive: true, force: true });
   }
-  if (directory) fs.rmSync(directory, { recursive: true, force: true });
 });
 
 test('real Electron atomic rich/plain/image writes retain their guarded ownership and invalidate after a later copy', async () => {
