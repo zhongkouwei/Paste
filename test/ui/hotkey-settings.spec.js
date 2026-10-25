@@ -71,6 +71,56 @@ test('clearing during recording cancels the recorder, persists across restart an
   expect((await preferences()).hotkey).toBe(''); expect(await keys()).toEqual([STACK]);
   await application.close(); application = null; await launch(); expect((await preferences()).hotkey).toBe(''); expect(await keys()).toEqual([STACK]);
 });
+for (const [field, direction, other] of [['nextBoardHotkey', 'ArrowRight', 'ArrowLeft'], ['previousBoardHotkey', 'ArrowLeft', 'ArrowRight']]) {
+  test(`clearing ${field} disables only that Pinboard navigation across restart and reset restores it`, async () => {
+    const clear = settings.locator(`[data-clear-shortcut="${field}"]`);
+    await expect(clear).toBeVisible(); await expect(clear).toHaveAttribute('title', '清除快捷键'); await expect(clear.locator('svg')).toBeVisible();
+    await page.evaluate(async () => { await window.paste.saveBoard({ name: 'First', color: '#ef6259' }); await window.paste.saveBoard({ name: 'Second', color: '#62c68d' }); });
+    const before = await preferences(); await clear.click(); await expect(settings.locator(`[data-shortcut="${field}"]`)).toHaveText('未设置');
+    expect(await preferences()).toEqual({ ...before, [field]: '' }); expect(await application.evaluate(() => globalThis.__keyCalls)).toEqual([]);
+    await application.close(); application = null; await launch();
+    expect(await preferences()).toEqual({ ...before, [field]: '' }); await expect(settings.locator(`[data-shortcut="${field}"]`)).toHaveText('未设置');
+    await page.bringToFront(); await page.locator('#timeline').focus(); await page.keyboard.press(`Meta+${direction}`);
+    await expect(page.locator('[data-board="history"]')).toHaveAttribute('aria-pressed', 'true');
+    await page.keyboard.press(`Meta+${other}`); await expect(page.locator('[data-board="history"]')).toHaveAttribute('aria-pressed', 'false');
+    await settings.bringToFront(); await settings.locator('#resetHotkey').click();
+    await expect(settings.locator(`[data-shortcut="${field}"]`)).toHaveText(field === 'nextBoardHotkey' ? '⌘→' : '⌘←');
+    expect(await preferences()).toEqual(before); expect(await application.evaluate(() => globalThis.__keyCalls)).toEqual([]);
+    await page.bringToFront(); await page.locator('[data-board="history"]').click(); await page.locator('#timeline').focus(); await page.keyboard.press(`Meta+${direction}`);
+    await expect(page.locator('[data-board="history"]')).toHaveAttribute('aria-pressed', 'false'); expect(await keys()).toEqual([HISTORY, STACK]);
+  });
+  test(`clearing ${field} while a native combination is held cancels capture without a late save`, async () => {
+    const button = settings.locator(`[data-shortcut="${field}"]`); await button.click(); await expect(button).toHaveClass(/recording/); await expect(button).toHaveAttribute('aria-busy', 'false');
+    await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/settings.html')).webContents.sendInputEvent({ type: 'keyDown', keyCode: 'T', modifiers: ['meta'] }));
+    await expect(button).toHaveText('⌘T'); await settings.locator(`[data-clear-shortcut="${field}"]`).click(); await expect(button).toHaveText('未设置');
+    await expect(button).not.toHaveClass(/recording/); await expect.poll(() => application.evaluate(() => globalThis.__pasteTest.shortcutRecorder.current?.id ?? null)).toBe(null);
+    await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/settings.html')).webContents.sendInputEvent({ type: 'keyUp', keyCode: 'T', modifiers: [] }));
+    await save({ theme: 'dark' }); expect((await preferences())[field]).toBe(''); expect((await preferences()).paused).toBe(false);
+    await button.click(); await expect(button).toHaveClass(/recording/); await settings.keyboard.press('Meta+Alt+z');
+    await expect(button).toHaveText('⌘⌥Z'); expect((await preferences())[field]).toBe('CommandOrControl+Alt+Z');
+    expect(await application.evaluate(() => globalThis.__keyCalls)).toEqual([]); expect(await keys()).toEqual([HISTORY, STACK]);
+  });
+}
+test('Pinboard clear failure preserves the binding; keyboard retry and compact light/dark controls remain usable', async () => {
+  const before = await preferences(), clear = settings.locator('[data-clear-shortcut="nextBoardHotkey"]');
+  await fault('before'); await clear.click(); await expect(settings.locator('#settingsStatus')).toContainText('Injected manifest');
+  expect(await preferences()).toEqual(before); await expect(settings.locator('[data-shortcut="nextBoardHotkey"]')).toHaveText('⌘→');
+  await application.evaluate(() => globalThis.__restoreFault()); await clear.focus(); await settings.keyboard.press('Enter');
+  await expect(settings.locator('[data-shortcut="nextBoardHotkey"]')).toHaveText('未设置'); expect((await preferences()).nextBoardHotkey).toBe('');
+  await save({ previousBoardHotkey: 'CommandOrControl+Control+Alt+Shift+PageDown' });
+  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/settings.html')).setSize(620, 520));
+  for (const theme of ['light', 'dark']) {
+    await save({ theme });
+    const bounds = await settings.locator('.shortcut-list [data-shortcut]').evaluateAll(buttons => buttons.map(button => {
+      const control = button.parentElement, label = control.parentElement.firstElementChild, clear = control.querySelector('[data-clear-shortcut]');
+      const b = button.getBoundingClientRect(), c = clear.getBoundingClientRect(), l = label.getBoundingClientRect(), r = control.getBoundingClientRect();
+      return { separated: l.right <= r.left && b.right <= c.left, inside: r.right <= innerWidth && r.left >= 0 && r.bottom <= innerHeight, textFits: button.scrollWidth <= button.clientWidth };
+    }));
+    expect(bounds).toHaveLength(2); expect(bounds.every(row => row.separated && row.inside && row.textFits)).toBe(true);
+    await settings.screenshot({ path: `test-results/pinboard-shortcut-clear-${theme}.png` });
+  }
+  expect(await application.evaluate(() => globalThis.__keyCalls)).toEqual([]); expect(await keys()).toEqual([HISTORY, STACK]);
+});
 test('resetting while a recorder is active exits capture and restores defaults without a later stray edit', async () => {
   await save({ hotkey: NEXT, stackHotkey: '' }); await settings.locator('[data-shortcut="stackHotkey"]').click(); await settings.locator('#resetHotkey').click();
   await expect(settings.locator('[data-shortcut="stackHotkey"]')).toHaveText('⌘⇧C'); await settings.keyboard.press('Meta+Alt+c');
